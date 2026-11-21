@@ -1,0 +1,418 @@
+use std::fs;
+use std::sync::atomic::Ordering;
+use std::sync::Arc;
+
+use tauri::{AppHandle, State};
+use tracing::{info, warn};
+use url::Url;
+
+use crate::auth::login_window::{
+    clear_webview_browsing_data, open_drops_inventory_window, open_login_window,
+};
+use crate::autostart::sync_autostart;
+use crate::logging::{log_dir, LogEntry, LogLevel};
+use crate::net::allowlist::{validate_url, AllowlistKind};
+use crate::platforms::{AppSnapshot, PlatformId};
+use crate::secrets::SecretStore;
+use crate::settings::{appdata_dir, PriorityItem, Settings, CURRENT_DISCLAIMER_VERSION};
+use crate::state::{AppState, MinerControl};
+use crate::update_check::{check_for_updates, UpdateStatus};
+use crate::windows::apply_window_theme;
+
+#[tauri::command]
+pub async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot, String> {
+    Ok(state.full_snapshot().await)
+}
+
+#[tauri::command]
+pub async fn login(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+) -> Result<(), String> {
+    if state.mock_active.load(Ordering::Relaxed) {
+        state
+            .send_miner(platform, MinerControl::LoginComplete)
+            .await;
+        return Ok(());
+    }
+    open_login_window(&app, state.inner().clone(), platform)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+#[tauri::command]
+pub async fn logout(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+) -> Result<(), String> {
+    state.send_miner(platform, MinerControl::Logout).await;
+    if !state.mock_active.load(Ordering::Relaxed) {
+        let _ = SecretStore::delete_token(platform);
+        if let Err(err) = clear_webview_browsing_data(&app).await {
+            warn!(error = %err, "Could not clear WebView2 browsing data on logout");
+        }
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn set_campaign_farm(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    campaign_id: String,
+    farm: bool,
+) -> Result<Settings, String> {
+    let updated = {
+        let mut guard = state.settings.write().await;
+        let plat = match platform {
+            PlatformId::Twitch => &mut guard.twitch,
+            PlatformId::Kick => &mut guard.kick,
+        };
+        if farm {
+            plat.excluded_campaigns.retain(|id| id != &campaign_id);
+            if !plat.farm_campaigns.contains(&campaign_id) {
+                plat.farm_campaigns.push(campaign_id.clone());
+            }
+        } else {
+            plat.farm_campaigns.retain(|id| id != &campaign_id);
+            if !plat.excluded_campaigns.contains(&campaign_id) {
+                plat.excluded_campaigns.push(campaign_id.clone());
+            }
+            plat.priority.retain(|item| match item {
+                PriorityItem::Campaign { campaign_id: id, .. } => id != &campaign_id,
+                _ => true,
+            });
+        }
+        guard.sanitize();
+        guard.clone()
+    };
+
+    state.persist_settings().await?;
+    state
+        .send_miner(platform, MinerControl::SettingsUpdated)
+        .await;
+    state.publish_snapshot(&app, true).await;
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn set_game_farm(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    game_id: String,
+    game_name: String,
+    farm: bool,
+) -> Result<Settings, String> {
+    let updated = {
+        let mut guard = state.settings.write().await;
+        let plat = match platform {
+            PlatformId::Twitch => &mut guard.twitch,
+            PlatformId::Kick => &mut guard.kick,
+        };
+        if farm {
+            let exists = plat.priority.iter().any(|item| match item {
+                PriorityItem::Game { game_id: gid, .. } => gid == &game_id,
+                _ => false,
+            });
+            if !exists {
+                plat.priority.push(PriorityItem::Game {
+                    game_id,
+                    game_name,
+                });
+            }
+        } else {
+            plat.priority.retain(|item| match item {
+                PriorityItem::Game { game_id: gid, .. } => gid != &game_id,
+                _ => true,
+            });
+        }
+        guard.sanitize();
+        guard.clone()
+    };
+
+    state.persist_settings().await?;
+    state
+        .send_miner(platform, MinerControl::SettingsUpdated)
+        .await;
+    state.publish_snapshot(&app, true).await;
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn set_priority(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    items: Vec<PriorityItem>,
+) -> Result<Settings, String> {
+    let updated = {
+        let mut guard = state.settings.write().await;
+        let plat = match platform {
+            PlatformId::Twitch => &mut guard.twitch,
+            PlatformId::Kick => &mut guard.kick,
+        };
+        plat.priority = items;
+        guard.sanitize();
+        guard.clone()
+    };
+
+    state.persist_settings().await?;
+    state
+        .send_miner(platform, MinerControl::SettingsUpdated)
+        .await;
+    state.publish_snapshot(&app, true).await;
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn pause(state: State<'_, Arc<AppState>>, platform: PlatformId) -> Result<(), String> {
+    state.send_miner(platform, MinerControl::Pause).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn resume(state: State<'_, Arc<AppState>>, platform: PlatformId) -> Result<(), String> {
+    state.send_miner(platform, MinerControl::Resume).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn switch_channel(
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+) -> Result<(), String> {
+    state
+        .send_miner(platform, MinerControl::SwitchChannel)
+        .await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn pin_channel(
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    channel_login: Option<String>,
+) -> Result<Settings, String> {
+    let updated = {
+        let mut guard = state.settings.write().await;
+        let plat = match platform {
+            PlatformId::Twitch => &mut guard.twitch,
+            PlatformId::Kick => &mut guard.kick,
+        };
+        plat.pinned_channel = channel_login.clone();
+        guard.clone()
+    };
+
+    state.persist_settings().await?;
+    state
+        .send_miner(platform, MinerControl::PinChannel(channel_login))
+        .await;
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn retry_platform(
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+) -> Result<(), String> {
+    state.send_miner(platform, MinerControl::RetryNow).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn open_drops_inventory(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+) -> Result<(), String> {
+    open_drops_inventory_window(&app, state.inner().clone(), platform)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+#[tauri::command]
+pub async fn get_settings(state: State<'_, Arc<AppState>>) -> Result<Settings, String> {
+    Ok(state.settings.read().await.clone())
+}
+
+#[tauri::command]
+pub async fn update_settings(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    mut new_settings: Settings,
+) -> Result<Settings, String> {
+    let (prev_autostart, prev_bounds, prev_theme, prev_log_level, prev_mock) = {
+        let cur = state.settings.read().await;
+        (
+            cur.autostart,
+            cur.window_bounds.clone(),
+            cur.theme,
+            cur.log_level,
+            cur.mock_mode,
+        )
+    };
+
+    if new_settings.window_bounds.is_none() {
+        new_settings.window_bounds = prev_bounds;
+    }
+    new_settings.sanitize();
+
+    if new_settings.autostart != prev_autostart {
+        sync_autostart(&app, new_settings.autostart)?;
+    }
+
+    if new_settings.theme != prev_theme {
+        apply_window_theme(&app, new_settings.theme);
+    }
+
+    if new_settings.log_level != prev_log_level {
+        if let Ok(guard) = state.log_handle.lock() {
+            if let Some(ref handle) = *guard {
+                handle.set_level(new_settings.log_level);
+            }
+        }
+    }
+
+    if cfg!(feature = "mock") && new_settings.mock_mode != prev_mock {
+        state
+            .mock_active
+            .store(new_settings.mock_mode, Ordering::Relaxed);
+    }
+
+    {
+        let mut guard = state.settings.write().await;
+        *guard = new_settings.clone();
+    }
+
+    state.persist_settings().await?;
+    state.send_all_miners(MinerControl::SettingsUpdated).await;
+    state.publish_snapshot(&app, true).await;
+    Ok(new_settings)
+}
+
+#[tauri::command]
+pub async fn accept_disclaimer(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<Settings, String> {
+    let updated = {
+        let mut guard = state.settings.write().await;
+        guard.disclaimer_accepted_version = CURRENT_DISCLAIMER_VERSION;
+        guard.clone()
+    };
+
+    info!("User accepted DropPilot terms disclaimer");
+    state.persist_settings().await?;
+    state.send_all_miners(MinerControl::SettingsUpdated).await;
+    state.publish_snapshot(&app, true).await;
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn clear_app_data(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    state.send_all_miners(MinerControl::Logout).await;
+    let _ = SecretStore::delete_token(PlatformId::Twitch);
+    let _ = SecretStore::delete_token(PlatformId::Kick);
+    let _ = clear_webview_browsing_data(&app).await;
+
+    let disclaimer_accepted_version = state.settings.read().await.disclaimer_accepted_version;
+    let fresh = Settings {
+        disclaimer_accepted_version,
+        ..Default::default()
+    };
+    {
+        let mut guard = state.settings.write().await;
+        *guard = fresh;
+    }
+    let _ = fs::remove_file(appdata_dir().join("settings.json"));
+    state.persist_settings().await?;
+    state.send_all_miners(MinerControl::SettingsUpdated).await;
+    state.publish_snapshot(&app, true).await;
+    info!("Cleared DropPilot accounts, WebView2 data, and reset settings");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_logs(
+    state: State<'_, Arc<AppState>>,
+    level: Option<LogLevel>,
+    platform: Option<PlatformId>,
+) -> Result<Vec<LogEntry>, String> {
+    Ok(state.logs.list(level, platform))
+}
+
+#[tauri::command]
+pub async fn open_url(state: State<'_, Arc<AppState>>, url: String) -> Result<(), String> {
+    let parsed = Url::parse(&url).map_err(|e| format!("Invalid URL: {e}"))?;
+    if parsed.scheme() != "https" {
+        return Err("Only https:// URLs may be opened".to_string());
+    }
+
+    let campaign_link_ok = {
+        let tw = state.twitch_snapshot.read().await;
+        let kk = state.kick_snapshot.read().await;
+        tw.campaigns
+            .iter()
+            .chain(kk.campaigns.iter())
+            .filter_map(|c| c.link_url.as_deref())
+            .any(|link| link == url)
+    };
+
+    let allowlist_ok = campaign_link_ok || validate_url(&parsed, AllowlistKind::ExternalOpen).is_ok();
+    if !allowlist_ok {
+        return Err(format!(
+            "Refused to open unverified external URL host: {}",
+            parsed.host_str().unwrap_or("unknown")
+        ));
+    }
+
+    tauri_plugin_opener::open_url(parsed.as_str(), None::<&str>)
+        .map_err(|e| format!("Failed opening URL in system browser: {e}"))
+}
+
+#[tauri::command]
+pub async fn open_log_folder() -> Result<(), String> {
+    let dir = log_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed creating log folder: {e}"))?;
+    tauri_plugin_opener::open_path(dir, None::<&str>)
+        .map_err(|e| format!("Failed opening log folder: {e}"))
+}
+
+#[tauri::command]
+pub async fn open_data_folder() -> Result<(), String> {
+    let dir = appdata_dir();
+    fs::create_dir_all(&dir).map_err(|e| format!("Failed creating data folder: {e}"))?;
+    tauri_plugin_opener::open_path(dir, None::<&str>)
+        .map_err(|e| format!("Failed opening data folder: {e}"))
+}
+
+#[tauri::command]
+pub async fn check_update(state: State<'_, Arc<AppState>>) -> Result<UpdateStatus, String> {
+    check_for_updates(&state.http)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+#[tauri::command]
+pub fn is_mock_available() -> bool {
+    cfg!(feature = "mock")
+}
+
+#[tauri::command]
+pub async fn report_user_agent(
+    state: State<'_, Arc<AppState>>,
+    user_agent: String,
+) -> Result<(), String> {
+    if user_agent.len() > 512 {
+        return Err("Invalid user-agent length".to_string());
+    }
+    state.http.set_user_agent(user_agent).await;
+    Ok(())
+}

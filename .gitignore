@@ -1,0 +1,16 @@
+# Dependencies & frontend build output
+node_modules/
+dist/
+
+# Rust / Tauri build artifacts & generated schemas
+src-tauri/target/
+src-tauri/gen/
+
+# Logs, env & OS clutter
+*.log
+npm-debug.log*
+.env
+.env.*
+.DS_Store
+Thumbs.db
+.vscode/

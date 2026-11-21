@@ -1,0 +1,1317 @@
+use std::sync::Arc;
+use std::time::Duration;
+
+use serde::{Deserialize, Serialize};
+use tauri::{AppHandle, Manager, WebviewUrl, WebviewWindowBuilder};
+use tokio::sync::oneshot;
+use tokio::time::{sleep, timeout};
+use tracing::{info, warn};
+use url::Url;
+
+use crate::net::allowlist::{validate_url, AllowlistKind};
+use crate::platforms::{AppError, PlatformId};
+use crate::secrets::SecretStore;
+use crate::state::{AppState, BridgeWaiters, MinerControl};
+use crate::windows::{resolve_tauri_theme, webview_data_dir};
+
+const KICK_BRIDGE_SCRIPT: &str = r##"
+(function () {
+  if (window.location.hostname !== "kick.com") return;
+  if (window.__dpKickBridgeInstalled) return;
+  window.__dpKickBridgeInstalled = true;
+
+  function isChallengePage() {
+    try {
+      const title = (document.title || "").toLowerCase();
+      if (title.includes("just a moment") || title.includes("attention required")) {
+        return true;
+      }
+      if (document.querySelector("#challenge-running, #cf-challenge-running")) {
+        return true;
+      }
+    } catch (_) {}
+    return false;
+  }
+
+  function readCookie(name) {
+    try {
+      const prefix = name + "=";
+      const parts = (document.cookie || "").split(";");
+      for (let i = 0; i < parts.length; i++) {
+        const part = parts[i].trim();
+        if (part.startsWith(prefix)) {
+          const raw = part.slice(prefix.length);
+          try {
+            return decodeURIComponent(raw);
+          } catch (_) {
+            return raw;
+          }
+        }
+      }
+    } catch (_) {}
+    return "";
+  }
+
+  let readySent = false;
+  function maybeSignalReady() {
+    if (readySent) return true;
+    if (document.readyState === "loading" || isChallengePage()) return false;
+    if (window.chrome && window.chrome.webview) {
+      readySent = true;
+      window.chrome.webview.postMessage(JSON.stringify({ dpKickReady: true }));
+      return true;
+    }
+    return false;
+  }
+
+  if (!maybeSignalReady()) {
+    let attempts = 0;
+    const timer = setInterval(function () {
+      attempts += 1;
+      if (maybeSignalReady() || attempts >= 25) {
+        clearInterval(timer);
+      }
+    }, 400);
+  }
+
+  if (window.chrome && window.chrome.webview) {
+    window.chrome.webview.addEventListener("message", async function (event) {
+      let msg;
+      try {
+        msg = typeof event.data === "string" ? JSON.parse(event.data) : event.data;
+      } catch (_) {
+        return;
+      }
+      if (!msg || msg.dpKickReq !== true || !msg.requestId || !msg.target) return;
+
+      try {
+        const parsed = new URL(msg.target);
+        if (
+          parsed.protocol !== "https:" ||
+          (parsed.hostname !== "kick.com" &&
+            parsed.hostname !== "web.kick.com" &&
+            parsed.hostname !== "websockets.kick.com")
+        ) {
+          throw new Error("Blocked non-Kick bridge target");
+        }
+
+        const method = String(msg.method || "GET").toUpperCase() === "POST" ? "POST" : "GET";
+        const headers = { Accept: "application/json" };
+        if (msg.bearer) {
+          headers["Authorization"] = "Bearer " + msg.bearer;
+        }
+        if (parsed.hostname === "kick.com") {
+          const xsrf = readCookie("XSRF-TOKEN");
+          if (xsrf) {
+            headers["X-XSRF-TOKEN"] = xsrf;
+          }
+        }
+        const init = {
+          method,
+          credentials: "include",
+          headers
+        };
+        if (msg.body && method === "POST") {
+          headers["Content-Type"] = "application/json";
+          init.body = msg.body;
+        }
+
+        let resp = await fetch(parsed.toString(), init);
+
+        if (
+          parsed.hostname === "kick.com" &&
+          (resp.status === 401 || resp.status === 403) &&
+          headers["Authorization"]
+        ) {
+          const cookieOnlyHeaders = Object.assign({}, headers);
+          delete cookieOnlyHeaders["Authorization"];
+          const retryInit = {
+            method,
+            credentials: "include",
+            headers: cookieOnlyHeaders
+          };
+          if (init.body) {
+            retryInit.body = init.body;
+          }
+          resp = await fetch(parsed.toString(), retryInit);
+        }
+
+        if (resp.status === 403) {
+          await new Promise(function (resolve) {
+            setTimeout(resolve, 1200);
+          });
+          resp = await fetch(parsed.toString(), init);
+        }
+
+        const text = await resp.text();
+        window.chrome.webview.postMessage(
+          JSON.stringify({
+            dpKickBridge: true,
+            requestId: msg.requestId,
+            ok: resp.ok,
+            status: resp.status,
+            body: text
+          })
+        );
+      } catch (err) {
+        window.chrome.webview.postMessage(
+          JSON.stringify({
+            dpKickBridge: true,
+            requestId: msg.requestId,
+            ok: false,
+            status: 0,
+            body: String(err && err.message ? err.message : err)
+          })
+        );
+      }
+    });
+  }
+})();
+"##;
+
+const COMPAT_WATCH_SCRIPT: &str = r#"
+(function () {
+  function enforceLowestAndMuted() {
+    try {
+      document.querySelectorAll("video, audio").forEach(function (el) {
+        el.muted = true;
+        el.volume = 0;
+      });
+    } catch (_) {}
+  }
+  setInterval(enforceLowestAndMuted, 2500);
+  document.addEventListener("DOMContentLoaded", enforceLowestAndMuted);
+})();
+"#;
+
+const TWITCH_OPEN_LOGIN_MODAL_SCRIPT: &str = r##"
+(function () {
+  if (window.__dpTwitchModalOpened) return;
+  if (!window.location.hostname.endsWith("twitch.tv")) return;
+
+  window.__dpTwitchModalOpened = true;
+  let attempts = 0;
+  const timer = setInterval(function () {
+    attempts += 1;
+    if (attempts > 32) {
+      clearInterval(timer);
+      return;
+    }
+    try {
+      if (document.querySelector('[data-a-target="user-menu-toggle"]')) {
+        clearInterval(timer);
+        return;
+      }
+      const btn = document.querySelector('[data-a-target="login-button"]');
+      if (btn instanceof HTMLElement) {
+        btn.click();
+        clearInterval(timer);
+      }
+    } catch (_) {}
+  }, 250);
+})();
+"##;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct KickBridgeResult {
+    pub status: u16,
+    pub body: String,
+}
+
+pub fn login_window_label(platform: PlatformId) -> &'static str {
+    match platform {
+        PlatformId::Twitch => "login-twitch",
+        PlatformId::Kick => "login-kick",
+    }
+}
+
+pub fn compat_window_label(platform: PlatformId) -> &'static str {
+    match platform {
+        PlatformId::Twitch => "compat-watch-twitch",
+        PlatformId::Kick => "compat-watch-kick",
+    }
+}
+
+fn platform_login_url(platform: PlatformId) -> &'static str {
+    match platform {
+        PlatformId::Twitch => "https://www.twitch.tv",
+        PlatformId::Kick => "https://kick.com",
+    }
+}
+
+fn platform_cookie_url(platform: PlatformId) -> &'static str {
+    match platform {
+        PlatformId::Twitch => "https://www.twitch.tv",
+        PlatformId::Kick => "https://kick.com",
+    }
+}
+
+fn platform_token_cookie_name(platform: PlatformId) -> &'static str {
+    match platform {
+        PlatformId::Twitch => "auth-token",
+        PlatformId::Kick => "session_token",
+    }
+}
+
+pub async fn open_login_window(
+    app: &AppHandle,
+    state: Arc<AppState>,
+    platform: PlatformId,
+) -> Result<(), AppError> {
+    let label = login_window_label(platform);
+    if let Some(existing) = app.get_webview_window(label) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let start_url = Url::parse(platform_login_url(platform))
+        .map_err(|e| AppError::Internal(format!("Invalid login URL: {e}")))?;
+
+    let theme = state.settings.read().await.theme;
+    let title = format!("Sign in to {} — DropPilot", platform.display_name());
+
+    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start_url))
+        .title(&title)
+        .inner_size(1060.0, 760.0)
+        .min_inner_size(880.0, 640.0)
+        .center()
+        .resizable(true)
+        .theme(resolve_tauri_theme(theme))
+        .data_directory(webview_data_dir())
+        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation));
+
+    if platform == PlatformId::Twitch {
+        builder = builder.initialization_script(TWITCH_OPEN_LOGIN_MODAL_SCRIPT);
+    }
+
+    builder
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed opening login window: {e}")))?;
+
+    info!(platform = platform.as_str(), "Opened official login window");
+
+    // Poll DropPilot's own isolated WebView2 cookie jar off the UI thread.
+    let app_clone = app.clone();
+    let state_clone = state.clone();
+    let label_string = label.to_string();
+
+    tauri::async_runtime::spawn(async move {
+        let cookie_url = match Url::parse(platform_cookie_url(platform)) {
+            Ok(u) => u,
+            Err(_) => return,
+        };
+        let target_cookie = platform_token_cookie_name(platform);
+
+        loop {
+            sleep(Duration::from_millis(1500)).await;
+
+            let Some(win) = app_clone.get_webview_window(&label_string) else {
+                break;
+            };
+
+            let url_clone = cookie_url.clone();
+            let win_clone = win.clone();
+            let cookies_res =
+                tokio::task::spawn_blocking(move || win_clone.cookies_for_url(url_clone)).await;
+
+            let Ok(Ok(cookies)) = cookies_res else {
+                continue;
+            };
+
+            let token_opt = cookies.into_iter().find_map(|c| {
+                if c.name() == target_cookie && !c.value().trim().is_empty() {
+                    Some(c.value().to_string())
+                } else {
+                    None
+                }
+            });
+
+            if let Some(token) = token_opt {
+                if let Err(err) = SecretStore::save_token(platform, &token) {
+                    warn!(platform = platform.as_str(), error = %err, "Failed saving login token");
+                    continue;
+                }
+                info!(
+                    platform = platform.as_str(),
+                    "Captured official session cookie into Credential Manager"
+                );
+                if platform == PlatformId::Kick {
+                    sleep(Duration::from_millis(600)).await;
+                }
+                if let Some(login_win) = app_clone.get_webview_window(&label_string) {
+                    let _ = login_win.close();
+                }
+                state_clone
+                    .send_miner(platform, MinerControl::LoginComplete)
+                    .await;
+                break;
+            }
+        }
+    });
+
+    Ok(())
+}
+
+pub async fn open_drops_inventory_window(
+    app: &AppHandle,
+    state: Arc<AppState>,
+    platform: PlatformId,
+) -> Result<(), AppError> {
+    let label = match platform {
+        PlatformId::Twitch => "inventory-twitch",
+        PlatformId::Kick => "inventory-kick",
+    };
+
+    if let Some(existing) = app.get_webview_window(label) {
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let url_str = match platform {
+        PlatformId::Twitch => "https://www.twitch.tv/drops/inventory",
+        PlatformId::Kick => "https://kick.com/drops/inventory",
+    };
+    let parsed = Url::parse(url_str)
+        .map_err(|e| AppError::Internal(format!("Invalid inventory URL: {e}")))?;
+
+    let theme = state.settings.read().await.theme;
+    let title = format!("{} Drops Inventory — DropPilot", platform.display_name());
+
+    WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
+        .title(&title)
+        .inner_size(980.0, 720.0)
+        .center()
+        .theme(resolve_tauri_theme(theme))
+        .data_directory(webview_data_dir())
+        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation))
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed opening drops inventory window: {e}")))?;
+
+    Ok(())
+}
+
+pub async fn clear_webview_browsing_data(app: &AppHandle) -> Result<(), AppError> {
+    if let Some(main) = app.get_webview_window("main") {
+        main.clear_all_browsing_data()
+            .map_err(|e| AppError::Internal(format!("Failed clearing WebView2 browsing data: {e}")))?;
+        return Ok(());
+    }
+
+    // Create a temporary hidden window on our isolated profile only if main is absent, clear, and close.
+    let tmp = WebviewWindowBuilder::new(app, "clear-data-tmp", WebviewUrl::default())
+        .visible(false)
+        .data_directory(webview_data_dir())
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed opening cleanup helper: {e}")))?;
+
+    let res = tmp
+        .clear_all_browsing_data()
+        .map_err(|e| AppError::Internal(format!("Failed clearing WebView2 browsing data: {e}")));
+    let _ = tmp.close();
+    res
+}
+
+pub fn ensure_compat_watch_window(
+    app: &AppHandle,
+    platform: PlatformId,
+    channel_login: &str,
+) -> Result<(), AppError> {
+    let label = compat_window_label(platform);
+    let url_str = match platform {
+        PlatformId::Twitch => format!("https://www.twitch.tv/{channel_login}"),
+        PlatformId::Kick => format!("https://kick.com/{channel_login}"),
+    };
+    let parsed = Url::parse(&url_str)
+        .map_err(|e| AppError::Internal(format!("Invalid compat watch URL: {e}")))?;
+    validate_url(&parsed, AllowlistKind::Platform)?;
+
+    if let Some(existing) = app.get_webview_window(label) {
+        let current = existing.url().ok();
+        if current.as_ref().map(|u| u.as_str()) != Some(parsed.as_str()) {
+            let _ = existing.navigate(parsed);
+        }
+        return Ok(());
+    }
+
+    let win = WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
+        .title("DropPilot Compatibility Player")
+        .inner_size(420.0, 260.0)
+        .center()
+        .visible(false)
+        .focused(false)
+        .skip_taskbar(true)
+        .data_directory(webview_data_dir())
+        .initialization_script(COMPAT_WATCH_SCRIPT)
+        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::Platform))
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed starting compatibility watch window: {e}")))?;
+
+    #[cfg(windows)]
+    let _ = win.with_webview(|wv| unsafe {
+        let _ = wv.controller().SetIsVisible(true);
+    });
+    #[cfg(not(windows))]
+    let _ = win;
+
+    info!(
+        platform = platform.as_str(),
+        channel = %channel_login,
+        "Started hidden muted compatibility watch window"
+    );
+    Ok(())
+}
+
+pub fn close_compat_watch_window(app: &AppHandle, platform: PlatformId) {
+    if let Some(win) = app.get_webview_window(compat_window_label(platform)) {
+        let _ = win.close();
+    }
+}
+
+#[cfg(windows)]
+static KICK_BRIDGE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum KickBridgeMessage {
+    Ready,
+    Response {
+        request_id: String,
+        status: u16,
+        body: String,
+    },
+}
+
+pub(crate) fn parse_kick_bridge_message(raw: &str) -> Option<KickBridgeMessage> {
+    let val: serde_json::Value = serde_json::from_str(raw).ok()?;
+    if val.get("dpKickReady").and_then(|v| v.as_bool()) == Some(true) {
+        return Some(KickBridgeMessage::Ready);
+    }
+    if val.get("dpKickBridge").and_then(|v| v.as_bool()) == Some(true) {
+        let request_id = val.get("requestId")?.as_str()?.to_string();
+        let status = val.get("status").and_then(|v| v.as_u64()).unwrap_or(0) as u16;
+        let body = val
+            .get("body")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default()
+            .to_string();
+        return Some(KickBridgeMessage::Response {
+            request_id,
+            status,
+            body,
+        });
+    }
+    None
+}
+
+pub fn close_kick_bridge_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("kick-bridge") {
+        let _ = win.close();
+    }
+}
+
+/// Executes a same-origin/credentialed fetch from inside DropPilot's hidden `kick.com`
+/// WebView2 window using native WebView2 `WebMessageReceived` / `PostWebMessageAsString`
+/// messaging when direct HTTP requests receive a 403/503 or Cloudflare challenge.
+/// Does not bypass anti-bot checks: if the hidden official page itself is blocked,
+/// returns `AppError::Blocked`.
+pub async fn kick_webview_fetch_with_waiters(
+    app: &AppHandle,
+    waiters: &BridgeWaiters,
+    method: &str,
+    target_url: &str,
+    json_body: Option<&str>,
+    bearer_token: Option<&str>,
+) -> Result<KickBridgeResult, AppError> {
+    let parsed_target = Url::parse(target_url)
+        .map_err(|e| AppError::Internal(format!("Invalid Kick bridge URL: {e}")))?;
+    validate_url(&parsed_target, AllowlistKind::Platform)?;
+    if !matches!(
+        parsed_target.host_str(),
+        Some("kick.com" | "web.kick.com" | "websockets.kick.com")
+    ) {
+        return Err(AppError::HostNotAllowed(
+            parsed_target.host_str().unwrap_or("unknown").to_string(),
+        ));
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (app, waiters, method, json_body, bearer_token);
+        Err(AppError::Blocked(
+            "Kick official page sync requires Windows WebView2".to_string(),
+        ))
+    }
+
+    #[cfg(windows)]
+    {
+        use std::sync::Mutex as StdMutex;
+        use webview2_com::{take_pwstr, WebMessageReceivedEventHandler};
+        use windows::core::{HSTRING, PWSTR};
+
+        let _lock = KICK_BRIDGE_LOCK
+            .get_or_init(|| tokio::sync::Mutex::new(()))
+            .lock()
+            .await;
+
+        let win = if let Some(existing) = app.get_webview_window("kick-bridge") {
+            existing
+        } else {
+            let blank = Url::parse("about:blank")
+                .map_err(|e| AppError::Internal(format!("Invalid about:blank URL: {e}")))?;
+
+            let created = WebviewWindowBuilder::new(
+                app,
+                "kick-bridge",
+                WebviewUrl::External(blank),
+            )
+            .title("DropPilot Kick Bridge")
+            .inner_size(980.0, 680.0)
+            .center()
+            .visible(false)
+            .skip_taskbar(true)
+            .focused(false)
+            .data_directory(webview_data_dir())
+            .initialization_script(KICK_BRIDGE_SCRIPT)
+            .on_navigation(|url| {
+                url.as_str() == "about:blank"
+                    || validate_url(url, AllowlistKind::LoginNavigation).is_ok()
+            })
+            .build()
+            .map_err(|e| AppError::Internal(format!("Failed creating Kick bridge window: {e}")))?;
+
+            let (ready_tx, ready_rx) = oneshot::channel::<()>();
+            let ready_tx_slot = Arc::new(StdMutex::new(Some(ready_tx)));
+            let (attach_tx, attach_rx) = oneshot::channel::<Result<(), String>>();
+            let waiters_clone = waiters.clone();
+            let ready_slot_clone = ready_tx_slot.clone();
+
+            if let Err(err) = created.with_webview(move |wv| {
+                let attach_res: Result<(), String> = (|| unsafe {
+                    let controller = wv.controller();
+                    let _ = controller.SetIsVisible(true);
+                    let core = controller
+                        .CoreWebView2()
+                        .map_err(|e| format!("CoreWebView2 lookup failed: {e}"))?;
+
+                    let mut token = 0i64;
+                    let handler = WebMessageReceivedEventHandler::create(Box::new(
+                        move |_webview, args| {
+                            let Some(args) = args else {
+                                return Ok(());
+                            };
+                            let mut src_pwstr = PWSTR::null();
+                            args.Source(&mut src_pwstr)?;
+                            let src = take_pwstr(src_pwstr);
+                            if !src.starts_with("https://kick.com") {
+                                return Ok(());
+                            }
+
+                            let mut msg_pwstr = PWSTR::null();
+                            if args.TryGetWebMessageAsString(&mut msg_pwstr).is_err() {
+                                return Ok(());
+                            }
+                            let raw = take_pwstr(msg_pwstr);
+
+                            match parse_kick_bridge_message(&raw) {
+                                Some(KickBridgeMessage::Ready) => {
+                                    if let Ok(mut guard) = ready_slot_clone.lock() {
+                                        if let Some(tx) = guard.take() {
+                                            let _ = tx.send(());
+                                        }
+                                    }
+                                }
+                                Some(KickBridgeMessage::Response {
+                                    request_id,
+                                    status,
+                                    body,
+                                }) => {
+                                    let tx_opt = waiters_clone
+                                        .lock()
+                                        .ok()
+                                        .and_then(|mut g| g.remove(&request_id));
+                                    if let Some(tx) = tx_opt {
+                                        if status == 0 {
+                                            let _ = tx.send(Err(body));
+                                        } else if let Ok(serialized) =
+                                            serde_json::to_string(&KickBridgeResult {
+                                                status,
+                                                body,
+                                            })
+                                        {
+                                            let _ = tx.send(Ok(serialized));
+                                        } else {
+                                            let _ = tx.send(Err(
+                                                "Failed encoding Kick bridge response".to_string(),
+                                            ));
+                                        }
+                                    }
+                                }
+                                None => {}
+                            }
+                            Ok(())
+                        },
+                    ));
+
+                    core.add_WebMessageReceived(&handler, &mut token)
+                        .map_err(|e| format!("add_WebMessageReceived failed: {e}"))?;
+                    Ok(())
+                })();
+
+                let _ = attach_tx.send(attach_res);
+            }) {
+                close_kick_bridge_window(app);
+                return Err(AppError::Internal(format!(
+                    "Failed attaching Kick bridge listener: {err}"
+                )));
+            }
+
+            match timeout(Duration::from_secs(5), attach_rx).await {
+                Ok(Ok(Ok(()))) => {}
+                Ok(Ok(Err(msg))) => {
+                    close_kick_bridge_window(app);
+                    return Err(AppError::Internal(msg));
+                }
+                _ => {
+                    close_kick_bridge_window(app);
+                    return Err(AppError::Internal(
+                        "Timed out preparing Kick WebView2 listener".to_string(),
+                    ));
+                }
+            }
+
+            let inventory_url = Url::parse("https://kick.com/drops/inventory")
+                .map_err(|e| AppError::Internal(format!("Invalid bridge base URL: {e}")))?;
+            if let Err(err) = created.navigate(inventory_url) {
+                close_kick_bridge_window(app);
+                return Err(AppError::Internal(format!(
+                    "Kick bridge navigation failed: {err}"
+                )));
+            }
+
+            match timeout(Duration::from_secs(18), ready_rx).await {
+                Ok(Ok(())) => {}
+                _ => {
+                    close_kick_bridge_window(app);
+                    return Err(AppError::Blocked(
+                        "Kick background page timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
+                            .to_string(),
+                    ));
+                }
+            }
+
+            created
+        };
+
+        let req_id = format!(
+            "kb_{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        );
+
+        let (tx, rx) = oneshot::channel::<Result<String, String>>();
+        {
+            let mut guard = waiters
+                .lock()
+                .map_err(|_| AppError::Internal("Bridge waiter lock poisoned".to_string()))?;
+            guard.insert(req_id.clone(), tx);
+        }
+
+        let payload = serde_json::json!({
+            "dpKickReq": true,
+            "requestId": req_id,
+            "method": method,
+            "target": parsed_target.as_str(),
+            "body": json_body,
+            "bearer": bearer_token,
+        })
+        .to_string();
+
+        let (dispatch_tx, dispatch_rx) = oneshot::channel::<Result<(), String>>();
+        if let Err(err) = win.with_webview(move |wv| {
+            let res: Result<(), String> = unsafe {
+                let controller = wv.controller();
+                let _ = controller.SetIsVisible(true);
+                match controller.CoreWebView2() {
+                    Ok(core) => {
+                        let msg_hstring = HSTRING::from(payload.as_str());
+                        core.PostWebMessageAsString(&msg_hstring)
+                            .map_err(|e| format!("PostWebMessageAsString failed: {e}"))
+                    }
+                    Err(e) => Err(format!("CoreWebView2 lookup failed: {e}")),
+                }
+            };
+            let _ = dispatch_tx.send(res);
+        }) {
+            if let Ok(mut guard) = waiters.lock() {
+                guard.remove(&req_id);
+            }
+            close_kick_bridge_window(app);
+            return Err(AppError::Internal(format!(
+                "Kick bridge dispatch failed: {err}"
+            )));
+        }
+
+        match timeout(Duration::from_secs(5), dispatch_rx).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(msg))) => {
+                if let Ok(mut guard) = waiters.lock() {
+                    guard.remove(&req_id);
+                }
+                close_kick_bridge_window(app);
+                return Err(AppError::Internal(msg));
+            }
+            _ => {
+                if let Ok(mut guard) = waiters.lock() {
+                    guard.remove(&req_id);
+                }
+                close_kick_bridge_window(app);
+                return Err(AppError::Blocked(
+                    "Kick bridge dispatcher timed out".to_string(),
+                ));
+            }
+        }
+
+        let wait_res = timeout(Duration::from_secs(15), rx).await;
+        if let Ok(mut guard) = waiters.lock() {
+            guard.remove(&req_id);
+        }
+
+        match wait_res {
+            Ok(Ok(Ok(raw))) => {
+                let parsed: KickBridgeResult = serde_json::from_str(&raw).map_err(|e| {
+                    AppError::PlatformChanged(format!("Bridge JSON decode error: {e}"))
+                })?;
+                if parsed.status == 403 || parsed.body.contains("Just a moment...") {
+                    if parsed_target.host_str() != Some("websockets.kick.com")
+                        || parsed.body.contains("Just a moment...")
+                    {
+                        close_kick_bridge_window(app);
+                    }
+                    return Err(AppError::Blocked(
+                        "Kick security check blocked background access; open Kick Drops Inventory to verify"
+                            .to_string(),
+                    ));
+                }
+                Ok(parsed)
+            }
+            Ok(Ok(Err(err_msg))) => Err(AppError::Network(format!("Kick bridge error: {err_msg}"))),
+            Ok(Err(_)) => Err(AppError::Network("Kick bridge channel closed".to_string())),
+            Err(_) => {
+                close_kick_bridge_window(app);
+                Err(AppError::Blocked(
+                    "Kick background request timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
+                        .to_string(),
+                ))
+            }
+        }
+    }
+}
+
+pub fn close_twitch_bridge_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("twitch-bridge") {
+        let _ = win.close();
+    }
+}
+
+#[derive(Debug, PartialEq)]
+pub(crate) enum TwitchGqlInspect {
+    Data(serde_json::Value),
+    Unauthenticated(String),
+    TransientIntegrity(String),
+}
+
+pub(crate) fn inspect_twitch_gql_payload(
+    raw_bytes: &[u8],
+    expected_kind: &str,
+) -> Option<TwitchGqlInspect> {
+    let parsed: serde_json::Value = serde_json::from_slice(raw_bytes).ok()?;
+    let items: &[serde_json::Value] = match parsed.as_array() {
+        Some(arr) => arr.as_slice(),
+        None => std::slice::from_ref(&parsed),
+    };
+
+    for item in items {
+        let op_name = item
+            .pointer("/extensions/operationName")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+
+        match expected_kind {
+            "campaigns"
+                if item
+                    .pointer("/data/currentUser/dropCampaigns")
+                    .and_then(|v| v.as_array())
+                    .is_some() =>
+            {
+                return Some(TwitchGqlInspect::Data(item.clone()));
+            }
+            "inventory"
+                if item
+                    .pointer("/data/currentUser/inventory")
+                    .map(|v| !v.is_null())
+                    .unwrap_or(false) =>
+            {
+                return Some(TwitchGqlInspect::Data(item.clone()));
+            }
+            "directory"
+                if item
+                    .pointer("/data/game/streams/edges")
+                    .and_then(|v| v.as_array())
+                    .is_some() =>
+            {
+                return Some(TwitchGqlInspect::Data(item.clone()));
+            }
+            _ => {}
+        }
+
+        let matches_auth_op = matches!(
+            (expected_kind, op_name),
+            ("campaigns", "ViewerDropsDashboard") | ("inventory", "Inventory")
+        );
+        if matches_auth_op
+            && item
+                .pointer("/data/currentUser")
+                .map(|v| v.is_null())
+                .unwrap_or(false)
+        {
+            return Some(TwitchGqlInspect::Unauthenticated(
+                "Twitch web session expired; please log in again".to_string(),
+            ));
+        }
+
+        let matches_err_op = matches!(
+            op_name,
+            "ViewerDropsDashboard" | "Inventory" | "DirectoryPage_Game"
+        );
+        if matches_err_op {
+            if let Some(errors) = item.get("errors").and_then(|e| e.as_array()) {
+                for err in errors {
+                    let msg = err
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or_default();
+                    if msg.to_ascii_lowercase().contains("integrity") {
+                        return Some(TwitchGqlInspect::TransientIntegrity(msg.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
+#[cfg(windows)]
+unsafe fn read_istream_to_vec(stream: &windows::Win32::System::Com::IStream) -> Vec<u8> {
+    const MAX_BYTES: usize = 16 * 1024 * 1024;
+    let mut out = Vec::new();
+    let mut chunk = [0u8; 16 * 1024];
+
+    loop {
+        if out.len() >= MAX_BYTES {
+            break;
+        }
+        let mut bytes_read = 0u32;
+        let hr = stream.Read(
+            chunk.as_mut_ptr().cast(),
+            chunk.len() as u32,
+            Some(&mut bytes_read),
+        );
+        if hr.is_err() || bytes_read == 0 {
+            break;
+        }
+        let take_len = (bytes_read as usize).min(MAX_BYTES.saturating_sub(out.len()));
+        out.extend_from_slice(&chunk[..take_len]);
+    }
+
+    out
+}
+
+/// Loads an official `www.twitch.tv` drops or directory page inside a hidden isolated
+/// WebView2 helper window and reads native `WebResourceResponseReceived` GQL payloads in Rust.
+/// Uses zero JS injection, zero forged tokens, and closes the helper window right after capture.
+pub async fn twitch_bridge_capture(
+    app: &AppHandle,
+    page_url: &str,
+    expected_kind: &str,
+) -> Result<serde_json::Value, AppError> {
+    let parsed = Url::parse(page_url)
+        .map_err(|e| AppError::Internal(format!("Invalid Twitch bridge URL: {e}")))?;
+    validate_url(&parsed, AllowlistKind::Platform)?;
+    if parsed.host_str() != Some("www.twitch.tv") {
+        return Err(AppError::HostNotAllowed(
+            parsed.host_str().unwrap_or("unknown").to_string(),
+        ));
+    }
+
+    #[cfg(not(windows))]
+    {
+        let _ = (app, expected_kind);
+        Err(AppError::Blocked(
+            "Twitch official page sync requires Windows WebView2".to_string(),
+        ))
+    }
+
+    #[cfg(windows)]
+    {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Mutex as StdMutex;
+        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+        use webview2_com::{
+            take_pwstr, WebResourceResponseReceivedEventHandler,
+            WebResourceResponseViewGetContentCompletedHandler,
+        };
+        use windows::core::{Interface, PWSTR};
+
+        close_twitch_bridge_window(app);
+        sleep(Duration::from_millis(150)).await;
+
+        let blank = Url::parse("about:blank")
+            .map_err(|e| AppError::Internal(format!("Invalid about:blank URL: {e}")))?;
+
+        let win = WebviewWindowBuilder::new(app, "twitch-bridge", WebviewUrl::External(blank))
+            .title("DropPilot Twitch Sync")
+            .inner_size(1200.0, 800.0)
+            .center()
+            .visible(false)
+            .skip_taskbar(true)
+            .focused(false)
+            .data_directory(webview_data_dir())
+            .on_navigation(|url| {
+                url.as_str() == "about:blank"
+                    || validate_url(url, AllowlistKind::LoginNavigation).is_ok()
+            })
+            .build()
+            .map_err(|e| AppError::Internal(format!("Failed creating Twitch bridge window: {e}")))?;
+
+        let (result_tx, result_rx) = oneshot::channel::<Result<serde_json::Value, String>>();
+        let result_tx_slot = Arc::new(StdMutex::new(Some(result_tx)));
+        let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
+        let integrity_attempts = Arc::new(AtomicUsize::new(0));
+
+        let expected_owned = expected_kind.to_string();
+        let attach_tx = result_tx_slot.clone();
+        let attach_attempts = integrity_attempts.clone();
+
+        if let Err(err) = win.with_webview(move |wv| {
+            let attach_res: Result<(), String> = (|| unsafe {
+                let controller = wv.controller();
+                let _ = controller.SetIsVisible(true);
+                let core = controller
+                    .CoreWebView2()
+                    .map_err(|e| format!("CoreWebView2 lookup failed: {e}"))?;
+                let core2: ICoreWebView2_2 = core
+                    .cast()
+                    .map_err(|e| format!("ICoreWebView2_2 cast failed: {e}"))?;
+
+                let mut token = 0i64;
+                let handler = WebResourceResponseReceivedEventHandler::create(Box::new(
+                    move |_webview, args| {
+                        let Some(args) = args else {
+                            return Ok(());
+                        };
+                        let req = args.Request()?;
+                        let mut uri_pwstr = PWSTR::null();
+                        req.Uri(&mut uri_pwstr)?;
+                        let uri = take_pwstr(uri_pwstr);
+                        if uri.starts_with("https://gql.twitch.tv/integrity") {
+                            let resp = args.Response()?;
+                            let mut status = 0i32;
+                            resp.StatusCode(&mut status)?;
+                            info!(status, "Twitch official page integrity handshake completed");
+                            return Ok(());
+                        }
+                        if !uri.starts_with("https://gql.twitch.tv/gql") {
+                            return Ok(());
+                        }
+                        let resp = args.Response()?;
+                        let mut status = 0i32;
+                        resp.StatusCode(&mut status)?;
+                        if status != 200 {
+                            return Ok(());
+                        }
+
+                        let tx_inner = attach_tx.clone();
+                        let kind_inner = expected_owned.clone();
+                        let attempts_inner = attach_attempts.clone();
+                        let content_handler =
+                            WebResourceResponseViewGetContentCompletedHandler::create(Box::new(
+                                move |hr, stream| {
+                                    if hr.is_ok() {
+                                        if let Some(stream) = stream {
+                                            let bytes = read_istream_to_vec(&stream);
+                                            match inspect_twitch_gql_payload(&bytes, &kind_inner) {
+                                                Some(TwitchGqlInspect::Data(val)) => {
+                                                    if let Ok(mut guard) = tx_inner.lock() {
+                                                        if let Some(tx) = guard.take() {
+                                                            let _ = tx.send(Ok(val));
+                                                        }
+                                                    }
+                                                }
+                                                Some(TwitchGqlInspect::Unauthenticated(msg)) => {
+                                                    if let Ok(mut guard) = tx_inner.lock() {
+                                                        if let Some(tx) = guard.take() {
+                                                            let _ = tx.send(Err(format!(
+                                                                "unauthenticated:{msg}"
+                                                            )));
+                                                        }
+                                                    }
+                                                }
+                                                Some(TwitchGqlInspect::TransientIntegrity(msg)) => {
+                                                    let n = attempts_inner
+                                                        .fetch_add(1, Ordering::Relaxed)
+                                                        + 1;
+                                                    if n == 1 {
+                                                        info!(
+                                                            kind = %kind_inner,
+                                                            "Twitch page refreshing integrity check; waiting for automatic retry"
+                                                        );
+                                                    }
+                                                    if n >= 4 {
+                                                        if let Ok(mut guard) = tx_inner.lock() {
+                                                            if let Some(tx) = guard.take() {
+                                                                let _ = tx.send(Err(format!(
+                                                                    "blocked:{msg}"
+                                                                )));
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                None => {}
+                                            }
+                                        }
+                                    }
+                                    Ok(())
+                                },
+                            ));
+
+                        let _ = resp.GetContent(&content_handler);
+                        Ok(())
+                    },
+                ));
+
+                core2
+                    .add_WebResourceResponseReceived(&handler, &mut token)
+                    .map_err(|e| format!("add_WebResourceResponseReceived failed: {e}"))?;
+                Ok(())
+            })();
+
+            let _ = ready_tx.send(attach_res);
+        }) {
+            close_twitch_bridge_window(app);
+            return Err(AppError::Internal(format!(
+                "Failed attaching Twitch bridge listener: {err}"
+            )));
+        }
+
+        match timeout(Duration::from_secs(5), ready_rx).await {
+            Ok(Ok(Ok(()))) => {}
+            Ok(Ok(Err(msg))) => {
+                close_twitch_bridge_window(app);
+                return Err(AppError::Internal(msg));
+            }
+            _ => {
+                close_twitch_bridge_window(app);
+                return Err(AppError::Internal(
+                    "Timed out preparing Twitch WebView2 listener".to_string(),
+                ));
+            }
+        }
+
+        info!(kind = expected_kind, "Syncing Twitch data via official page");
+        if let Err(err) = win.navigate(parsed) {
+            close_twitch_bridge_window(app);
+            return Err(AppError::Internal(format!(
+                "Twitch bridge navigation failed: {err}"
+            )));
+        }
+
+        let wait_res = timeout(Duration::from_secs(25), result_rx).await;
+        close_twitch_bridge_window(app);
+
+        match wait_res {
+            Ok(Ok(Ok(val))) => {
+                info!(kind = expected_kind, "Synced Twitch data from official page");
+                Ok(val)
+            }
+            Ok(Ok(Err(err))) => {
+                if let Some(msg) = err.strip_prefix("unauthenticated:") {
+                    Err(AppError::Auth(msg.to_string()))
+                } else {
+                    Err(AppError::Blocked(
+                        err.trim_start_matches("blocked:").to_string(),
+                    ))
+                }
+            }
+            Ok(Err(_)) | Err(_) => {
+                if integrity_attempts.load(Ordering::Relaxed) > 0 {
+                    Err(AppError::Blocked(
+                        "Twitch integrity check did not succeed after retries; check Logs for integrity handshake status"
+                            .to_string(),
+                    ))
+                } else {
+                    Err(AppError::Blocked(
+                        "Twitch official drops page did not respond in time".to_string(),
+                    ))
+                }
+            }
+        }
+    }
+}
+
+fn handle_restricted_navigation(url: &Url, kind: AllowlistKind) -> bool {
+    if validate_url(url, kind).is_ok() {
+        return true;
+    }
+
+    if url.scheme() == "https" {
+        let _ = tauri_plugin_opener::open_url(url.as_str(), None::<&str>);
+    } else {
+        warn!(scheme = %url.scheme(), "Blocked non-https navigation in embedded window");
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        inspect_twitch_gql_payload, parse_kick_bridge_message, KickBridgeMessage, TwitchGqlInspect,
+    };
+    use serde_json::json;
+
+    #[test]
+    fn extracts_campaigns_from_batched_gql_array() {
+        let batch = json!([
+            {
+                "extensions": { "operationName": "SideNav_FollowedChannels" },
+                "data": { "currentUser": { "followedLiveUsers": { "nodes": [] } } }
+            },
+            {
+                "extensions": { "operationName": "ViewerDropsDashboard" },
+                "data": {
+                    "currentUser": {
+                        "dropCampaigns": [
+                            { "id": "c1", "name": "Rust Drops" }
+                        ]
+                    }
+                }
+            }
+        ]);
+        let res = inspect_twitch_gql_payload(batch.to_string().as_bytes(), "campaigns");
+        let Some(TwitchGqlInspect::Data(val)) = res else {
+            panic!("expected Data variant");
+        };
+        assert_eq!(val["data"]["currentUser"]["dropCampaigns"][0]["id"], "c1");
+    }
+
+    #[test]
+    fn extracts_inventory_with_null_in_progress() {
+        let payload = json!({
+            "extensions": { "operationName": "Inventory" },
+            "data": {
+                "currentUser": {
+                    "inventory": {
+                        "dropCampaignsInProgress": null
+                    }
+                }
+            }
+        });
+        let res = inspect_twitch_gql_payload(payload.to_string().as_bytes(), "inventory");
+        let Some(TwitchGqlInspect::Data(val)) = res else {
+            panic!("expected Data variant");
+        };
+        assert!(val["data"]["currentUser"]["inventory"].is_object());
+    }
+
+    #[test]
+    fn extracts_directory_channels() {
+        let payload = json!({
+            "extensions": { "operationName": "DirectoryPage_Game" },
+            "data": {
+                "game": {
+                    "streams": {
+                        "edges": [
+                            { "node": { "broadcaster": { "login": "hJune" } } }
+                        ]
+                    }
+                }
+            }
+        });
+        let res = inspect_twitch_gql_payload(payload.to_string().as_bytes(), "directory");
+        let Some(TwitchGqlInspect::Data(val)) = res else {
+            panic!("expected Data variant");
+        };
+        assert_eq!(
+            val["data"]["game"]["streams"]["edges"][0]["node"]["broadcaster"]["login"],
+            "hJune"
+        );
+    }
+
+    #[test]
+    fn detects_unauthenticated_and_integrity_errors_scoped_by_operation() {
+        let unauth = json!({
+            "extensions": { "operationName": "ViewerDropsDashboard" },
+            "data": { "currentUser": null }
+        });
+        assert!(matches!(
+            inspect_twitch_gql_payload(unauth.to_string().as_bytes(), "campaigns"),
+            Some(TwitchGqlInspect::Unauthenticated(_))
+        ));
+
+        // Unrelated operation with currentUser: null must be ignored
+        let unrelated_unauth = json!({
+            "extensions": { "operationName": "GlobalNav" },
+            "data": { "currentUser": null }
+        });
+        assert!(inspect_twitch_gql_payload(
+            unrelated_unauth.to_string().as_bytes(),
+            "campaigns"
+        )
+        .is_none());
+
+        let blocked = json!({
+            "extensions": { "operationName": "ViewerDropsDashboard" },
+            "errors": [{ "message": "failed integrity check" }]
+        });
+        assert!(matches!(
+            inspect_twitch_gql_payload(blocked.to_string().as_bytes(), "campaigns"),
+            Some(TwitchGqlInspect::TransientIntegrity(_))
+        ));
+    }
+
+    #[test]
+    fn ignores_unrelated_gql_payloads() {
+        let other = json!({
+            "extensions": { "operationName": "OnsiteNotifications_ListNotifications" },
+            "data": { "currentUser": { "id": "123" } }
+        });
+        assert!(inspect_twitch_gql_payload(other.to_string().as_bytes(), "campaigns").is_none());
+    }
+
+    #[test]
+    fn parses_kick_bridge_web_messages() {
+        assert_eq!(
+            parse_kick_bridge_message(r#"{"dpKickReady":true}"#),
+            Some(KickBridgeMessage::Ready)
+        );
+        assert_eq!(
+            parse_kick_bridge_message(
+                r#"{"dpKickBridge":true,"requestId":"kb_1","status":200,"body":"{\"ok\":true}"}"#
+            ),
+            Some(KickBridgeMessage::Response {
+                request_id: "kb_1".to_string(),
+                status: 200,
+                body: r#"{"ok":true}"#.to_string(),
+            })
+        );
+        assert_eq!(
+            parse_kick_bridge_message(r#"{"__TAURI__":true,"cmd":"foo"}"#),
+            None
+        );
+        assert_eq!(parse_kick_bridge_message("not json"), None);
+    }
+}

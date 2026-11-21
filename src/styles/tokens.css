@@ -1,0 +1,175 @@
+:root {
+  color-scheme: dark;
+
+  /* Core surfaces & text (Twilight-Indigo Aurora Dark default) */
+  --bg: #0b0e1a;
+  --sidebar-bg: #0f1326;
+  --surface: #151a30;
+  --surface-2: #1c2340;
+  --surface-hover: #242d52;
+  --border: rgba(148, 163, 255, 0.14);
+  --border-hover: rgba(167, 139, 250, 0.34);
+  --text: #eef2ff;
+  --text-muted: #a3add0;
+  --text-faint: #6f7aa3;
+  --card-shadow:
+    0 10px 28px rgba(4, 6, 18, 0.42),
+    inset 0 1px 0 rgba(255, 255, 255, 0.07);
+  --backdrop: rgba(5, 7, 16, 0.8);
+  --shimmer-a: #161b32;
+  --shimmer-b: #222a4d;
+
+  /* Brand & platform accents */
+  --accent: #818cf8;
+  --accent-hover: #9ba5ff;
+  --accent-text: #b4beff;
+  --accent-tint: rgba(129, 140, 248, 0.18);
+
+  --cyan: #38bdf8;
+  --cyan-text: #67e8f9;
+  --cyan-tint: rgba(56, 189, 248, 0.16);
+
+  --pink: #ec4899;
+  --pink-text: #f472b6;
+  --pink-tint: rgba(236, 72, 153, 0.16);
+
+  --grad-accent: linear-gradient(135deg, #6366f1 0%, #a855f7 52%, #ec4899 100%);
+  --grad-accent-hover: linear-gradient(135deg, #7477f7 0%, #b76efa 52%, #f466ad 100%);
+  --grad-twitch: linear-gradient(135deg, #9146ff 0%, #d946ef 100%);
+  --grad-kick: linear-gradient(135deg, #10b981 0%, #53fc18 100%);
+  --wash-twitch: linear-gradient(145deg, rgba(145, 70, 255, 0.24) 0%, rgba(217, 70, 239, 0.09) 48%, transparent 100%);
+  --wash-kick: linear-gradient(145deg, rgba(83, 252, 24, 0.18) 0%, rgba(16, 185, 129, 0.09) 48%, transparent 100%);
+  --tile-twitch-bg: linear-gradient(145deg, rgba(168, 85, 247, 0.20) 0%, rgba(21, 26, 48, 0.96) 72%);
+  --tile-accent-bg: linear-gradient(145deg, rgba(56, 189, 248, 0.18) 0%, rgba(21, 26, 48, 0.96) 72%);
+  --tile-success-bg: linear-gradient(145deg, rgba(52, 211, 153, 0.18) 0%, rgba(21, 26, 48, 0.96) 72%);
+  --tile-kick-bg: linear-gradient(145deg, rgba(83, 252, 24, 0.16) 0%, rgba(21, 26, 48, 0.96) 72%);
+  --bg-mesh:
+    radial-gradient(680px circle at 6% -6%, rgba(157, 78, 255, 0.24), transparent 58%),
+    radial-gradient(540px circle at 52% -10%, rgba(34, 211, 238, 0.13), transparent 55%),
+    radial-gradient(620px circle at 96% 2%, rgba(83, 252, 24, 0.13), transparent 56%),
+    radial-gradient(520px circle at 76% 96%, rgba(236, 72, 153, 0.10), transparent 55%);
+
+  --twitch: #a855f7;
+  --twitch-text: #d8b4fe;
+  --twitch-tint: rgba(168, 85, 247, 0.19);
+  --twitch-on: #ffffff;
+
+  --kick: #53fc18;
+  --kick-text: #72ff47;
+  --kick-tint: rgba(83, 252, 24, 0.15);
+  --kick-on: #07120a;
+
+  /* Semantic colors */
+  --success: #34d399;
+  --success-text: #6ee7b7;
+  --success-tint: rgba(52, 211, 153, 0.16);
+
+  --warning: #fbbf24;
+  --warning-text: #fcd34d;
+  --warning-tint: rgba(251, 191, 36, 0.16);
+
+  --error: #f87171;
+  --error-text: #fca5a5;
+  --error-tint: rgba(248, 113, 113, 0.16);
+
+  --info: #38bdf8;
+  --info-text: #7dd3fc;
+  --info-tint: rgba(56, 189, 248, 0.16);
+
+  --neutral-dot: #6f7aa3;
+  --neutral-text: #a3add0;
+  --neutral-tint: rgba(163, 173, 208, 0.13);
+
+  /* Typography */
+  --font-sans: "Segoe UI Variable Text", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, monospace;
+
+  --text-xs: 12px;
+  --text-sm: 13px;
+  --text-base: 14px;
+  --text-md: 16px;
+  --text-lg: 20px;
+  --text-xl: 28px;
+
+  /* Spacing (4px grid) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-6: 24px;
+  --space-8: 32px;
+
+  /* Radii */
+  --radius-sm: 8px;
+  --radius-md: 12px;
+  --radius-lg: 16px;
+  --radius-pill: 999px;
+
+  /* Motion */
+  --ease-out: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --duration-fast: 150ms;
+  --duration-base: 180ms;
+
+  /* Layout */
+  --sidebar-width: 222px;
+  --sidebar-collapsed: 64px;
+  --content-max: 1360px;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+
+  --bg: #f1f4fc;
+  --sidebar-bg: #ffffff;
+  --surface: #ffffff;
+  --surface-2: #eaeff9;
+  --surface-hover: #dfe7f6;
+  --border: rgba(30, 41, 82, 0.11);
+  --border-hover: rgba(99, 102, 241, 0.30);
+  --text: #111629;
+  --text-muted: #46506e;
+  --text-faint: #64708f;
+  --card-shadow:
+    0 4px 18px rgba(30, 41, 82, 0.06),
+    inset 0 1px 0 rgba(255, 255, 255, 0.8);
+  --backdrop: rgba(15, 23, 42, 0.45);
+  --shimmer-a: #eaeff9;
+  --shimmer-b: #dde5f4;
+
+  --accent: #5b6cf3;
+  --accent-hover: #6d7df5;
+  --accent-text: #3d4dcb;
+  --accent-tint: rgba(91, 108, 243, 0.13);
+
+  --cyan: #0284c7;
+  --cyan-text: #0369a1;
+  --cyan-tint: rgba(2, 132, 199, 0.12);
+
+  --pink: #db2777;
+  --pink-text: #be185d;
+  --pink-tint: rgba(219, 39, 119, 0.12);
+
+  --grad-accent: linear-gradient(135deg, #5b6cf3 0%, #8b5cf6 54%, #ec4899 100%);
+  --grad-accent-hover: linear-gradient(135deg, #6979f5 0%, #986cf8 54%, #f05ca5 100%);
+  --wash-twitch: linear-gradient(145deg, rgba(139, 92, 246, 0.13) 0%, rgba(236, 72, 153, 0.05) 55%, transparent 100%);
+  --wash-kick: linear-gradient(145deg, rgba(16, 185, 129, 0.13) 0%, rgba(34, 197, 94, 0.06) 55%, transparent 100%);
+  --tile-twitch-bg: linear-gradient(145deg, rgba(139, 92, 246, 0.12) 0%, #ffffff 74%);
+  --tile-accent-bg: linear-gradient(145deg, rgba(2, 132, 199, 0.11) 0%, #ffffff 74%);
+  --tile-success-bg: linear-gradient(145deg, rgba(16, 185, 129, 0.12) 0%, #ffffff 74%);
+  --tile-kick-bg: linear-gradient(145deg, rgba(34, 197, 94, 0.12) 0%, #ffffff 74%);
+  --bg-mesh:
+    radial-gradient(660px circle at 8% -8%, rgba(139, 92, 246, 0.12), transparent 58%),
+    radial-gradient(520px circle at 52% -8%, rgba(14, 165, 233, 0.09), transparent 55%),
+    radial-gradient(600px circle at 94% 0%, rgba(34, 197, 94, 0.10), transparent 56%);
+
+  --twitch-text: #6a22db;
+  --twitch-tint: rgba(106, 34, 219, 0.12);
+  --kick-text: #126b1f;
+  --kick-tint: rgba(22, 163, 74, 0.13);
+
+  --success-text: #0f6f42;
+  --warning-text: #8a5200;
+  --error-text: #b82323;
+  --info-text: #0f5aa3;
+  --neutral-text: #46506e;
+}
