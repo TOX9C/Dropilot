@@ -398,22 +398,39 @@
           <p class="empty-note">Queue is empty. Pick campaigns from All Drops or Twitch/Kick to queue rewards here.</p>
         {:else}
           <div class="list-stack">
-            {#each upNext as item (item.campaign.id + item.drop.id)}
+            {#each upNext as item (item.campaign.id)}
               <div class="mini-row">
-                <Monogram src={item.drop.rewards[0]?.imageUrl} name={item.campaign.game.name} width={30} height={30} />
+                <Monogram
+                  src={item.drop.rewards[0]?.imageUrl ?? item.campaign.game.boxArtUrl}
+                  name={item.campaign.game.name}
+                  width={30}
+                  height={30}
+                />
                 <div class="mini-mid">
                   <div class="mini-top">
-                    <span class="mini-title">{item.drop.name}</span>
-                    <Badge tone={item.platform}>{item.campaign.game.name}</Badge>
+                    <span class="mini-title">{item.campaign.name}</span>
+                    <div class="mini-badges">
+                      {#if item.totalDrops > 0}
+                        <Badge tone="neutral">
+                          {item.claimedDrops > 0
+                            ? `${item.claimedDrops}/${item.totalDrops} drops`
+                            : `${item.totalDrops} ${item.totalDrops === 1 ? 'drop' : 'drops'}`}
+                        </Badge>
+                      {/if}
+                      <Badge tone={item.platform}>{item.campaign.game.name}</Badge>
+                    </div>
                   </div>
                   <div class="mini-sub tabular">
-                    <span>{formatMinutes(item.drop.currentMinutes)} / {formatMinutes(item.drop.requiredMinutes)}</span>
+                    <span>{formatMinutes(item.currentMinutes)} / {formatMinutes(item.requiredMinutes)}</span>
+                    {#if item.totalDrops > 1}
+                      <span class="mini-next-hint">· Next: {item.drop.rewards[0]?.name || item.drop.name}</span>
+                    {/if}
                   </div>
                   <ProgressBar
-                    value={item.drop.currentMinutes}
-                    max={item.drop.requiredMinutes}
+                    value={item.currentMinutes}
+                    max={item.requiredMinutes}
                     platform={item.platform}
-                    label={item.drop.name}
+                    label={item.campaign.name}
                   />
                 </div>
               </div>
@@ -826,14 +843,31 @@
     gap: var(--space-2);
   }
 
+  .mini-badges {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
   .mini-title {
     font-size: var(--text-sm);
     font-weight: 600;
   }
 
   .mini-sub {
+    display: flex;
+    align-items: center;
+    gap: 5px;
     font-size: var(--text-xs);
     color: var(--text-muted);
+  }
+
+  .mini-next-hint {
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .claim-ts {

@@ -163,6 +163,11 @@ export interface UpNextItem {
   campaign: Campaign;
   drop: Drop;
   priorityRank: number;
+  totalDrops: number;
+  claimedDrops: number;
+  remainingDrops: number;
+  currentMinutes: number;
+  requiredMinutes: number;
 }
 
 export interface EndingSoonItem {
@@ -283,10 +288,12 @@ export function computeUpNextQueue(
       .sort((a, b) => a.rank - b.rank || new Date(a.camp.endsAt).getTime() - new Date(b.camp.endsAt).getTime());
 
     for (const item of scored) {
+      // Skip the campaign currently being farmed on this platform; it is already shown in Now Farming.
+      if (platSnap.currentCampaignId === item.camp.id && platSnap.watching) {
+        continue;
+      }
+
       if (item.camp.drops.length === 0) {
-        if (platSnap.currentCampaignId === item.camp.id && platSnap.watching) {
-          continue;
-        }
         out.push({
           platform: plat,
           campaign: item.camp,
@@ -302,25 +309,47 @@ export function computeUpNextQueue(
             needsManualClaim: false,
           },
           priorityRank: item.rank,
+          totalDrops: 0,
+          claimedDrops: 0,
+          remainingDrops: 0,
+          currentMinutes: 0,
+          requiredMinutes: 60,
         });
         if (out.length >= limit * 2) break;
         continue;
       }
 
-      for (const drop of item.camp.drops) {
-        if (drop.claimed || drop.needsManualClaim) continue;
-        // Skip the exact drop currently being mined so "Up next" shows upcoming items
-        if (platSnap.currentCampaignId === item.camp.id && platSnap.currentDropId === drop.id) {
-          continue;
-        }
-        out.push({
-          platform: plat,
-          campaign: item.camp,
-          drop,
-          priorityRank: item.rank,
-        });
-        if (out.length >= limit * 2) break;
-      }
+      const sortedDrops = [...item.camp.drops].sort(
+        (a, b) => a.requiredMinutes - b.requiredMinutes,
+      );
+      const remaining = sortedDrops.filter((d) => !d.claimed && !d.needsManualClaim);
+      const nextDrop = remaining[0];
+      if (!nextDrop) continue;
+
+      const totalDrops = sortedDrops.length;
+      const claimedDrops = sortedDrops.filter((d) => d.claimed).length;
+      const requiredMinutes = Math.max(
+        1,
+        ...sortedDrops.map((d) => Math.max(1, d.requiredMinutes)),
+      );
+      const maxRemainingMins = Math.max(
+        0,
+        ...remaining.map((d) => Math.max(0, d.requiredMinutes - d.currentMinutes)),
+      );
+      const currentMinutes = Math.max(0, requiredMinutes - maxRemainingMins);
+
+      out.push({
+        platform: plat,
+        campaign: item.camp,
+        drop: nextDrop,
+        priorityRank: item.rank,
+        totalDrops,
+        claimedDrops,
+        remainingDrops: remaining.length,
+        currentMinutes,
+        requiredMinutes,
+      });
+      if (out.length >= limit * 2) break;
     }
   }
 
