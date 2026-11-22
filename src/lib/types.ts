@@ -250,6 +250,15 @@ export interface UpdateStatus {
   latestVersion: string;
   releaseUrl: string;
   publishedAt: string | null;
+  notes: string | null;
+  signedUpdateReady: boolean;
+}
+
+export interface UpdateProgressEvent {
+  stage: 'downloading' | 'installing' | 'restarting' | 'error';
+  downloadedBytes: number;
+  totalBytes: number | null;
+  percent: number | null;
 }
 
 export type NavRoute =

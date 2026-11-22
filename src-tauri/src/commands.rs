@@ -21,7 +21,7 @@ use crate::remote_config::RemoteConfigStatus;
 use crate::secrets::SecretStore;
 use crate::settings::{appdata_dir, PriorityItem, Settings, CURRENT_DISCLAIMER_VERSION};
 use crate::state::{AppState, MinerControl};
-use crate::update_check::{check_for_updates, UpdateStatus};
+use crate::update_check::{check_signed_update, install_signed_update, UpdateStatus};
 use crate::webhooks::{WebhookChannel, WebhookDispatcher, WebhookSecretsStatus};
 use crate::windows::apply_window_theme;
 
@@ -564,10 +564,21 @@ pub async fn open_data_folder() -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn check_update(state: State<'_, Arc<AppState>>) -> Result<UpdateStatus, String> {
-    check_for_updates(&state.http)
+pub async fn check_update(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<UpdateStatus, String> {
+    check_signed_update(&app, &state.http)
         .await
         .map_err(|e| e.user_message())
+}
+
+#[tauri::command]
+pub async fn install_update(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    install_signed_update(&app, state.inner()).await
 }
 
 #[tauri::command]

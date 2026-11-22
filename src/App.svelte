@@ -5,6 +5,7 @@
   import Sidebar from './components/Sidebar.svelte';
   import Skeleton from './components/Skeleton.svelte';
   import Toast from './components/Toast.svelte';
+  import UpdateBanner from './components/UpdateBanner.svelte';
   import Button from './components/Button.svelte';
   import { api } from './lib/api';
   import {
@@ -211,6 +212,7 @@
   {/snippet}
 </Modal>
 
+<UpdateBanner />
 <Toast />
 
 <style>

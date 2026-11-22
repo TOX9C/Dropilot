@@ -12,6 +12,8 @@ import type {
   RemoteConfigStatus,
   Settings,
   ToastItem,
+  UpdateProgressEvent,
+  UpdateStatus,
 } from './types';
 
 function readStorage(key: string, legacyKey: string): string | null {
@@ -78,6 +80,11 @@ export const appSnapshot = writable<AppSnapshot | null>(null);
 export const appSettings = writable<Settings | null>(null);
 export const appLogs = writable<LogEntry[]>([]);
 export const remoteConfigStatus = writable<RemoteConfigStatus | null>(null);
+export const updateInfo = writable<UpdateStatus | null>(null);
+export const updateProgress = writable<UpdateProgressEvent | null>(null);
+export const updateBannerDismissed = writable<boolean>(false);
+export const checkingForUpdate = writable<boolean>(false);
+export const installingUpdate = writable<boolean>(false);
 export const mockFeatureAvailable = writable<boolean>(false);
 export const lastSnapshotAt = writable<number>(Date.now());
 export const sessionMinutes = writable<number>(0);
@@ -148,6 +155,44 @@ export function dismissToast(id: number): void {
 export function clearLogsView(): void {
   appLogs.set([]);
   unreadAlertCount.set(0);
+}
+
+export async function checkForAppUpdate(silent = false): Promise<UpdateStatus | null> {
+  checkingForUpdate.set(true);
+  try {
+    const status = await api.checkUpdate();
+    updateInfo.set(status);
+    if (status.available) {
+      updateBannerDismissed.set(false);
+    } else if (!silent) {
+      notifyUi(`Dropilot v${status.currentVersion} is up to date`);
+    }
+    return status;
+  } catch (err) {
+    if (!silent) {
+      notifyUi(String(err), 'error');
+    }
+    return null;
+  } finally {
+    checkingForUpdate.set(false);
+  }
+}
+
+export async function installAppUpdate(): Promise<void> {
+  installingUpdate.set(true);
+  updateProgress.set({
+    stage: 'downloading',
+    downloadedBytes: 0,
+    totalBytes: null,
+    percent: null,
+  });
+  try {
+    await api.installUpdate();
+  } catch (err) {
+    installingUpdate.set(false);
+    updateProgress.set(null);
+    notifyUi(String(err), 'error');
+  }
 }
 
 export async function toggleCampaignFarmAction(
@@ -296,7 +341,17 @@ export async function initializeAppStores(): Promise<() => void> {
         unreadAlertCount.update((c) => c + 1);
       }
     },
+    (progress) => {
+      updateProgress.set(progress);
+      if (progress.stage === 'error') {
+        installingUpdate.set(false);
+      }
+    },
   );
+
+  if (settings.updateCheck) {
+    void checkForAppUpdate(true);
+  }
 
   return unlisten;
 }

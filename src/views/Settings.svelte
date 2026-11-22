@@ -26,13 +26,22 @@
   import Toggle from '../components/Toggle.svelte';
   import { api } from '../lib/api';
   import { formatExactDateTime } from '../lib/format';
-  import { accentPreset, appSettings, notifyUi, remoteConfigStatus } from '../lib/stores';
+  import {
+    accentPreset,
+    appSettings,
+    checkForAppUpdate,
+    checkingForUpdate,
+    installAppUpdate,
+    installingUpdate,
+    notifyUi,
+    remoteConfigStatus,
+    updateInfo,
+  } from '../lib/stores';
   import type {
     AccentPreset,
     AppSnapshot,
     Settings,
     ThemeMode,
-    UpdateStatus,
     WebhookSecretsStatus,
   } from '../lib/types';
 
@@ -47,8 +56,6 @@
   type SettingsTab = 'appearance' | 'farming' | 'system' | 'data';
 
   let activeTab = $state<SettingsTab>('appearance');
-  let updateStatus = $state<UpdateStatus | null>(null);
-  let checkingUpdate = $state(false);
   let syncingRemote = $state(false);
   let clearModalOpen = $state(false);
 
@@ -195,15 +202,8 @@
     void savePatch((d) => (d.refreshMinutes = next));
   }
 
-  async function handleCheckUpdates() {
-    checkingUpdate = true;
-    try {
-      updateStatus = await api.checkUpdate();
-    } catch (err) {
-      notifyUi(String(err), 'error');
-    } finally {
-      checkingUpdate = false;
-    }
+  function handleCheckUpdates() {
+    void checkForAppUpdate(false);
   }
 
   async function handleClearData() {
@@ -912,23 +912,34 @@
           <div class="pref-top">
             <div class="pref-ico ico-info"><RefreshCw size={16} /></div>
             <div class="inline-actions">
-              {#if updateStatus?.available}
-                <Button variant="primary" size="sm" onclick={() => api.openUrl(updateStatus!.releaseUrl)}>
-                  v{updateStatus.latestVersion} ↗
-                </Button>
+              {#if $updateInfo?.available}
+                {#if $updateInfo.signedUpdateReady}
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={$installingUpdate}
+                    onclick={() => void installAppUpdate()}
+                  >
+                    {$installingUpdate ? 'Updating...' : `Install v${$updateInfo.latestVersion}`}
+                  </Button>
+                {:else}
+                  <Button variant="primary" size="sm" onclick={() => api.openUrl($updateInfo!.releaseUrl)}>
+                    v{$updateInfo.latestVersion} ↗
+                  </Button>
+                {/if}
               {/if}
-              <Button variant="secondary" size="sm" disabled={checkingUpdate} onclick={handleCheckUpdates}>
-                {checkingUpdate ? 'Checking...' : 'Check'}
+              <Button variant="secondary" size="sm" disabled={$checkingForUpdate} onclick={handleCheckUpdates}>
+                {$checkingForUpdate ? 'Checking...' : 'Check'}
               </Button>
               <Toggle
                 checked={settings.updateCheck}
-                ariaLabel="Check for updates on GitHub"
+                ariaLabel="Check for signed updates on startup"
                 onchange={(v) => savePatch((d) => (d.updateCheck = v))}
               />
             </div>
           </div>
-          <h3>GitHub update checks</h3>
-          <p>Optional check against GitHub Releases. Only opens the release page — never auto-downloads binaries.</p>
+          <h3>Signed auto-updater</h3>
+          <p>Checks cryptographically verified releases on startup and lets you install with one click.</p>
         </div>
 
         <div class="card pref-card pref-wide">

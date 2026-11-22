@@ -90,6 +90,7 @@ pub fn run() {
         ))
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state.clone())
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
@@ -115,6 +116,7 @@ pub fn run() {
             commands::open_log_folder,
             commands::open_data_folder,
             commands::check_update,
+            commands::install_update,
             commands::is_mock_available,
             commands::report_user_agent,
             commands::hide_to_tray,
