@@ -329,6 +329,8 @@ pub fn parse_progress(v: &Value) -> Result<Vec<DropProgress>, AppError> {
                 claimed,
                 linked,
                 drop: None,
+                campaign_name: None,
+                game_name: None,
             });
         }
     }
@@ -954,6 +956,8 @@ pub fn parse_gamification_progress(v: &Value, now: DateTime<Utc>) -> Vec<DropPro
         .into_iter()
         .flat_map(|camp| {
             let camp_id = camp.id;
+            let camp_name = camp.name;
+            let game_name = camp.game.name;
             camp.drops.into_iter().map(move |d| DropProgress {
                 campaign_id: camp_id.clone(),
                 drop_id: d.id.clone(),
@@ -964,6 +968,8 @@ pub fn parse_gamification_progress(v: &Value, now: DateTime<Utc>) -> Vec<DropPro
                 claimed: d.claimed,
                 linked: Some(true),
                 drop: Some(d),
+                campaign_name: Some(camp_name.clone()),
+                game_name: Some(game_name.clone()),
             })
         })
         .collect()

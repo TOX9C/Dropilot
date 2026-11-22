@@ -130,6 +130,10 @@ pub struct DropProgress {
     pub linked: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub drop: Option<Drop>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub campaign_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_name: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

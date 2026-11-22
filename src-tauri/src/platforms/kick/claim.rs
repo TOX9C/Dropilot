@@ -39,7 +39,7 @@ pub async fn claim_drop(
                 url: &claim_url,
                 json_body: Some(&empty),
                 not_found_is_resource: true,
-                allow_bridge: false,
+                allow_bridge: true,
             },
         )
         .await;
@@ -51,9 +51,10 @@ pub async fn claim_drop(
                     Ok(())
                 }
             }
-            Err(_) => Err(AppError::Blocked(
-                "Open Kick Rewards to open your Sunset Reward Case".to_string(),
-            )),
+            Err(_) => Err(AppError::Blocked(format!(
+                "Open Kick Rewards to open your {}",
+                campaign.name
+            ))),
         };
     }
 

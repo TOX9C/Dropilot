@@ -13,6 +13,7 @@ use tokio::sync::Mutex;
 
 use crate::auth::login_window::{
     close_compat_watch_window, close_twitch_bridge_window, twitch_bridge_capture,
+    twitch_bridge_claim_drop,
 };
 use crate::miner::selector::game_names_match;
 use crate::net::client::AllowlistedClient;
@@ -357,6 +358,16 @@ impl Platform for TwitchPlatform {
             .lock()
             .ok()
             .and_then(|g| g.clone());
+        let last_bridge = self
+            .last_inventory_bridge_at
+            .lock()
+            .ok()
+            .and_then(|g| *g);
+        let bridge_due = match last_bridge {
+            None => true,
+            Some(at) => watched.is_some() && at.elapsed() >= TWITCH_INVENTORY_BRIDGE_COOLDOWN,
+        };
+
         let mut completed_needs_claim = false;
         if let Some((ref ch_id, ref ch_login)) = watched {
             if let Ok(sess_val) = execute_persisted_gql(
@@ -371,10 +382,10 @@ impl Platform for TwitchPlatform {
             .await
             {
                 if let Some((prog, completed)) = parse_drop_current_session_progress(&sess_val) {
-                    if !completed {
+                    if !completed && !bridge_due {
                         return Ok(vec![prog]);
                     }
-                    completed_needs_claim = true;
+                    completed_needs_claim = completed;
                 }
             }
         }
@@ -387,17 +398,7 @@ impl Platform for TwitchPlatform {
             return Ok(Vec::new());
         };
 
-        let last_bridge = self
-            .last_inventory_bridge_at
-            .lock()
-            .ok()
-            .and_then(|g| *g);
-
-        let should_run_bridge = match last_bridge {
-            None => true,
-            Some(_) if completed_needs_claim => true,
-            Some(at) => watched.is_some() && at.elapsed() >= TWITCH_INVENTORY_BRIDGE_COOLDOWN,
-        };
+        let should_run_bridge = bridge_due || completed_needs_claim;
 
         if !should_run_bridge {
             return Ok(Vec::new());
@@ -756,8 +757,30 @@ impl Platform for TwitchPlatform {
         }
     }
 
-    async fn claim(&self, token: &str, _campaign: &Campaign, drop: &Drop) -> Result<(), AppError> {
-        claim::claim_drop(&self.http, token, drop).await
+    async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<(), AppError> {
+        match claim::claim_drop(&self.http, token, drop).await {
+            Ok(()) => Ok(()),
+            Err(AppError::Blocked(_)) | Err(AppError::NotFound(_)) if self.app.is_some() => {
+                let _guard = self.bridge_lock.lock().await;
+                let app_handle = self
+                    .app
+                    .as_ref()
+                    .ok_or_else(|| AppError::Internal("Missing app handle".to_string()))?;
+                let reward_names: Vec<String> =
+                    drop.rewards.iter().map(|r| r.name.clone()).collect();
+                twitch_bridge_claim_drop(
+                    app_handle,
+                    &campaign.name,
+                    &campaign.game.name,
+                    &drop.id,
+                    &drop.name,
+                    &reward_names,
+                    drop.instance_id.as_deref(),
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        }
     }
 
     async fn logout(&self, _token: Option<&str>) -> Result<(), AppError> {

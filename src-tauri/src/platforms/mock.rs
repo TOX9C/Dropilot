@@ -422,6 +422,8 @@ impl Platform for MockPlatform {
                     claimed: d.claimed,
                     linked: Some(c.linked),
                     drop: None,
+                    campaign_name: Some(c.name.clone()),
+                    game_name: Some(c.game.name.clone()),
                 });
             }
         }

@@ -132,6 +132,10 @@ pub async fn kick_request_json(
                 )));
             }
 
+            if bridged.body.trim().is_empty() {
+                return Ok(serde_json::json!({}));
+            }
+
             return serde_json::from_str(&bridged.body).map_err(|e| {
                 AppError::PlatformChanged(format!("Unexpected JSON from Kick bridge ({op_name}): {e}"))
             });
@@ -161,6 +165,10 @@ pub async fn kick_request_json(
             "Kick {op_name} returned HTTP {}",
             resp.status.as_u16()
         )));
+    }
+
+    if resp.body.trim().is_empty() {
+        return Ok(serde_json::json!({}));
     }
 
     serde_json::from_str(&resp.body).map_err(|e| {

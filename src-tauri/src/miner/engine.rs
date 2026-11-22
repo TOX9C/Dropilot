@@ -25,8 +25,8 @@ use crate::platforms::kick::models::is_kick_fallback_case_id;
 use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::{GAME_LINKED_ID_PREFIX, GAME_LINKED_NAME_PREFIX};
 use crate::platforms::{
-    Account, AppError, Campaign, Channel, Drop, DropProgress, MinerState, Platform, PlatformId,
-    PlatformSnapshot, RecentClaim, WatchTickResult,
+    Account, AppError, Campaign, CampaignStatus, Channel, Drop, DropProgress, MinerState, Platform,
+    PlatformId, PlatformSnapshot, RecentClaim, WatchTickResult,
 };
 use crate::secrets::SecretStore;
 use crate::state::{AppState, MinerControl};
@@ -113,6 +113,7 @@ struct RuntimeContext {
     next_action_at: Option<DateTime<Utc>>,
     last_campaign_fetch: Option<Instant>,
     last_progress_fetch: Option<Instant>,
+    last_completion_bridge_reset: Option<Instant>,
     last_live_check: Option<Instant>,
     last_watch_tick: Option<Instant>,
     last_progress_advance: DateTime<Utc>,
@@ -144,6 +145,7 @@ impl RuntimeContext {
             next_action_at: None,
             last_campaign_fetch: None,
             last_progress_fetch: None,
+            last_completion_bridge_reset: None,
             last_live_check: None,
             last_watch_tick: None,
             last_progress_advance: Utc::now(),
@@ -175,6 +177,7 @@ impl RuntimeContext {
         self.avoid_channels_until.clear();
         self.last_campaign_fetch = None;
         self.last_progress_fetch = None;
+        self.last_completion_bridge_reset = None;
         self.last_live_check = None;
         self.last_watch_tick = None;
         self.retry_not_before = None;
@@ -189,6 +192,7 @@ impl RuntimeContext {
     }
 
     fn to_snapshot(&self, platform: PlatformId, pinned_channel: Option<String>) -> PlatformSnapshot {
+        let now = Utc::now();
         PlatformSnapshot {
             platform,
             state: self.state,
@@ -201,7 +205,12 @@ impl RuntimeContext {
             progress_synced_at: self.progress_synced_at,
             next_action_at: self.next_action_at,
             last_error: self.last_error.clone(),
-            campaigns: self.campaigns.clone(),
+            campaigns: self
+                .campaigns
+                .iter()
+                .filter(|c| c.status != CampaignStatus::Expired && c.ends_at > now)
+                .cloned()
+                .collect(),
             candidate_channels: self
                 .candidates
                 .iter()
@@ -428,6 +437,11 @@ async fn handle_control(
         MinerControl::SettingsUpdated => {
             ctx.no_live_channels_until.clear();
             ctx.last_voluntary_switch = None;
+            for camp in &mut ctx.campaigns {
+                for drop in &mut camp.drops {
+                    drop.needs_manual_claim = false;
+                }
+            }
             let is_mock = state.mock_active.load(Ordering::Relaxed);
             if is_mock && ctx.token.as_deref() != Some("mock-session") {
                 ctx.reset_session("Switching to mock mode");
@@ -443,8 +457,14 @@ async fn handle_control(
         MinerControl::RefreshNow => {
             ctx.last_campaign_fetch = None;
             ctx.last_progress_fetch = None;
+            ctx.last_completion_bridge_reset = None;
             ctx.no_live_channels_until.clear();
             ctx.avoid_channels_until.clear();
+            for camp in &mut ctx.campaigns {
+                for drop in &mut camp.drops {
+                    drop.needs_manual_claim = false;
+                }
+            }
             backend.active(state).reset_progress_sync_cooldown();
             if ctx.token.is_some() && !ctx.paused {
                 step_miner(platform_id, app, state, backend, ctx).await;
@@ -629,6 +649,23 @@ async fn step_miner(
                 handle_platform_error(platform_id, app, state, ctx, err).await;
                 return;
             }
+        }
+    }
+
+    // Prune any campaigns whose end time has passed so ended drops disappear immediately
+    // and never trigger stale manual-claim banners.
+    let now = Utc::now();
+    ctx.campaigns
+        .retain(|c| c.status != CampaignStatus::Expired && c.ends_at > now);
+    if let Some(ref cur_id) = ctx.current_campaign_id {
+        if !ctx.campaigns.iter().any(|c| &c.id == cur_id) {
+            plat.stop_watching().await;
+            close_compat_watch_window(app, platform_id);
+            ctx.watching = None;
+            ctx.watching_since = None;
+            ctx.current_campaign_id = None;
+            ctx.current_drop_id = None;
+            ctx.candidates.clear();
         }
     }
 
@@ -1018,9 +1055,16 @@ async fn step_miner(
                         }
                     }
 
-                    // If a drop is right at completion threshold, fetch progress right away on next cycle.
+                    // If a drop is right at completion threshold, fetch progress right away on next cycle
+                    // (throttled to at most once every 2 minutes so unlinked drops never spam the bridge).
                     if let Some(drop) = active_drop_for(&active_camp) {
-                        if drop.current_minutes + 1 >= drop.required_minutes {
+                        if drop.current_minutes + 1 >= drop.required_minutes
+                            && ctx
+                                .last_completion_bridge_reset
+                                .map(|t| t.elapsed() >= Duration::from_secs(120))
+                                .unwrap_or(true)
+                        {
+                            ctx.last_completion_bridge_reset = Some(Instant::now());
                             plat.reset_progress_sync_cooldown();
                             ctx.last_progress_fetch = None;
                         }
@@ -1077,11 +1121,18 @@ async fn claim_ready_drops(
         let Some(camp_clone) = ctx.campaigns.iter().find(|c| c.id == camp_id).cloned() else {
             continue;
         };
+        let display_drop_name = drop
+            .rewards
+            .first()
+            .map(|r| r.name.trim())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(&drop.name)
+            .to_string();
         match plat.claim(token, &camp_clone, &drop).await {
             Ok(()) => {
                 info!(
                     platform = platform_id.as_str(),
-                    drop = %drop.name,
+                    drop = %display_drop_name,
                     game = %game_name,
                     "Claimed drop"
                 );
@@ -1099,7 +1150,7 @@ async fn claim_ready_drops(
                         platform: platform_id,
                         game_name: game_name.clone(),
                         campaign_name: camp_name,
-                        drop_name: drop.name.clone(),
+                        drop_name: display_drop_name.clone(),
                         reward_image_url: reward_img,
                         claimed_at: Utc::now(),
                     })
@@ -1109,14 +1160,14 @@ async fn claim_ready_drops(
                     send_toast(
                         app,
                         &format!("{} Drop Claimed", platform_id.display_name()),
-                        &format!("{} ({})", drop.name, game_name),
+                        &format!("{} ({})", display_drop_name, game_name),
                     );
                 }
             }
             Err(AppError::Blocked(msg)) => {
                 warn!(
                     platform = platform_id.as_str(),
-                    drop = %drop.name,
+                    drop = %display_drop_name,
                     reason = %msg,
                     "Claim needs manual action in official window"
                 );
@@ -1130,7 +1181,7 @@ async fn claim_ready_drops(
                     "Claim needs you",
                     &format!(
                         "{} requires manual claim on {}'s drops page",
-                        drop.name,
+                        display_drop_name,
                         platform_id.display_name()
                     ),
                 );
@@ -1138,13 +1189,14 @@ async fn claim_ready_drops(
             Err(err) => {
                 warn!(
                     platform = platform_id.as_str(),
-                    drop = %drop.name,
+                    drop = %display_drop_name,
                     error = %err,
                     "Claim attempt failed"
                 );
             }
         }
     }
+    sync_snapshot(app, state, platform_id, ctx, true).await;
 }
 
 async fn handle_platform_error(
@@ -1361,6 +1413,7 @@ fn apply_progress(campaigns: &mut [Campaign], progress_list: &[DropProgress]) {
                 if p.claimed {
                     drop.claimed = true;
                     drop.claimable = false;
+                    drop.needs_manual_claim = false;
                 } else if p.claimable
                     || (p.progress_bps.is_some()
                         && drop.required_minutes > 0
@@ -1530,5 +1583,81 @@ mod tests {
         assert!(camps[1].linked, "same game (Overwatch) should inherit Connected");
         assert!(camps[2].linked, "same publisher host (account.battle.net) should inherit Connected");
         assert!(!camps[3].linked, "unrelated game (Rust) should remain Not connected");
+    }
+
+    #[test]
+    fn ignores_ended_inventory_drops_and_clears_manual_claim_flag_when_claimed() {
+        let now = Utc::now();
+        let drop = Drop {
+            id: "drop-1".to_string(),
+            instance_id: Some("inst-1".to_string()),
+            name: "Drop 1".to_string(),
+            rewards: vec![crate::platforms::Reward {
+                name: "Common".to_string(),
+                image_url: None,
+            }],
+            required_minutes: 60,
+            current_minutes: 60,
+            claimable: true,
+            claimed: false,
+            needs_manual_claim: true,
+        };
+        let mut campaigns = vec![Campaign {
+            id: "active-camp".to_string(),
+            platform: PlatformId::Twitch,
+            game: crate::platforms::Game {
+                id: "491931".to_string(),
+                name: "Escape from Tarkov".to_string(),
+                slug: None,
+                box_art_url: None,
+            },
+            name: "Tarkov City day 7".to_string(),
+            starts_at: now - ChronoDuration::hours(1),
+            ends_at: now + ChronoDuration::hours(23),
+            status: CampaignStatus::Active,
+            requires_link: true,
+            linked: true,
+            link_verified: true,
+            link_url: None,
+            allowed_channels: None,
+            drops: vec![drop.clone()],
+        }];
+
+        // Ended campaign not in active list must NOT be re-injected into UI campaigns.
+        let ended_progress = vec![DropProgress {
+            campaign_id: "ended-camp".to_string(),
+            drop_id: "ended-drop".to_string(),
+            instance_id: Some("inst-ended".to_string()),
+            current_minutes: 60,
+            progress_bps: None,
+            claimable: true,
+            claimed: false,
+            linked: Some(true),
+            drop: Some(drop),
+            campaign_name: Some("Tarkov City day 6".to_string()),
+            game_name: Some("Escape from Tarkov".to_string()),
+        }];
+        apply_progress(&mut campaigns, &ended_progress);
+        assert_eq!(campaigns.len(), 1);
+        assert_eq!(campaigns[0].id, "active-camp");
+
+        // Claiming clears needs_manual_claim as well.
+        let claimed_progress = vec![DropProgress {
+            campaign_id: "active-camp".to_string(),
+            drop_id: "drop-1".to_string(),
+            instance_id: Some("inst-1".to_string()),
+            current_minutes: 60,
+            progress_bps: None,
+            claimable: false,
+            claimed: true,
+            linked: Some(true),
+            drop: None,
+            campaign_name: None,
+            game_name: None,
+        }];
+        apply_progress(&mut campaigns, &claimed_progress);
+        assert!(campaigns[0].drops[0].claimed);
+        assert!(!campaigns[0].drops[0].claimable);
+        assert!(!campaigns[0].drops[0].needs_manual_claim);
     }
 }

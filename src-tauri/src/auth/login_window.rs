@@ -1122,6 +1122,110 @@ pub(crate) fn inspect_twitch_campaign_details_payload(
     None
 }
 
+pub(crate) fn inspect_twitch_claim_payload(
+    raw_bytes: &[u8],
+    expected_drop_id: &str,
+    expected_instance_id: Option<&str>,
+) -> Option<TwitchGqlInspect> {
+    let parsed: serde_json::Value = serde_json::from_slice(raw_bytes).ok()?;
+    let items: &[serde_json::Value] = match parsed.as_array() {
+        Some(arr) => arr.as_slice(),
+        None => std::slice::from_ref(&parsed),
+    };
+
+    for item in items {
+        let op_name = item
+            .pointer("/extensions/operationName")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+
+        let is_claim_op = op_name == "DropsPage_ClaimDropRewards"
+            || item.pointer("/data/claimDropRewards").is_some();
+        if is_claim_op {
+            if let Some(errors) = item.get("errors").and_then(|e| e.as_array()) {
+                for err in errors {
+                    let msg = err
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or_default();
+                    let lower = msg.to_ascii_lowercase();
+                    if lower.contains("integrity") {
+                        return Some(TwitchGqlInspect::TransientIntegrity(msg.to_string()));
+                    }
+                    if lower.contains("unauthenticated") || lower.contains("unauthorized") {
+                        return Some(TwitchGqlInspect::Unauthenticated(msg.to_string()));
+                    }
+                }
+            }
+
+            if let Some(status) = item
+                .pointer("/data/claimDropRewards/status")
+                .and_then(|v| v.as_str())
+            {
+                if matches!(
+                    status,
+                    "ELIGIBLE_FOR_ALL" | "DROP_INSTANCE_ALREADY_CLAIMED" | "SUCCESS"
+                ) {
+                    return Some(TwitchGqlInspect::Data(item.clone()));
+                }
+                if status.to_ascii_lowercase().contains("integrity") {
+                    return Some(TwitchGqlInspect::TransientIntegrity(status.to_string()));
+                }
+            }
+        }
+
+        if op_name == "Inventory" {
+            if item
+                .pointer("/data/currentUser")
+                .map(|v| v.is_null())
+                .unwrap_or(false)
+            {
+                return Some(TwitchGqlInspect::Unauthenticated(
+                    "Twitch web session expired; please log in again".to_string(),
+                ));
+            }
+            if let Some(errors) = item.get("errors").and_then(|e| e.as_array()) {
+                for err in errors {
+                    let msg = err
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or_default();
+                    if msg.to_ascii_lowercase().contains("integrity") {
+                        return Some(TwitchGqlInspect::TransientIntegrity(msg.to_string()));
+                    }
+                }
+            }
+
+            if let Some(in_progress) = item
+                .pointer("/data/currentUser/inventory/dropCampaignsInProgress")
+                .and_then(|v| v.as_array())
+            {
+                for camp in in_progress {
+                    let Some(drops) = camp.get("timeBasedDrops").and_then(|v| v.as_array()) else {
+                        continue;
+                    };
+                    for d in drops {
+                        let id_match = !expected_drop_id.is_empty()
+                            && d.get("id").and_then(|v| v.as_str()) == Some(expected_drop_id);
+                        let inst_match = expected_instance_id.is_some()
+                            && d.pointer("/self/dropInstanceID").and_then(|v| v.as_str())
+                                == expected_instance_id;
+                        if (id_match || inst_match)
+                            && d.pointer("/self/isClaimed").and_then(|b| b.as_bool()) == Some(true)
+                        {
+                            return Some(TwitchGqlInspect::Data(serde_json::json!({
+                                "alreadyClaimed": true
+                            })));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(windows)]
 unsafe fn read_istream_to_vec(stream: &windows::Win32::System::Com::IStream) -> Vec<u8> {
     const MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -1273,6 +1377,158 @@ fn build_twitch_expand_campaign_script(
       }}
     }} catch (_) {{}}
   }}, 350);
+}})();
+"##
+    ))
+}
+
+fn build_twitch_claim_drop_script(
+    campaign_name: &str,
+    game_name: &str,
+    drop_name: &str,
+    reward_names: &[String],
+) -> Result<String, AppError> {
+    let camp_json = serde_json::to_string(campaign_name)
+        .map_err(|e| AppError::Internal(format!("Serialize campaign name failed: {e}")))?;
+    let game_json = serde_json::to_string(game_name)
+        .map_err(|e| AppError::Internal(format!("Serialize game name failed: {e}")))?;
+    let drop_json = serde_json::to_string(drop_name)
+        .map_err(|e| AppError::Internal(format!("Serialize drop name failed: {e}")))?;
+    let rewards_json = serde_json::to_string(reward_names)
+        .map_err(|e| AppError::Internal(format!("Serialize reward names failed: {e}")))?;
+
+    Ok(format!(
+        r##"
+(function () {{
+  if (window.location.hostname !== "www.twitch.tv") return;
+  if (window.__dpClaimStarted) return;
+  window.__dpClaimStarted = true;
+
+  function norm(str) {{
+    return (str || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }}
+
+  const targetCampaign = norm({camp_json});
+  const targetGame = norm({game_json});
+  const targetDrop = norm({drop_json});
+  const targetRewards = ({rewards_json}).map(norm).filter(Boolean);
+
+  function collectClaimButtons() {{
+    const seen = new Set();
+    const out = [];
+
+    function maybeAdd(btn) {{
+      if (!(btn instanceof HTMLElement)) return;
+      if (seen.has(btn)) return;
+      if (btn.hasAttribute("disabled") || btn.getAttribute("aria-disabled") === "true") return;
+      try {{
+        const style = window.getComputedStyle(btn);
+        if (style.display === "none" || style.visibility === "hidden") return;
+      }} catch (_) {{}}
+      seen.add(btn);
+      out.push(btn);
+    }}
+
+    const tagged = document.querySelectorAll(
+      'button[data-test-selector="DropsCampaignInProgressRewardPresentation-claim-button"], button[data-test-selector*="claim" i], [data-test-selector*="claim" i] button'
+    );
+    for (let i = 0; i < tagged.length; i++) {{
+      maybeAdd(tagged[i]);
+    }}
+
+    const buttons = document.querySelectorAll("button");
+    for (let i = 0; i < buttons.length; i++) {{
+      const txt = norm(buttons[i].textContent);
+      const aria = norm(buttons[i].getAttribute("aria-label"));
+      if (
+        txt === "claim now" ||
+        txt === "claim" ||
+        txt === "claim drop" ||
+        aria === "claim now" ||
+        aria === "claim" ||
+        aria === "claim drop"
+      ) {{
+        maybeAdd(buttons[i]);
+      }}
+    }}
+    return out;
+  }}
+
+  function scoreButton(btn) {{
+    let score = 0;
+    let cur = btn.parentElement;
+    for (let depth = 0; depth < 12 && cur && cur !== document.body; depth++) {{
+      if (cur.tagName === "MAIN") break;
+      const text = norm(cur.textContent);
+      if (depth < 6) {{
+        for (let r = 0; r < targetRewards.length; r++) {{
+          if (targetRewards[r] && text.includes(targetRewards[r])) {{
+            score = Math.max(score, 4);
+          }}
+        }}
+        if (targetDrop && text.includes(targetDrop)) {{
+          score = Math.max(score, 4);
+        }}
+      }}
+      if (targetCampaign && text.includes(targetCampaign)) {{
+        score += 2;
+        break;
+      }}
+      if (targetGame && text.includes(targetGame)) {{
+        score += 1;
+        break;
+      }}
+      cur = cur.parentElement;
+    }}
+    return score;
+  }}
+
+  let attempts = 0;
+  let clickCount = 0;
+  let lastClickAt = 0;
+  let readyAt = 0;
+  const timer = setInterval(function () {{
+    attempts += 1;
+    if (attempts > 45 || clickCount >= 5) {{
+      clearInterval(timer);
+      return;
+    }}
+    if (document.readyState === "loading") return;
+    const now = Date.now();
+    if (readyAt === 0) {{
+      readyAt = now;
+      return;
+    }}
+    if (now - readyAt < 1000) return;
+    if (lastClickAt > 0 && now - lastClickAt < 3000) return;
+
+    try {{
+      const buttons = collectClaimButtons();
+      if (buttons.length === 0) return;
+
+      let bestBtn = null;
+      let bestScore = -1;
+      for (let i = 0; i < buttons.length; i++) {{
+        const btn = buttons[i];
+        const prev = btn.__dpClaimClickedAt || 0;
+        if (prev > 0 && now - prev < 3500) continue;
+        const s = scoreButton(btn);
+        if (s > bestScore) {{
+          bestScore = s;
+          bestBtn = btn;
+        }}
+      }}
+
+      if (bestBtn) {{
+        bestBtn.__dpClaimClickedAt = now;
+        lastClickAt = now;
+        clickCount += 1;
+        bestBtn.scrollIntoView({{ block: "center" }});
+        bestBtn.focus();
+        bestBtn.click();
+      }}
+    }} catch (_) {{}}
+  }}, 400);
 }})();
 "##
     ))
@@ -1575,6 +1831,56 @@ pub async fn twitch_bridge_fetch_campaign_details(
     }
 }
 
+/// Opens `https://www.twitch.tv/drops/inventory` inside the temporary hidden WebView2 bridge,
+/// clicks the official "Claim Now" button so Twitch fires `DropsPage_ClaimDropRewards` natively
+/// with its own browser integrity handshake, and confirms the response before closing immediately.
+pub async fn twitch_bridge_claim_drop(
+    app: &AppHandle,
+    campaign_name: &str,
+    game_name: &str,
+    drop_id: &str,
+    drop_name: &str,
+    reward_names: &[String],
+    instance_id: Option<&str>,
+) -> Result<(), AppError> {
+    #[cfg(not(windows))]
+    {
+        let _ = (
+            app,
+            campaign_name,
+            game_name,
+            drop_id,
+            drop_name,
+            reward_names,
+            instance_id,
+        );
+        Err(AppError::Blocked(
+            "Twitch automatic claim requires Windows WebView2".to_string(),
+        ))
+    }
+
+    #[cfg(windows)]
+    {
+        let script =
+            build_twitch_claim_drop_script(campaign_name, game_name, drop_name, reward_names)?;
+        let drop_id_owned = drop_id.to_string();
+        let instance_id_owned = instance_id.map(str::to_string);
+        let inspector: TwitchPayloadInspector = Arc::new(move |bytes| {
+            inspect_twitch_claim_payload(bytes, &drop_id_owned, instance_id_owned.as_deref())
+        });
+        let _ = run_twitch_bridge(
+            app,
+            "https://www.twitch.tv/drops/inventory",
+            "claim-drop",
+            20,
+            Some(script),
+            inspector,
+        )
+        .await?;
+        Ok(())
+    }
+}
+
 fn handle_restricted_navigation(url: &Url, kind: AllowlistKind) -> bool {
     if validate_url(url, kind).is_ok() {
         return true;
@@ -1591,8 +1897,8 @@ fn handle_restricted_navigation(url: &Url, kind: AllowlistKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        inspect_twitch_campaign_details_payload, inspect_twitch_gql_payload,
-        parse_kick_bridge_message, KickBridgeMessage, TwitchGqlInspect,
+        inspect_twitch_campaign_details_payload, inspect_twitch_claim_payload,
+        inspect_twitch_gql_payload, parse_kick_bridge_message, KickBridgeMessage, TwitchGqlInspect,
     };
     use serde_json::json;
 
@@ -1762,6 +2068,72 @@ mod tests {
         assert!(matches!(
             inspect_twitch_gql_payload(null_dir.to_string().as_bytes(), "directory"),
             Some(TwitchGqlInspect::Data(_))
+        ));
+    }
+
+    #[test]
+    fn inspects_twitch_claim_responses_and_already_claimed_inventory() {
+        let claimed_ok = json!([
+            {
+                "extensions": { "operationName": "DropsPage_ClaimDropRewards" },
+                "data": { "claimDropRewards": { "status": "ELIGIBLE_FOR_ALL" } }
+            }
+        ]);
+        assert!(matches!(
+            inspect_twitch_claim_payload(claimed_ok.to_string().as_bytes(), "d1", Some("inst1")),
+            Some(TwitchGqlInspect::Data(_))
+        ));
+
+        let already = json!({
+            "extensions": { "operationName": "DropsPage_ClaimDropRewards" },
+            "data": { "claimDropRewards": { "status": "DROP_INSTANCE_ALREADY_CLAIMED" } }
+        });
+        assert!(matches!(
+            inspect_twitch_claim_payload(already.to_string().as_bytes(), "d1", Some("inst1")),
+            Some(TwitchGqlInspect::Data(_))
+        ));
+
+        let inv_claimed = json!({
+            "extensions": { "operationName": "Inventory" },
+            "data": {
+                "currentUser": {
+                    "inventory": {
+                        "dropCampaignsInProgress": [
+                            {
+                                "id": "camp1",
+                                "timeBasedDrops": [
+                                    {
+                                        "id": "d1",
+                                        "self": { "dropInstanceID": "inst1", "isClaimed": true }
+                                    }
+                                ]
+                            }
+                        ]
+                    }
+                }
+            }
+        });
+        assert!(matches!(
+            inspect_twitch_claim_payload(inv_claimed.to_string().as_bytes(), "d1", Some("inst1")),
+            Some(TwitchGqlInspect::Data(_))
+        ));
+
+        let integrity_err = json!({
+            "extensions": { "operationName": "DropsPage_ClaimDropRewards" },
+            "errors": [{ "message": "failed integrity check" }]
+        });
+        assert!(matches!(
+            inspect_twitch_claim_payload(integrity_err.to_string().as_bytes(), "d1", None),
+            Some(TwitchGqlInspect::TransientIntegrity(_))
+        ));
+
+        let unauth_inv = json!({
+            "extensions": { "operationName": "Inventory" },
+            "data": { "currentUser": null }
+        });
+        assert!(matches!(
+            inspect_twitch_claim_payload(unauth_inv.to_string().as_bytes(), "d1", None),
+            Some(TwitchGqlInspect::Unauthenticated(_))
         ));
     }
 }

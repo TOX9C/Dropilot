@@ -219,6 +219,7 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
             AppError::PlatformChanged("Missing /data/currentUser/inventory".to_string())
         })?;
 
+    let now = Utc::now();
     let mut progress = Vec::new();
     if let Some(in_progress) = inventory
         .get("dropCampaignsInProgress")
@@ -228,6 +229,33 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
             let Some(camp_id) = camp.get("id").and_then(|s| s.as_str()) else {
                 continue;
             };
+            let status_expired = camp
+                .get("status")
+                .and_then(|s| s.as_str())
+                .map(|s| s.eq_ignore_ascii_case("EXPIRED") || s.eq_ignore_ascii_case("ENDED"))
+                .unwrap_or(false);
+            let ended_by_time = camp
+                .get("endAt")
+                .and_then(|s| s.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc) <= now)
+                .unwrap_or(false);
+            if status_expired || ended_by_time {
+                continue;
+            }
+            let camp_name = camp
+                .get("name")
+                .and_then(|s| s.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let game_name = camp
+                .pointer("/game/displayName")
+                .or_else(|| camp.pointer("/game/name"))
+                .and_then(|s| s.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
             let raw_linked = camp
                 .pointer("/self/isAccountConnected")
                 .and_then(|b| b.as_bool());
@@ -284,6 +312,8 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
                     claimed,
                     linked: camp_linked,
                     drop: parse_drop(drop),
+                    campaign_name: camp_name.clone(),
+                    game_name: game_name.clone(),
                 });
             }
         }
@@ -315,6 +345,8 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
                         claimed: false,
                         linked: Some(true),
                         drop: None,
+                        campaign_name: None,
+                        game_name: None,
                     });
                 }
             }
@@ -337,6 +369,8 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
                         claimed: false,
                         linked: Some(true),
                         drop: None,
+                        campaign_name: None,
+                        game_name: None,
                     });
                 }
             }
@@ -378,6 +412,8 @@ pub fn parse_drop_current_session_progress(payload: &Value) -> Option<(DropProgr
             claimed: false,
             linked: if current > 0 { Some(true) } else { None },
             drop: None,
+            campaign_name: None,
+            game_name: None,
         },
         completed,
     ))
