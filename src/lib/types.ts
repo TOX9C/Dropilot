@@ -22,6 +22,7 @@ export type LogLevelSetting = 'info' | 'debug';
 export interface Game {
   id: string;
   name: string;
+  slug?: string | null;
   boxArtUrl: string | null;
 }
 

@@ -8,11 +8,14 @@ use url::Url;
 
 use crate::auth::login_window::{
     clear_webview_browsing_data, open_drops_inventory_window, open_login_window,
+    twitch_bridge_fetch_campaign_details,
 };
 use crate::autostart::sync_autostart;
 use crate::logging::{log_dir, LogEntry, LogLevel};
 use crate::net::allowlist::{validate_url, AllowlistKind};
-use crate::platforms::{AppSnapshot, PlatformId};
+use crate::platforms::twitch::apply_campaign_details;
+use crate::platforms::twitch::models::parse_campaign_details;
+use crate::platforms::{AppSnapshot, Campaign, PlatformId};
 use crate::secrets::SecretStore;
 use crate::settings::{appdata_dir, PriorityItem, Settings, CURRENT_DISCLAIMER_VERSION};
 use crate::state::{AppState, MinerControl};
@@ -98,6 +101,21 @@ pub async fn set_campaign_farm(
     Ok(updated)
 }
 
+fn priority_game_matches(item: &PriorityItem, game_id: &str, game_name: &str) -> bool {
+    match item {
+        PriorityItem::Game {
+            game_id: gid,
+            game_name: gname,
+        } => {
+            (!gid.is_empty() && !game_id.is_empty() && gid == game_id)
+                || (!gname.trim().is_empty()
+                    && !game_name.trim().is_empty()
+                    && gname.trim().eq_ignore_ascii_case(game_name.trim()))
+        }
+        _ => false,
+    }
+}
+
 #[tauri::command]
 pub async fn set_game_farm(
     app: AppHandle,
@@ -107,6 +125,11 @@ pub async fn set_game_farm(
     game_name: String,
     farm: bool,
 ) -> Result<Settings, String> {
+    let trimmed_name = game_name.trim().to_string();
+    if farm && trimmed_name.is_empty() {
+        return Err("Game name is required".to_string());
+    }
+
     let updated = {
         let mut guard = state.settings.write().await;
         let plat = match platform {
@@ -114,21 +137,30 @@ pub async fn set_game_farm(
             PlatformId::Kick => &mut guard.kick,
         };
         if farm {
-            let exists = plat.priority.iter().any(|item| match item {
-                PriorityItem::Game { game_id: gid, .. } => gid == &game_id,
-                _ => false,
-            });
-            if !exists {
+            if let Some(existing) = plat
+                .priority
+                .iter_mut()
+                .find(|item| priority_game_matches(item, &game_id, &trimmed_name))
+            {
+                if let PriorityItem::Game {
+                    game_id: gid,
+                    game_name: gname,
+                } = existing
+                {
+                    if gid.is_empty() && !game_id.is_empty() {
+                        *gid = game_id;
+                    }
+                    *gname = trimmed_name;
+                }
+            } else {
                 plat.priority.push(PriorityItem::Game {
                     game_id,
-                    game_name,
+                    game_name: trimmed_name,
                 });
             }
         } else {
-            plat.priority.retain(|item| match item {
-                PriorityItem::Game { game_id: gid, .. } => gid != &game_id,
-                _ => true,
-            });
+            plat.priority
+                .retain(|item| !priority_game_matches(item, &game_id, &trimmed_name));
         }
         guard.sanitize();
         guard.clone()
@@ -232,6 +264,62 @@ pub async fn open_drops_inventory(
     open_drops_inventory_window(&app, state.inner().clone(), platform)
         .await
         .map_err(|e| e.user_message())
+}
+
+#[tauri::command]
+pub async fn fetch_campaign_details(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    campaign_id: String,
+) -> Result<Campaign, String> {
+    let mut camp = {
+        let snap = state.snapshot_lock(platform).read().await;
+        snap.campaigns
+            .iter()
+            .find(|c| c.id == campaign_id)
+            .cloned()
+            .ok_or_else(|| "Campaign not found".to_string())?
+    };
+
+    if platform != PlatformId::Twitch
+        || state.mock_active.load(Ordering::Relaxed)
+        || (camp.link_verified && !camp.drops.is_empty())
+    {
+        return Ok(camp);
+    }
+
+    let payload = {
+        let _guard = state.twitch_bridge_lock.lock().await;
+        twitch_bridge_fetch_campaign_details(
+            &app,
+            &camp.id,
+            &camp.name,
+            &camp.game.id,
+            &camp.game.name,
+        )
+        .await
+        .map_err(|e| e.user_message())?
+    };
+
+    if let Some(detailed) = parse_campaign_details(&payload).map_err(|e| e.user_message())? {
+        apply_campaign_details(&mut camp, detailed);
+        {
+            let mut snap = state.twitch_snapshot.write().await;
+            if let Some(target) = snap.campaigns.iter_mut().find(|c| c.id == camp.id) {
+                *target = camp.clone();
+            }
+        }
+        state
+            .send_miner(
+                PlatformId::Twitch,
+                MinerControl::CampaignDetailsLoaded(Box::new(camp.clone())),
+            )
+            .await;
+        state.publish_snapshot(&app, true).await;
+    }
+
+    Ok(camp)
 }
 
 #[tauri::command]

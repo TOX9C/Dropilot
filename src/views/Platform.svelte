@@ -32,6 +32,7 @@
     notifyUi,
     toggleCampaignFarmAction,
     toggleGameFarmAction,
+    updateSnapshotCampaign,
   } from '../lib/stores';
   import type {
     Campaign,
@@ -85,10 +86,10 @@
     snapshot.campaigns.some((c) => c.drops.some((d) => d.needsManualClaim)),
   );
 
-  const counts = $derived(computeCampaignCounts(snapshot.campaigns, settings));
+  const counts = $derived(computeCampaignCounts(snapshot.campaigns, settings, $nowMs));
   const games = $derived(extractGameOptions(snapshot.campaigns));
   const filteredCampaigns = $derived(
-    filterAndSortCampaigns(snapshot.campaigns, settings, filter, sort, search, selectedGame),
+    filterAndSortCampaigns(snapshot.campaigns, settings, filter, sort, search, selectedGame, $nowMs),
   );
 
   async function handleLogin() {
@@ -161,6 +162,35 @@
 
   async function handleRetry() {
     try { await api.retryPlatform(platform); } catch (err) { notifyUi(String(err), 'error'); }
+  }
+
+  async function handleAddWatchedGame(gameName: string) {
+    const clean = gameName.trim();
+    if (!clean) return;
+    try {
+      const match = snapshot.campaigns.find(
+        (c) => c.game.name.trim().toLowerCase() === clean.toLowerCase(),
+      );
+      const updated = await api.setGameFarm(
+        platform,
+        match?.game.id ?? '',
+        match?.game.name ?? clean,
+        true,
+      );
+      appSettings.set(updated);
+      notifyUi(
+        snapshot.account
+          ? `Watching "${match?.game.name ?? clean}" on ${platName} — will auto-mine whenever a drop goes live.`
+          : `Added "${clean}"! Log in to ${platName} to auto-farm when drops go live.`,
+      );
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
+
+  async function handleFetchDetails(camp: Campaign) {
+    const detailed = await api.fetchCampaignDetails(platform, camp.id);
+    updateSnapshotCampaign(detailed);
   }
 </script>
 
@@ -312,6 +342,7 @@
                 onExclude={() => handleToggleFarm(camp, false)}
                 onOpenUrl={handleOpenUrl}
                 onOpenInventory={handleOpenInventory}
+                onFetchDetails={() => handleFetchDetails(camp)}
               />
             {/each}
           </div>
@@ -321,7 +352,10 @@
       <div class="rail-col">
         <PriorityList
           items={platSettings.priority}
+          campaigns={snapshot.campaigns}
+          {platform}
           onReorder={handleReorderPriority}
+          onAddGame={handleAddWatchedGame}
         />
 
         <section class="card candidates-card">
@@ -427,8 +461,8 @@
 
   .workspace-split {
     display: grid;
-    grid-template-columns: 1fr 256px;
-    gap: 14px;
+    grid-template-columns: minmax(0, 1fr) 240px;
+    gap: 12px;
     align-items: start;
   }
 
@@ -442,8 +476,14 @@
 
   .campaigns-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
-    gap: 12px;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  @media (max-width: 660px) {
+    .campaigns-grid {
+      grid-template-columns: 1fr;
+    }
   }
 
   .campaigns-grid.compact-list {

@@ -90,6 +90,7 @@ pub fn run() {
             commands::pin_channel,
             commands::retry_platform,
             commands::open_drops_inventory,
+            commands::fetch_campaign_details,
             commands::get_settings,
             commands::update_settings,
             commands::accept_disclaimer,
@@ -128,6 +129,7 @@ pub fn run() {
             let twitch_real = Arc::new(TwitchPlatform::new(
                 state_for_setup.http.clone(),
                 Some(app_handle.clone()),
+                state_for_setup.twitch_bridge_lock.clone(),
             ));
             let kick_real = Arc::new(KickPlatform::new(
                 state_for_setup.http.clone(),

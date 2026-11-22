@@ -13,10 +13,11 @@ use tokio::sync::Mutex;
 use crate::auth::login_window::{
     close_compat_watch_window, close_twitch_bridge_window, twitch_bridge_capture,
 };
+use crate::miner::selector::game_names_match;
 use crate::net::client::AllowlistedClient;
 use crate::platforms::twitch::gql::{
-    execute_persisted_gql, execute_persisted_gql_batch, execute_persisted_gql_opt, ops,
-    validate_oauth_token,
+    execute_persisted_gql, execute_persisted_gql_batch, execute_persisted_gql_opt,
+    fetch_game_directory_streams, ops, validate_oauth_token,
 };
 use crate::platforms::twitch::models::{
     parse_campaign_details, parse_campaigns_dashboard, parse_directory_channels,
@@ -38,11 +39,15 @@ pub struct TwitchPlatform {
 }
 
 impl TwitchPlatform {
-    pub fn new(http: Arc<AllowlistedClient>, app: Option<AppHandle>) -> Self {
+    pub fn new(
+        http: Arc<AllowlistedClient>,
+        app: Option<AppHandle>,
+        bridge_lock: Arc<Mutex<()>>,
+    ) -> Self {
         Self {
             http,
             app,
-            bridge_lock: Arc::new(Mutex::new(())),
+            bridge_lock,
             watch: TwitchWatchSession::new(),
         }
     }
@@ -66,7 +71,7 @@ pub fn twitch_game_slug(name: &str) -> String {
     slug
 }
 
-fn apply_campaign_details(camp: &mut Campaign, detailed: Campaign) {
+pub fn apply_campaign_details(camp: &mut Campaign, detailed: Campaign) {
     if detailed.allowed_channels.is_some() {
         camp.allowed_channels = detailed.allowed_channels;
     }
@@ -77,7 +82,25 @@ fn apply_campaign_details(camp: &mut Campaign, detailed: Campaign) {
     camp.linked = detailed.linked;
     camp.link_verified = detailed.link_verified;
     if !detailed.drops.is_empty() {
-        camp.drops = detailed.drops;
+        let prev_drops = std::mem::take(&mut camp.drops);
+        camp.drops = detailed
+            .drops
+            .into_iter()
+            .map(|mut next_d| {
+                if let Some(old_d) = prev_drops.iter().find(|d| d.id == next_d.id) {
+                    next_d.current_minutes = next_d
+                        .current_minutes
+                        .max(old_d.current_minutes)
+                        .min(next_d.required_minutes);
+                    next_d.claimed |= old_d.claimed;
+                    next_d.claimable |= old_d.claimable && !next_d.claimed;
+                    if next_d.instance_id.is_none() {
+                        next_d.instance_id = old_d.instance_id.clone();
+                    }
+                }
+                next_d
+            })
+            .collect();
     }
 }
 
@@ -300,18 +323,66 @@ impl Platform for TwitchPlatform {
                     };
                     if let Ok(checked) = self.check_live(token, &probe).await {
                         if checked.is_live
-                            && (checked.game_name.is_empty()
-                                || checked.game_name.eq_ignore_ascii_case(&campaign.game.name))
+                            && game_names_match(&checked.game_name, &campaign.game.name)
                         {
                             live_allowed.push(checked);
                         }
                     }
                 }
-                return Ok(live_allowed);
+                if !live_allowed.is_empty() {
+                    return Ok(live_allowed);
+                }
             }
         }
 
-        let slug = twitch_game_slug(&campaign.game.name);
+        // 1. Fast direct GQL query by Game ID (or Game Name) — resolves real slug (e.g. "overwatch-2")
+        // and returns live drops-enabled streams in ~40ms without needing the hidden browser bridge.
+        let by_id_res = match fetch_game_directory_streams(
+            &self.http,
+            Some(token),
+            &campaign.game.id,
+            &campaign.game.name,
+            TWITCH_DROPS_TAG_ID,
+        )
+        .await
+        {
+            Ok(val) => Ok(val),
+            Err(AppError::Blocked(_)) => {
+                fetch_game_directory_streams(
+                    &self.http,
+                    None,
+                    &campaign.game.id,
+                    &campaign.game.name,
+                    TWITCH_DROPS_TAG_ID,
+                )
+                .await
+            }
+            Err(err) => Err(err),
+        };
+
+        let mut resolved_slug: Option<String> = campaign
+            .game
+            .slug
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
+        if let Ok(ref payload) = by_id_res {
+            if let Some(s) = payload
+                .pointer("/data/game/slug")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+            {
+                resolved_slug = Some(s.to_string());
+            }
+            if let Ok(channels) = parse_directory_channels(payload, &campaign.game.name) {
+                if !channels.is_empty() {
+                    return Ok(channels);
+                }
+            }
+        }
+
+        let slug = resolved_slug.unwrap_or_else(|| twitch_game_slug(&campaign.game.name));
         let vars = json!({
             "name": campaign.game.name,
             "slug": slug,
@@ -321,7 +392,9 @@ impl Platform for TwitchPlatform {
                 "tags": [TWITCH_DROPS_TAG_ID]
             },
             "sortTypeIsRecency": false,
-            "limit": 30
+            "limit": 30,
+            "includeCostreaming": false,
+            "includeIsDJ": false
         });
 
         let direct_result = match execute_persisted_gql(
@@ -360,7 +433,14 @@ impl Platform for TwitchPlatform {
                 let _guard = self.bridge_lock.lock().await;
                 let url = format!("https://www.twitch.tv/directory/category/{slug}?filter=drops");
                 let payload = twitch_bridge_capture(app_handle, &url, "directory").await?;
-                return parse_directory_channels(&payload, &campaign.game.name);
+                let channels = parse_directory_channels(&payload, &campaign.game.name)?;
+                tracing::info!(
+                    game = %campaign.game.name,
+                    slug = %slug,
+                    candidates = channels.len(),
+                    "Fetched Twitch directory candidates via official page"
+                );
+                return Ok(channels);
             }
         }
 

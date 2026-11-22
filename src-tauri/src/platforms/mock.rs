@@ -32,6 +32,7 @@ impl MockPlatform {
                     game: Game {
                         id: "263490".to_string(),
                         name: "Rust".to_string(),
+                        slug: None,
                         box_art_url: None,
                     },
                     name: "Rust Twitch Rivals Drops".to_string(),
@@ -91,6 +92,7 @@ impl MockPlatform {
                     game: Game {
                         id: "1702520304".to_string(),
                         name: "Path of Exile 2".to_string(),
+                        slug: None,
                         box_art_url: None,
                     },
                     name: "Dawn of the Hunt Week 1".to_string(),
@@ -123,6 +125,7 @@ impl MockPlatform {
                     game: Game {
                         id: "32399".to_string(),
                         name: "Counter-Strike 2".to_string(),
+                        slug: None,
                         box_art_url: None,
                     },
                     name: "Major Austin Viewer Souvenir".to_string(),
@@ -155,6 +158,7 @@ impl MockPlatform {
                     game: Game {
                         id: "516575".to_string(),
                         name: "VALORANT".to_string(),
+                        slug: None,
                         box_art_url: None,
                     },
                     name: "Masters Playoffs Capsule".to_string(),
@@ -189,6 +193,7 @@ impl MockPlatform {
                     game: Game {
                         id: "rust".to_string(),
                         name: "Rust".to_string(),
+                        slug: None,
                         box_art_url: None,
                     },
                     name: "Kick Rust Creators Round".to_string(),
@@ -221,6 +226,7 @@ impl MockPlatform {
                     game: Game {
                         id: "eft".to_string(),
                         name: "Escape from Tarkov".to_string(),
+                        slug: None,
                         box_art_url: None,
                     },
                     name: "Tarkov Weekend Drop".to_string(),
@@ -253,6 +259,7 @@ impl MockPlatform {
                     game: Game {
                         id: "poe2".to_string(),
                         name: "Path of Exile 2".to_string(),
+                        slug: None,
                         box_art_url: None,
                     },
                     name: "Kick Launch Race Drops".to_string(),

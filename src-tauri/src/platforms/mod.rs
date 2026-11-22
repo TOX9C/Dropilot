@@ -36,6 +36,8 @@ impl PlatformId {
 pub struct Game {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slug: Option<String>,
     pub box_art_url: Option<String>,
 }
 

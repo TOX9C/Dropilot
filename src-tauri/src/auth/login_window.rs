@@ -861,7 +861,17 @@ pub(crate) fn inspect_twitch_gql_payload(
                 if item
                     .pointer("/data/game/streams/edges")
                     .and_then(|v| v.as_array())
-                    .is_some() =>
+                    .is_some()
+                    || (op_name == "DirectoryPage_Game"
+                        && item.get("data").is_some()
+                        && (item
+                            .pointer("/data/game")
+                            .map(|v| v.is_null())
+                            .unwrap_or(false)
+                            || item
+                                .pointer("/data/game/streams")
+                                .map(|v| v.is_null())
+                                .unwrap_or(false))) =>
             {
                 return Some(TwitchGqlInspect::Data(item.clone()));
             }
@@ -905,6 +915,60 @@ pub(crate) fn inspect_twitch_gql_payload(
     None
 }
 
+pub(crate) fn inspect_twitch_campaign_details_payload(
+    raw_bytes: &[u8],
+    expected_campaign_id: &str,
+) -> Option<TwitchGqlInspect> {
+    let parsed: serde_json::Value = serde_json::from_slice(raw_bytes).ok()?;
+    let items: &[serde_json::Value] = match parsed.as_array() {
+        Some(arr) => arr.as_slice(),
+        None => std::slice::from_ref(&parsed),
+    };
+
+    for item in items {
+        let camp_node = item
+            .pointer("/data/user/dropCampaign")
+            .or_else(|| item.pointer("/data/dropCampaign"));
+        if let Some(camp) = camp_node {
+            if camp.get("id").and_then(|s| s.as_str()) == Some(expected_campaign_id) {
+                return Some(TwitchGqlInspect::Data(item.clone()));
+            }
+        }
+
+        let op_name = item
+            .pointer("/extensions/operationName")
+            .and_then(|s| s.as_str())
+            .unwrap_or("");
+
+        if op_name == "ViewerDropsDashboard"
+            && item
+                .pointer("/data/currentUser")
+                .map(|v| v.is_null())
+                .unwrap_or(false)
+        {
+            return Some(TwitchGqlInspect::Unauthenticated(
+                "Twitch web session expired; please log in again".to_string(),
+            ));
+        }
+
+        if op_name == "DropCampaignDetails" {
+            if let Some(errors) = item.get("errors").and_then(|e| e.as_array()) {
+                for err in errors {
+                    let msg = err
+                        .get("message")
+                        .and_then(|m| m.as_str())
+                        .unwrap_or_default();
+                    if msg.to_ascii_lowercase().contains("integrity") {
+                        return Some(TwitchGqlInspect::TransientIntegrity(msg.to_string()));
+                    }
+                }
+            }
+        }
+    }
+
+    None
+}
+
 #[cfg(windows)]
 unsafe fn read_istream_to_vec(stream: &windows::Win32::System::Com::IStream) -> Vec<u8> {
     const MAX_BYTES: usize = 16 * 1024 * 1024;
@@ -931,14 +995,154 @@ unsafe fn read_istream_to_vec(stream: &windows::Win32::System::Com::IStream) -> 
     out
 }
 
-/// Loads an official `www.twitch.tv` drops or directory page inside a hidden isolated
-/// WebView2 helper window and reads native `WebResourceResponseReceived` GQL payloads in Rust.
-/// Uses zero JS injection, zero forged tokens, and closes the helper window right after capture.
-pub async fn twitch_bridge_capture(
+#[cfg(windows)]
+type TwitchPayloadInspector = Arc<dyn Fn(&[u8]) -> Option<TwitchGqlInspect> + Send + Sync>;
+
+fn build_twitch_expand_campaign_script(
+    campaign_name: &str,
+    game_id: &str,
+    game_name: &str,
+) -> Result<String, AppError> {
+    let camp_json = serde_json::to_string(campaign_name)
+        .map_err(|e| AppError::Internal(format!("Serialize campaign name failed: {e}")))?;
+    let gid_json = serde_json::to_string(game_id)
+        .map_err(|e| AppError::Internal(format!("Serialize game id failed: {e}")))?;
+    let game_json = serde_json::to_string(game_name)
+        .map_err(|e| AppError::Internal(format!("Serialize game name failed: {e}")))?;
+
+    Ok(format!(
+        r##"
+(function () {{
+  if (window.location.hostname !== "www.twitch.tv") return;
+  if (window.__dpExpandStarted) return;
+  window.__dpExpandStarted = true;
+
+  function norm(str) {{
+    return (str || "").replace(/\s+/g, " ").trim().toLowerCase();
+  }}
+
+  const targetCampaign = norm({camp_json});
+  const targetGameId = norm({gid_json});
+  const targetGame = norm({game_json});
+
+  function gameMatches(text) {{
+    const t = norm(text);
+    if (!t || !targetGame) return false;
+    if (t === targetGame) return true;
+    if (t.length >= 4 && targetGame.length >= 4) {{
+      return t.startsWith(targetGame) || targetGame.startsWith(t);
+    }}
+    return false;
+  }}
+
+  function isolateSingleRow(seed) {{
+    let cur = seed;
+    let lastSingle = null;
+    for (let depth = 0; depth < 10 && cur && cur !== document.body; depth++) {{
+      if (cur.tagName === "MAIN") break;
+      const boxCount = cur.querySelectorAll('img[src*="ttv-boxart"]').length;
+      if (boxCount > 1) break;
+      if (boxCount === 1) lastSingle = cur;
+      cur = cur.parentElement;
+    }}
+    return lastSingle;
+  }}
+
+  function collectCandidateRows() {{
+    const rows = [];
+    const seen = new Set();
+    function addRow(seed) {{
+      const r = isolateSingleRow(seed);
+      if (r && !seen.has(r) && !r.__dpClicked) {{
+        seen.add(r);
+        rows.push(r);
+      }}
+    }}
+
+    const imgs = Array.from(document.querySelectorAll('img[src*="ttv-boxart"]'));
+    for (let i = 0; i < imgs.length; i++) {{
+      const img = imgs[i];
+      const src = (img.getAttribute("src") || "").toLowerCase();
+      const alt = img.getAttribute("alt") || "";
+      if (
+        (targetGameId &&
+          (src.includes("/ttv-boxart/" + targetGameId + "-") ||
+            src.includes("/ttv-boxart/" + targetGameId + "_") ||
+            src.includes("/ttv-boxart/" + targetGameId + "."))) ||
+        gameMatches(alt)
+      ) {{
+        addRow(img);
+      }}
+    }}
+
+    const nodes = Array.from(document.querySelectorAll("main h3, main h4, main h5, main h6, main p, main span"));
+    for (let i = 0; i < nodes.length; i++) {{
+      const n = nodes[i];
+      if (n.children.length > 0) continue;
+      const txt = norm(n.textContent);
+      if (!txt || txt.length > 140) continue;
+      if ((targetCampaign && txt === targetCampaign) || gameMatches(txt)) {{
+        addRow(n);
+      }}
+    }}
+    return rows;
+  }}
+
+  function expandRow(row) {{
+    row.__dpClicked = true;
+    row.scrollIntoView({{ block: "center" }});
+    const btn =
+      row.querySelector('button[aria-expanded="false"], [role="button"][aria-expanded="false"]') ||
+      row.querySelector('button, [role="button"]');
+    if (btn instanceof HTMLElement) {{
+      btn.click();
+    }}
+    if (row.firstElementChild instanceof HTMLElement && row.firstElementChild !== btn) {{
+      row.firstElementChild.click();
+    }}
+  }}
+
+  let attempts = 0;
+  let clickedTotal = 0;
+  const timer = setInterval(function () {{
+    attempts += 1;
+    if (attempts > 36 || clickedTotal >= 8) {{
+      clearInterval(timer);
+      return;
+    }}
+    if (document.readyState === "loading") return;
+
+    try {{
+      const rows = collectCandidateRows();
+      for (let i = 0; i < rows.length && clickedTotal < 8; i++) {{
+        expandRow(rows[i]);
+        clickedTotal += 1;
+      }}
+    }} catch (_) {{}}
+  }}, 350);
+}})();
+"##
+    ))
+}
+
+#[cfg(windows)]
+async fn run_twitch_bridge(
     app: &AppHandle,
     page_url: &str,
     expected_kind: &str,
+    timeout_secs: u64,
+    init_script: Option<String>,
+    inspector: TwitchPayloadInspector,
 ) -> Result<serde_json::Value, AppError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Mutex as StdMutex;
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
+    use webview2_com::{
+        take_pwstr, WebResourceResponseReceivedEventHandler,
+        WebResourceResponseViewGetContentCompletedHandler,
+    };
+    use windows::core::{Interface, PWSTR};
+
     let parsed = Url::parse(page_url)
         .map_err(|e| AppError::Internal(format!("Invalid Twitch bridge URL: {e}")))?;
     validate_url(&parsed, AllowlistKind::Platform)?;
@@ -948,9 +1152,222 @@ pub async fn twitch_bridge_capture(
         ));
     }
 
+    close_twitch_bridge_window(app);
+    sleep(Duration::from_millis(150)).await;
+
+    let blank = Url::parse("about:blank")
+        .map_err(|e| AppError::Internal(format!("Invalid about:blank URL: {e}")))?;
+
+    let mut builder = WebviewWindowBuilder::new(app, "twitch-bridge", WebviewUrl::External(blank))
+        .title("DropPilot Twitch Sync")
+        .inner_size(1200.0, 800.0)
+        .center()
+        .visible(false)
+        .skip_taskbar(true)
+        .focused(false)
+        .data_directory(webview_data_dir())
+        .on_navigation(|url| {
+            url.as_str() == "about:blank"
+                || validate_url(url, AllowlistKind::LoginNavigation).is_ok()
+        });
+
+    if let Some(script) = init_script {
+        builder = builder.initialization_script(&script);
+    }
+
+    let win = builder
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed creating Twitch bridge window: {e}")))?;
+
+    let (result_tx, result_rx) = oneshot::channel::<Result<serde_json::Value, String>>();
+    let result_tx_slot = Arc::new(StdMutex::new(Some(result_tx)));
+    let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
+    let integrity_attempts = Arc::new(AtomicUsize::new(0));
+
+    let kind_log = expected_kind.to_string();
+    let attach_tx = result_tx_slot.clone();
+    let attach_attempts = integrity_attempts.clone();
+
+    if let Err(err) = win.with_webview(move |wv| {
+        let attach_res: Result<(), String> = (|| unsafe {
+            let controller = wv.controller();
+            let _ = controller.SetIsVisible(true);
+            let core = controller
+                .CoreWebView2()
+                .map_err(|e| format!("CoreWebView2 lookup failed: {e}"))?;
+            let core2: ICoreWebView2_2 = core
+                .cast()
+                .map_err(|e| format!("ICoreWebView2_2 cast failed: {e}"))?;
+
+            let mut token = 0i64;
+            let handler = WebResourceResponseReceivedEventHandler::create(Box::new(
+                move |_webview, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let req = args.Request()?;
+                    let mut uri_pwstr = PWSTR::null();
+                    req.Uri(&mut uri_pwstr)?;
+                    let uri = take_pwstr(uri_pwstr);
+                    if uri.starts_with("https://gql.twitch.tv/integrity") {
+                        let resp = args.Response()?;
+                        let mut status = 0i32;
+                        resp.StatusCode(&mut status)?;
+                        info!(status, "Twitch official page integrity handshake completed");
+                        return Ok(());
+                    }
+                    if !uri.starts_with("https://gql.twitch.tv/gql") {
+                        return Ok(());
+                    }
+                    let resp = args.Response()?;
+                    let mut status = 0i32;
+                    resp.StatusCode(&mut status)?;
+                    if status != 200 {
+                        return Ok(());
+                    }
+
+                    let tx_inner = attach_tx.clone();
+                    let kind_inner = kind_log.clone();
+                    let attempts_inner = attach_attempts.clone();
+                    let inspector_inner = inspector.clone();
+                    let content_handler =
+                        WebResourceResponseViewGetContentCompletedHandler::create(Box::new(
+                            move |hr, stream| {
+                                if hr.is_ok() {
+                                    if let Some(stream) = stream {
+                                        let bytes = read_istream_to_vec(&stream);
+                                        match inspector_inner(&bytes) {
+                                            Some(TwitchGqlInspect::Data(val)) => {
+                                                if let Ok(mut guard) = tx_inner.lock() {
+                                                    if let Some(tx) = guard.take() {
+                                                        let _ = tx.send(Ok(val));
+                                                    }
+                                                }
+                                            }
+                                            Some(TwitchGqlInspect::Unauthenticated(msg)) => {
+                                                if let Ok(mut guard) = tx_inner.lock() {
+                                                    if let Some(tx) = guard.take() {
+                                                        let _ = tx.send(Err(format!(
+                                                            "unauthenticated:{msg}"
+                                                        )));
+                                                    }
+                                                }
+                                            }
+                                            Some(TwitchGqlInspect::TransientIntegrity(msg)) => {
+                                                let n = attempts_inner
+                                                    .fetch_add(1, Ordering::Relaxed)
+                                                    + 1;
+                                                if n == 1 {
+                                                    info!(
+                                                        kind = %kind_inner,
+                                                        "Twitch page refreshing integrity check; waiting for automatic retry"
+                                                    );
+                                                }
+                                                if n >= 4 {
+                                                    if let Ok(mut guard) = tx_inner.lock() {
+                                                        if let Some(tx) = guard.take() {
+                                                            let _ = tx.send(Err(format!(
+                                                                "blocked:{msg}"
+                                                            )));
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                            None => {}
+                                        }
+                                    }
+                                }
+                                Ok(())
+                            },
+                        ));
+
+                    let _ = resp.GetContent(&content_handler);
+                    Ok(())
+                },
+            ));
+
+            core2
+                .add_WebResourceResponseReceived(&handler, &mut token)
+                .map_err(|e| format!("add_WebResourceResponseReceived failed: {e}"))?;
+            Ok(())
+        })();
+
+        let _ = ready_tx.send(attach_res);
+    }) {
+        close_twitch_bridge_window(app);
+        return Err(AppError::Internal(format!(
+            "Failed attaching Twitch bridge listener: {err}"
+        )));
+    }
+
+    match timeout(Duration::from_secs(5), ready_rx).await {
+        Ok(Ok(Ok(()))) => {}
+        Ok(Ok(Err(msg))) => {
+            close_twitch_bridge_window(app);
+            return Err(AppError::Internal(msg));
+        }
+        _ => {
+            close_twitch_bridge_window(app);
+            return Err(AppError::Internal(
+                "Timed out preparing Twitch WebView2 listener".to_string(),
+            ));
+        }
+    }
+
+    info!(kind = expected_kind, "Syncing Twitch data via official page");
+    if let Err(err) = win.navigate(parsed) {
+        close_twitch_bridge_window(app);
+        return Err(AppError::Internal(format!(
+            "Twitch bridge navigation failed: {err}"
+        )));
+    }
+
+    let wait_res = timeout(Duration::from_secs(timeout_secs), result_rx).await;
+    close_twitch_bridge_window(app);
+
+    match wait_res {
+        Ok(Ok(Ok(val))) => {
+            info!(kind = expected_kind, "Synced Twitch data from official page");
+            Ok(val)
+        }
+        Ok(Ok(Err(err))) => {
+            if let Some(msg) = err.strip_prefix("unauthenticated:") {
+                Err(AppError::Auth(msg.to_string()))
+            } else {
+                Err(AppError::Blocked(
+                    err.trim_start_matches("blocked:").to_string(),
+                ))
+            }
+        }
+        Ok(Err(_)) | Err(_) => {
+            if integrity_attempts.load(Ordering::Relaxed) > 0 {
+                Err(AppError::Blocked(
+                    "Twitch integrity check did not succeed after retries; check Logs for integrity handshake status"
+                        .to_string(),
+                ))
+            } else if expected_kind == "directory" || expected_kind == "campaign-details" {
+                Err(AppError::Network(
+                    "Twitch page request timed out; please retry in a moment".to_string(),
+                ))
+            } else {
+                Err(AppError::Blocked(
+                    "Twitch official drops page did not respond in time".to_string(),
+                ))
+            }
+        }
+    }
+}
+
+/// Loads an official `www.twitch.tv` drops or directory page inside a hidden isolated
+/// WebView2 helper window and reads native `WebResourceResponseReceived` GQL payloads in Rust.
+pub async fn twitch_bridge_capture(
+    app: &AppHandle,
+    page_url: &str,
+    expected_kind: &str,
+) -> Result<serde_json::Value, AppError> {
     #[cfg(not(windows))]
     {
-        let _ = (app, expected_kind);
+        let _ = (app, page_url, expected_kind);
         Err(AppError::Blocked(
             "Twitch official page sync requires Windows WebView2".to_string(),
         ))
@@ -958,208 +1375,47 @@ pub async fn twitch_bridge_capture(
 
     #[cfg(windows)]
     {
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Mutex as StdMutex;
-        use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
-        use webview2_com::{
-            take_pwstr, WebResourceResponseReceivedEventHandler,
-            WebResourceResponseViewGetContentCompletedHandler,
-        };
-        use windows::core::{Interface, PWSTR};
+        let kind_owned = expected_kind.to_string();
+        let timeout_secs = if expected_kind == "directory" { 35 } else { 25 };
+        let inspector: TwitchPayloadInspector =
+            Arc::new(move |bytes| inspect_twitch_gql_payload(bytes, &kind_owned));
+        run_twitch_bridge(app, page_url, expected_kind, timeout_secs, None, inspector).await
+    }
+}
 
-        close_twitch_bridge_window(app);
-        sleep(Duration::from_millis(150)).await;
+/// Opens `https://www.twitch.tv/drops/campaigns` inside the isolated hidden bridge,
+/// clicks the official campaign row so Twitch fetches `DropCampaignDetails` natively,
+/// and captures the response payload without any forged tokens.
+pub async fn twitch_bridge_fetch_campaign_details(
+    app: &AppHandle,
+    campaign_id: &str,
+    campaign_name: &str,
+    game_id: &str,
+    game_name: &str,
+) -> Result<serde_json::Value, AppError> {
+    #[cfg(not(windows))]
+    {
+        let _ = (app, campaign_id, campaign_name, game_id, game_name);
+        Err(AppError::Blocked(
+            "Twitch official page sync requires Windows WebView2".to_string(),
+        ))
+    }
 
-        let blank = Url::parse("about:blank")
-            .map_err(|e| AppError::Internal(format!("Invalid about:blank URL: {e}")))?;
-
-        let win = WebviewWindowBuilder::new(app, "twitch-bridge", WebviewUrl::External(blank))
-            .title("DropPilot Twitch Sync")
-            .inner_size(1200.0, 800.0)
-            .center()
-            .visible(false)
-            .skip_taskbar(true)
-            .focused(false)
-            .data_directory(webview_data_dir())
-            .on_navigation(|url| {
-                url.as_str() == "about:blank"
-                    || validate_url(url, AllowlistKind::LoginNavigation).is_ok()
-            })
-            .build()
-            .map_err(|e| AppError::Internal(format!("Failed creating Twitch bridge window: {e}")))?;
-
-        let (result_tx, result_rx) = oneshot::channel::<Result<serde_json::Value, String>>();
-        let result_tx_slot = Arc::new(StdMutex::new(Some(result_tx)));
-        let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
-        let integrity_attempts = Arc::new(AtomicUsize::new(0));
-
-        let expected_owned = expected_kind.to_string();
-        let attach_tx = result_tx_slot.clone();
-        let attach_attempts = integrity_attempts.clone();
-
-        if let Err(err) = win.with_webview(move |wv| {
-            let attach_res: Result<(), String> = (|| unsafe {
-                let controller = wv.controller();
-                let _ = controller.SetIsVisible(true);
-                let core = controller
-                    .CoreWebView2()
-                    .map_err(|e| format!("CoreWebView2 lookup failed: {e}"))?;
-                let core2: ICoreWebView2_2 = core
-                    .cast()
-                    .map_err(|e| format!("ICoreWebView2_2 cast failed: {e}"))?;
-
-                let mut token = 0i64;
-                let handler = WebResourceResponseReceivedEventHandler::create(Box::new(
-                    move |_webview, args| {
-                        let Some(args) = args else {
-                            return Ok(());
-                        };
-                        let req = args.Request()?;
-                        let mut uri_pwstr = PWSTR::null();
-                        req.Uri(&mut uri_pwstr)?;
-                        let uri = take_pwstr(uri_pwstr);
-                        if uri.starts_with("https://gql.twitch.tv/integrity") {
-                            let resp = args.Response()?;
-                            let mut status = 0i32;
-                            resp.StatusCode(&mut status)?;
-                            info!(status, "Twitch official page integrity handshake completed");
-                            return Ok(());
-                        }
-                        if !uri.starts_with("https://gql.twitch.tv/gql") {
-                            return Ok(());
-                        }
-                        let resp = args.Response()?;
-                        let mut status = 0i32;
-                        resp.StatusCode(&mut status)?;
-                        if status != 200 {
-                            return Ok(());
-                        }
-
-                        let tx_inner = attach_tx.clone();
-                        let kind_inner = expected_owned.clone();
-                        let attempts_inner = attach_attempts.clone();
-                        let content_handler =
-                            WebResourceResponseViewGetContentCompletedHandler::create(Box::new(
-                                move |hr, stream| {
-                                    if hr.is_ok() {
-                                        if let Some(stream) = stream {
-                                            let bytes = read_istream_to_vec(&stream);
-                                            match inspect_twitch_gql_payload(&bytes, &kind_inner) {
-                                                Some(TwitchGqlInspect::Data(val)) => {
-                                                    if let Ok(mut guard) = tx_inner.lock() {
-                                                        if let Some(tx) = guard.take() {
-                                                            let _ = tx.send(Ok(val));
-                                                        }
-                                                    }
-                                                }
-                                                Some(TwitchGqlInspect::Unauthenticated(msg)) => {
-                                                    if let Ok(mut guard) = tx_inner.lock() {
-                                                        if let Some(tx) = guard.take() {
-                                                            let _ = tx.send(Err(format!(
-                                                                "unauthenticated:{msg}"
-                                                            )));
-                                                        }
-                                                    }
-                                                }
-                                                Some(TwitchGqlInspect::TransientIntegrity(msg)) => {
-                                                    let n = attempts_inner
-                                                        .fetch_add(1, Ordering::Relaxed)
-                                                        + 1;
-                                                    if n == 1 {
-                                                        info!(
-                                                            kind = %kind_inner,
-                                                            "Twitch page refreshing integrity check; waiting for automatic retry"
-                                                        );
-                                                    }
-                                                    if n >= 4 {
-                                                        if let Ok(mut guard) = tx_inner.lock() {
-                                                            if let Some(tx) = guard.take() {
-                                                                let _ = tx.send(Err(format!(
-                                                                    "blocked:{msg}"
-                                                                )));
-                                                            }
-                                                        }
-                                                    }
-                                                }
-                                                None => {}
-                                            }
-                                        }
-                                    }
-                                    Ok(())
-                                },
-                            ));
-
-                        let _ = resp.GetContent(&content_handler);
-                        Ok(())
-                    },
-                ));
-
-                core2
-                    .add_WebResourceResponseReceived(&handler, &mut token)
-                    .map_err(|e| format!("add_WebResourceResponseReceived failed: {e}"))?;
-                Ok(())
-            })();
-
-            let _ = ready_tx.send(attach_res);
-        }) {
-            close_twitch_bridge_window(app);
-            return Err(AppError::Internal(format!(
-                "Failed attaching Twitch bridge listener: {err}"
-            )));
-        }
-
-        match timeout(Duration::from_secs(5), ready_rx).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(msg))) => {
-                close_twitch_bridge_window(app);
-                return Err(AppError::Internal(msg));
-            }
-            _ => {
-                close_twitch_bridge_window(app);
-                return Err(AppError::Internal(
-                    "Timed out preparing Twitch WebView2 listener".to_string(),
-                ));
-            }
-        }
-
-        info!(kind = expected_kind, "Syncing Twitch data via official page");
-        if let Err(err) = win.navigate(parsed) {
-            close_twitch_bridge_window(app);
-            return Err(AppError::Internal(format!(
-                "Twitch bridge navigation failed: {err}"
-            )));
-        }
-
-        let wait_res = timeout(Duration::from_secs(25), result_rx).await;
-        close_twitch_bridge_window(app);
-
-        match wait_res {
-            Ok(Ok(Ok(val))) => {
-                info!(kind = expected_kind, "Synced Twitch data from official page");
-                Ok(val)
-            }
-            Ok(Ok(Err(err))) => {
-                if let Some(msg) = err.strip_prefix("unauthenticated:") {
-                    Err(AppError::Auth(msg.to_string()))
-                } else {
-                    Err(AppError::Blocked(
-                        err.trim_start_matches("blocked:").to_string(),
-                    ))
-                }
-            }
-            Ok(Err(_)) | Err(_) => {
-                if integrity_attempts.load(Ordering::Relaxed) > 0 {
-                    Err(AppError::Blocked(
-                        "Twitch integrity check did not succeed after retries; check Logs for integrity handshake status"
-                            .to_string(),
-                    ))
-                } else {
-                    Err(AppError::Blocked(
-                        "Twitch official drops page did not respond in time".to_string(),
-                    ))
-                }
-            }
-        }
+    #[cfg(windows)]
+    {
+        let script = build_twitch_expand_campaign_script(campaign_name, game_id, game_name)?;
+        let camp_id_owned = campaign_id.to_string();
+        let inspector: TwitchPayloadInspector =
+            Arc::new(move |bytes| inspect_twitch_campaign_details_payload(bytes, &camp_id_owned));
+        run_twitch_bridge(
+            app,
+            "https://www.twitch.tv/drops/campaigns",
+            "campaign-details",
+            15,
+            Some(script),
+            inspector,
+        )
+        .await
     }
 }
 
@@ -1179,7 +1435,8 @@ fn handle_restricted_navigation(url: &Url, kind: AllowlistKind) -> bool {
 #[cfg(test)]
 mod tests {
     use super::{
-        inspect_twitch_gql_payload, parse_kick_bridge_message, KickBridgeMessage, TwitchGqlInspect,
+        inspect_twitch_campaign_details_payload, inspect_twitch_gql_payload,
+        parse_kick_bridge_message, KickBridgeMessage, TwitchGqlInspect,
     };
     use serde_json::json;
 
@@ -1313,5 +1570,42 @@ mod tests {
             None
         );
         assert_eq!(parse_kick_bridge_message("not json"), None);
+    }
+
+    #[test]
+    fn extracts_campaign_details_and_handles_null_directory() {
+        let batch = json!([
+            {
+                "extensions": { "operationName": "DropCampaignDetails" },
+                "data": { "user": { "dropCampaign": { "id": "other-camp", "name": "Other" } } }
+            },
+            {
+                "extensions": { "operationName": "DropCampaignDetails" },
+                "data": { "user": { "dropCampaign": { "id": "target-camp", "name": "Tarkov Day 6", "self": { "isAccountConnected": true } } } }
+            }
+        ]);
+        let found = inspect_twitch_campaign_details_payload(batch.to_string().as_bytes(), "target-camp");
+        let Some(TwitchGqlInspect::Data(val)) = found else {
+            panic!("expected matching DropCampaignDetails Data");
+        };
+        assert_eq!(val["data"]["user"]["dropCampaign"]["self"]["isAccountConnected"], true);
+
+        let err_payload = json!({
+            "extensions": { "operationName": "DropCampaignDetails" },
+            "errors": [{ "message": "failed integrity check" }]
+        });
+        assert!(matches!(
+            inspect_twitch_campaign_details_payload(err_payload.to_string().as_bytes(), "target-camp"),
+            Some(TwitchGqlInspect::TransientIntegrity(_))
+        ));
+
+        let null_dir = json!({
+            "extensions": { "operationName": "DirectoryPage_Game" },
+            "data": { "game": null }
+        });
+        assert!(matches!(
+            inspect_twitch_gql_payload(null_dir.to_string().as_bytes(), "directory"),
+            Some(TwitchGqlInspect::Data(_))
+        ));
     }
 }

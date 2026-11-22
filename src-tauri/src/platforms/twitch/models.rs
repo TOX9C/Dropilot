@@ -80,6 +80,11 @@ fn parse_single_campaign(v: &Value, is_dashboard_summary: bool) -> Option<Campai
             .and_then(|s| s.as_str())
             .unwrap_or("Unknown Game")
             .to_string(),
+        slug: game_obj
+            .and_then(|g| g.get("slug"))
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         box_art_url: game_obj
             .and_then(|g| g.get("boxArtURL"))
             .and_then(|s| s.as_str())
@@ -103,11 +108,14 @@ fn parse_single_campaign(v: &Value, is_dashboard_summary: bool) -> Option<Campai
     let requires_link = link_url.is_some();
 
     let has_drops = !drops.is_empty();
+    let has_active_progress = drops.iter().any(|d| d.current_minutes > 0 || d.claimed);
     let (linked, link_verified) = if is_dashboard_summary && !has_drops {
         // Twitch's bulk ViewerDropsDashboard returns placeholder self.isAccountConnected=false
         // on summary rows without resolving per-game links; real link state is resolved by
         // DropCampaignDetails and Inventory (dropCampaignsInProgress).
         (true, !requires_link)
+    } else if has_active_progress {
+        (true, true)
     } else {
         let explicit = v
             .pointer("/self/isAccountConnected")
@@ -225,11 +233,28 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
         let Some(camp_id) = camp.get("id").and_then(|s| s.as_str()) else {
             continue;
         };
-        let camp_linked = camp
+        let raw_linked = camp
             .pointer("/self/isAccountConnected")
             .and_then(|b| b.as_bool());
         let Some(drops) = camp.get("timeBasedDrops").and_then(|a| a.as_array()) else {
             continue;
+        };
+        let has_progress = drops.iter().any(|d| {
+            d.pointer("/self/currentMinutesWatched")
+                .and_then(|n| n.as_u64())
+                .unwrap_or(0)
+                > 0
+                || d.pointer("/self/isClaimed")
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false)
+        });
+        // Twitch's Inventory persisted query often returns placeholder isAccountConnected=false
+        // even for linked publisher accounts (e.g. Battle.net / Tarkov) while actively recording
+        // watch minutes. Only propagate positive confirmation from Inventory.
+        let camp_linked = if raw_linked == Some(true) || has_progress {
+            Some(true)
+        } else {
+            None
         };
         for drop in drops {
             let Some(drop_id) = drop.get("id").and_then(|s| s.as_str()) else {
@@ -269,8 +294,25 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
 }
 
 pub fn parse_directory_channels(payload: &Value, expected_game: &str) -> Result<Vec<Channel>, AppError> {
-    let edges = payload
-        .pointer("/data/game/streams/edges")
+    let Some(game_node) = payload.pointer("/data/game") else {
+        return Err(AppError::PlatformChanged(
+            "Missing /data/game in DirectoryPage_Game".to_string(),
+        ));
+    };
+
+    if game_node.is_null() {
+        tracing::info!(game = expected_game, "Twitch directory returned null game");
+        return Ok(Vec::new());
+    }
+
+    let streams_node = game_node.get("streams").unwrap_or(&Value::Null);
+    if streams_node.is_null() {
+        tracing::info!(game = expected_game, "Twitch directory returned null streams");
+        return Ok(Vec::new());
+    }
+
+    let edges = streams_node
+        .get("edges")
         .and_then(|v| v.as_array())
         .ok_or_else(|| {
             AppError::PlatformChanged("Missing /data/game/streams/edges in DirectoryPage_Game".to_string())
@@ -284,12 +326,19 @@ pub fn parse_directory_channels(payload: &Value, expected_game: &str) -> Result<
         let Some(broadcaster) = node.get("broadcaster") else {
             continue;
         };
-        let Some(id) = broadcaster.get("id").and_then(|s| s.as_str()) else {
+        let Some(login) = broadcaster
+            .get("login")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+        else {
             continue;
         };
-        let Some(login) = broadcaster.get("login").and_then(|s| s.as_str()) else {
-            continue;
-        };
+        let id = broadcaster
+            .get("id")
+            .or_else(|| node.get("id"))
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .unwrap_or(login);
         let display_name = broadcaster
             .get("displayName")
             .and_then(|s| s.as_str())
@@ -320,6 +369,13 @@ pub fn parse_directory_channels(payload: &Value, expected_game: &str) -> Result<
             is_followed,
         });
     }
+
+    tracing::info!(
+        game = expected_game,
+        raw_edges = edges.len(),
+        parsed = channels.len(),
+        "Parsed Twitch directory streams"
+    );
 
     Ok(channels)
 }
@@ -528,7 +584,7 @@ mod tests {
                     "inventory": {
                         "dropCampaignsInProgress": [
                             {
-                                "id": "camp-unlinked",
+                                "id": "camp-earning",
                                 "self": { "isAccountConnected": false },
                                 "timeBasedDrops": [
                                     {
@@ -538,6 +594,18 @@ mod tests {
                                         "self": { "currentMinutesWatched": 5, "isClaimed": false }
                                     }
                                 ]
+                            },
+                            {
+                                "id": "camp-zero",
+                                "self": { "isAccountConnected": false },
+                                "timeBasedDrops": [
+                                    {
+                                        "id": "drop-2",
+                                        "name": "Box 2",
+                                        "requiredMinutesWatched": 30,
+                                        "self": { "currentMinutesWatched": 0, "isClaimed": false }
+                                    }
+                                ]
                             }
                         ]
                     }
@@ -545,20 +613,63 @@ mod tests {
             }
         });
         let parsed = parse_inventory_progress(&payload).expect("progress");
-        assert_eq!(parsed.len(), 1);
-        assert_eq!(parsed[0].linked, Some(false));
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].linked, Some(true));
+        assert_eq!(parsed[1].linked, None);
     }
 
     #[test]
-    fn parse_directory_channels_returns_platform_changed_when_game_is_null() {
-        let payload = json!({
+    fn parse_directory_channels_handles_null_game_and_missing_broadcaster_id() {
+        let null_game = json!({
             "data": {
                 "game": null
             }
         });
+        assert!(parse_directory_channels(&null_game, "Escape from Tarkov")
+            .expect("null game yields empty list")
+            .is_empty());
+
+        let missing_game = json!({ "data": {} });
         assert!(matches!(
-            parse_directory_channels(&payload, "Escape from Tarkov"),
+            parse_directory_channels(&missing_game, "Escape from Tarkov"),
             Err(AppError::PlatformChanged(_))
         ));
+
+        let omitted_broadcaster_id = json!({
+            "data": {
+                "game": {
+                    "streams": {
+                        "edges": [
+                            {
+                                "node": {
+                                    "id": "stream-9001",
+                                    "viewersCount": 4200,
+                                    "broadcaster": {
+                                        "login": "pestily",
+                                        "displayName": "Pestily"
+                                    }
+                                }
+                            },
+                            {
+                                "node": {
+                                    "broadcaster": {
+                                        "login": "lvndmark"
+                                    }
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        });
+
+        let channels = parse_directory_channels(&omitted_broadcaster_id, "Escape from Tarkov")
+            .expect("streams parsed without broadcaster.id");
+        assert_eq!(channels.len(), 2);
+        assert_eq!(channels[0].id, "stream-9001");
+        assert_eq!(channels[0].login, "pestily");
+        assert_eq!(channels[0].viewer_count, 4200);
+        assert_eq!(channels[1].id, "lvndmark");
+        assert_eq!(channels[1].login, "lvndmark");
     }
 }

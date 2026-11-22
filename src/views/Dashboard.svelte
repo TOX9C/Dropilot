@@ -179,6 +179,7 @@
     {#each cards as platSnap (platSnap.platform)}
       {@const camp = findActiveCampaign(platSnap)}
       {@const drop = findActiveDrop(platSnap, camp)}
+      {@const queuedTarget = upNext.find((u) => u.platform === platSnap.platform) ?? null}
       {@const platName = platSnap.platform === 'twitch' ? 'Twitch' : 'Kick'}
       <article class="card hero-card hero-{platSnap.platform} stripe-{platSnap.platform} wash-{platSnap.platform}">
         <div class="hero-top">
@@ -192,9 +193,9 @@
           <StatusPill state={platSnap.state} />
         </div>
 
-        {#if platSnap.watching && camp && drop}
-          {@const pct = progressPercent(drop.currentMinutes, drop.requiredMinutes)}
-          {@const campEnd = formatEndCountdown(camp.endsAt, $nowMs)}
+        {#if platSnap.watching}
+          {@const pct = drop ? progressPercent(drop.currentMinutes, drop.requiredMinutes) : 0}
+          {@const campEnd = camp ? formatEndCountdown(camp.endsAt, $nowMs) : null}
           <div class="hero-watching">
             <div class="watch-row">
               <Monogram
@@ -212,29 +213,41 @@
                   </span>
                 </div>
                 <div class="watch-sub-row">
-                  <span class="watch-sub">{camp.game.name} · {camp.name}</span>
-                  <span title={`Ends ${formatExactDateTime(camp.endsAt)}`}>
-                    <Badge tone={campEnd.tone}>
-                      <Clock size={10} />
-                      <span>{campEnd.ended ? 'Ended' : `Ends in ${campEnd.text}`}</span>
-                    </Badge>
+                  <span class="watch-sub">
+                    {camp ? `${camp.game.name} · ${camp.name}` : platSnap.watching.gameName}
                   </span>
+                  {#if camp && campEnd}
+                    <span title={`Ends ${formatExactDateTime(camp.endsAt)}`}>
+                      <Badge tone={campEnd.tone}>
+                        <Clock size={10} />
+                        <span>{campEnd.ended ? 'Ended' : `Ends in ${campEnd.text}`}</span>
+                      </Badge>
+                    </span>
+                  {/if}
                 </div>
               </div>
               <span class="big-pct tabular">{pct}%</span>
             </div>
 
-            <div class="drop-meta tabular">
-              <span>{drop.name}</span>
-              <span>{drop.currentMinutes}/{drop.requiredMinutes} min · {formatEta(drop.currentMinutes, drop.requiredMinutes)}</span>
-            </div>
-            <ProgressBar
-              value={drop.currentMinutes}
-              max={drop.requiredMinutes}
-              platform={platSnap.platform}
-              tall
-              label={drop.name}
-            />
+            {#if drop}
+              <div class="drop-meta tabular">
+                <span>{drop.name}</span>
+                <span>{drop.currentMinutes}/{drop.requiredMinutes} min · {formatEta(drop.currentMinutes, drop.requiredMinutes)}</span>
+              </div>
+              <ProgressBar
+                value={drop.currentMinutes}
+                max={drop.requiredMinutes}
+                platform={platSnap.platform}
+                tall
+                label={drop.name}
+              />
+            {:else}
+              <div class="drop-meta tabular">
+                <span>Earning drop progress</span>
+                <span>Syncing reward milestone...</span>
+              </div>
+              <ProgressBar value={5} max={100} platform={platSnap.platform} tall label="Watch progress" />
+            {/if}
           </div>
 
           <div class="hero-actions">
@@ -255,17 +268,43 @@
           </div>
         {:else}
           <div class="hero-idle">
-            <p class="idle-msg">
-              {#if platSnap.state === 'LoggedOut'}
-                {#if platSnap.campaigns.length > 0}
-                  {platSnap.campaigns.length} public {platName} campaigns available to browse. Sign in to farm drops and track progress.
+            {#if queuedTarget && platSnap.state !== 'LoggedOut'}
+              {@const qEnd = formatEndCountdown(queuedTarget.campaign.endsAt, $nowMs)}
+              <div class="idle-target-card">
+                <Monogram
+                  src={queuedTarget.campaign.game.boxArtUrl}
+                  name={queuedTarget.campaign.game.name}
+                  width={36}
+                  height={48}
+                />
+                <div class="idle-target-meta">
+                  <div class="idle-target-top">
+                    <span class="idle-target-game">{queuedTarget.campaign.game.name}</span>
+                    <Badge tone={qEnd.tone}>
+                      <Clock size={10} />
+                      <span>{qEnd.ended ? 'Ended' : qEnd.text}</span>
+                    </Badge>
+                  </div>
+                  <strong class="idle-target-name">{queuedTarget.campaign.name}</strong>
+                  <span class="idle-target-status">
+                    {platSnap.lastError ?? platSnap.stateReason ?? 'Queued to farm'}
+                  </span>
+                </div>
+              </div>
+            {:else}
+              <p class="idle-msg">
+                {#if platSnap.state === 'LoggedOut'}
+                  {#if platSnap.campaigns.length > 0}
+                    {platSnap.campaigns.length} public {platName} campaigns available to browse. Sign in to farm drops and track progress.
+                  {:else}
+                    Sign in with your {platName} account to fetch active campaigns and farm drops.
+                  {/if}
                 {:else}
-                  Sign in with your {platName} account to fetch active campaigns and farm drops.
+                  {platSnap.lastError ?? platSnap.stateReason ?? `No active stream selected for ${platName}.`}
                 {/if}
-              {:else}
-                {platSnap.lastError ?? platSnap.stateReason ?? `No active stream selected for ${platName}.`}
-              {/if}
-            </p>
+              </p>
+            {/if}
+
             <div class="hero-actions">
               {#if platSnap.state === 'LoggedOut'}
                 <Button variant={platSnap.platform} size="sm" onclick={() => api.login(platSnap.platform)}>
@@ -281,9 +320,14 @@
                   </Button>
                 </div>
               {:else}
-                <Button variant="secondary" size="sm" onclick={() => activeRoute.set('drops')}>
-                  Browse drops →
-                </Button>
+                <div class="left-btns">
+                  <Button variant="secondary" size="sm" onclick={() => api.retryPlatform(platSnap.platform)}>
+                    <RefreshCw size={13} /> Check now
+                  </Button>
+                  <Button variant="secondary" size="sm" onclick={() => activeRoute.set('drops')}>
+                    Browse drops →
+                  </Button>
+                </div>
               {/if}
               <Button variant="ghost" size="sm" onclick={() => activeRoute.set(platSnap.platform)}>
                 Open {platName} →
@@ -552,6 +596,61 @@
   .idle-msg {
     font-size: var(--text-sm);
     color: var(--text-muted);
+  }
+
+  .idle-target-card {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 9px 11px;
+    border-radius: var(--radius-md);
+    background: rgba(255, 255, 255, 0.03);
+    border: 1px solid var(--border);
+  }
+
+  :global(:root[data-theme="light"]) .idle-target-card {
+    background: var(--surface-2);
+  }
+
+  .idle-target-meta {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .idle-target-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+  }
+
+  .idle-target-game {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .idle-target-name {
+    font-size: 13px;
+    font-weight: 700;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .idle-target-status {
+    font-size: 11px;
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   .hero-actions {

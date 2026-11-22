@@ -6,6 +6,30 @@ use crate::settings::{IdleBehavior, PlatformSettings, PriorityItem, Settings};
 pub const STALL_SWITCH_SECS: i64 = 15 * 60;
 pub const VOLUNTARY_SWITCH_HYSTERESIS_SECS: i64 = 120;
 
+fn normalize_game_alnum(name: &str) -> String {
+    name.chars()
+        .filter(|c| c.is_ascii_alphanumeric())
+        .map(|c| c.to_ascii_lowercase())
+        .collect()
+}
+
+pub fn game_names_match(stream_game: &str, campaign_game: &str) -> bool {
+    let a = stream_game.trim();
+    let b = campaign_game.trim();
+    if a.is_empty() || b.is_empty() {
+        return true;
+    }
+    if a.eq_ignore_ascii_case(b) {
+        return true;
+    }
+    let na = normalize_game_alnum(a);
+    let nb = normalize_game_alnum(b);
+    if na.len() >= 4 && nb.len() >= 4 {
+        return na == nb || na.starts_with(&nb) || nb.starts_with(&na);
+    }
+    false
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SwitchDecision {
     Keep,
@@ -13,7 +37,7 @@ pub enum SwitchDecision {
     SwitchVoluntary(String),
 }
 
-pub fn is_campaign_eligible(
+fn is_campaign_active_window(
     campaign: &Campaign,
     settings: &Settings,
     platform_settings: &PlatformSettings,
@@ -28,14 +52,26 @@ pub fn is_campaign_eligible(
     if platform_settings.excluded_campaigns.contains(&campaign.id) {
         return false;
     }
-    if campaign.requires_link && !campaign.linked && !settings.farm_unlinked {
-        return false;
-    }
     campaign.drops.is_empty()
         || campaign
             .drops
             .iter()
             .any(|d| !d.claimed && !d.needs_manual_claim)
+}
+
+pub fn is_campaign_eligible(
+    campaign: &Campaign,
+    settings: &Settings,
+    platform_settings: &PlatformSettings,
+    now: DateTime<Utc>,
+) -> bool {
+    if !is_campaign_active_window(campaign, settings, platform_settings, now) {
+        return false;
+    }
+    if campaign.requires_link && !campaign.linked && !settings.farm_unlinked {
+        return false;
+    }
+    true
 }
 
 pub fn select_target_campaign<'a>(
@@ -44,28 +80,41 @@ pub fn select_target_campaign<'a>(
     platform_settings: &PlatformSettings,
     now: DateTime<Utc>,
 ) -> Option<&'a Campaign> {
-    let eligible: Vec<&Campaign> = campaigns
+    let active_pool: Vec<&Campaign> = campaigns
         .iter()
-        .filter(|c| is_campaign_eligible(c, settings, platform_settings, now))
+        .filter(|c| is_campaign_active_window(c, settings, platform_settings, now))
         .collect();
 
-    if eligible.is_empty() {
+    if active_pool.is_empty() {
         return None;
     }
 
     // 1. Check user-ordered priority list first.
+    // On Twitch, if the user explicitly prioritized a campaign or game, allow it even when
+    // Twitch GQL reports placeholder isAccountConnected=false for publisher-linked games.
     for item in &platform_settings.priority {
         match item {
             PriorityItem::Campaign { campaign_id, .. } => {
-                if let Some(found) = eligible.iter().copied().find(|c| &c.id == campaign_id) {
+                if let Some(found) = active_pool
+                    .iter()
+                    .copied()
+                    .find(|c| &c.id == campaign_id && (c.platform == crate::platforms::PlatformId::Twitch || is_campaign_eligible(c, settings, platform_settings, now)))
+                {
                     return Some(found);
                 }
             }
-            PriorityItem::Game { game_id, .. } => {
-                if let Some(found) = eligible
+            PriorityItem::Game { game_id, game_name } => {
+                if let Some(found) = active_pool
                     .iter()
                     .copied()
-                    .filter(|c| &c.game.id == game_id)
+                    .filter(|c| {
+                        let matches_game = (!game_id.is_empty() && c.game.id == *game_id)
+                            || (!game_name.trim().is_empty()
+                                && game_names_match(&c.game.name, game_name));
+                        matches_game
+                            && (c.platform == crate::platforms::PlatformId::Twitch
+                                || is_campaign_eligible(c, settings, platform_settings, now))
+                    })
                     .min_by_key(|c| c.ends_at)
                 {
                     return Some(found);
@@ -75,18 +124,25 @@ pub fn select_target_campaign<'a>(
     }
 
     // 2. Check explicitly selected campaigns not yet placed in priority list.
-    if let Some(found) = eligible
+    if let Some(found) = active_pool
         .iter()
         .copied()
-        .filter(|c| platform_settings.farm_campaigns.contains(&c.id))
+        .filter(|c| {
+            platform_settings.farm_campaigns.contains(&c.id)
+                && (c.platform == crate::platforms::PlatformId::Twitch
+                    || is_campaign_eligible(c, settings, platform_settings, now))
+        })
         .min_by_key(|c| c.ends_at)
     {
         return Some(found);
     }
 
-    // 3. Fallback according to idle behavior.
+    // 3. Fallback according to idle behavior (strictly requires linked or farm_unlinked).
     if settings.idle_behavior == IdleBehavior::FarmAny {
-        return eligible.into_iter().min_by_key(|c| c.ends_at);
+        return active_pool
+            .into_iter()
+            .filter(|c| is_campaign_eligible(c, settings, platform_settings, now))
+            .min_by_key(|c| c.ends_at);
     }
 
     None
@@ -105,10 +161,7 @@ pub fn select_best_channel<'a>(
     let eligible: Vec<&Channel> = candidates
         .iter()
         .filter(|ch| ch.is_live && ch.drops_enabled)
-        .filter(|ch| {
-            ch.game_name.is_empty()
-                || ch.game_name.eq_ignore_ascii_case(&campaign.game.name)
-        })
+        .filter(|ch| game_names_match(&ch.game_name, &campaign.game.name))
         .filter(|ch| match allowed_list {
             Some(list) => list
                 .iter()
@@ -161,12 +214,7 @@ pub fn evaluate_switch(ctx: SwitchContext<'_>) -> SwitchDecision {
         return SwitchDecision::SwitchImmediate("Drops disabled on channel".to_string());
     }
 
-    if !ctx.current_channel.game_name.is_empty()
-        && !ctx
-            .current_channel
-            .game_name
-            .eq_ignore_ascii_case(&ctx.current_campaign.game.name)
-    {
+    if !game_names_match(&ctx.current_channel.game_name, &ctx.current_campaign.game.name) {
         return SwitchDecision::SwitchImmediate(format!(
             "Channel switched game to {}",
             ctx.current_channel.game_name
@@ -249,6 +297,7 @@ mod tests {
             game: Game {
                 id: game_id.to_string(),
                 name: game_name.to_string(),
+                slug: None,
                 box_art_url: None,
             },
             name: format!("{game_name} Campaign"),
@@ -425,5 +474,26 @@ mod tests {
             last_voluntary_switch: None,
         });
         assert_eq!(dec, SwitchDecision::Keep);
+    }
+
+    #[test]
+    fn matches_watched_game_by_name_when_drop_appears() {
+        let now = Utc::now();
+        let eft = mk_campaign("eft-1", "491931", "Escape from Tarkov", true, 6);
+        let rust = mk_campaign("rust-1", "263490", "Rust", true, 2);
+        let campaigns = vec![rust, eft];
+
+        let mut settings = Settings::default();
+        settings.disclaimer_accepted_version = 1;
+        settings.idle_behavior = IdleBehavior::StayIdle;
+        settings.twitch.priority = vec![PriorityItem::Game {
+            game_id: String::new(),
+            game_name: "  escape from tarkov ".to_string(),
+        }];
+
+        let picked = select_target_campaign(&campaigns, &settings, &settings.twitch, now);
+        assert_eq!(picked.map(|c| c.id.as_str()), Some("eft-1"));
+        assert!(game_names_match("Overwatch 2", "Overwatch"));
+        assert!(!game_names_match("Grand Theft Auto VI (GTA)", "Call of Duty: Modern Warfare 4"));
     }
 }

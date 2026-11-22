@@ -5,26 +5,47 @@ import type {
   CampaignSort,
   Drop,
   PlatformId,
+  PriorityItem,
   Settings,
 } from './types';
+
+export function priorityItemMatchesGame(
+  item: PriorityItem,
+  gameId: string,
+  gameName: string,
+): item is { kind: 'game'; gameId: string; gameName: string } {
+  if (item.kind !== 'game') return false;
+  const cleanId = gameId.trim();
+  const cleanName = gameName.trim().toLowerCase();
+  if (cleanId && item.gameId === cleanId) return true;
+  return Boolean(cleanName && item.gameName.trim().toLowerCase() === cleanName);
+}
 
 export function isCampaignFarmed(camp: Campaign, settings: Settings): boolean {
   const platSettings = settings[camp.platform];
   if (platSettings.excludedCampaigns.includes(camp.id)) return false;
   if (platSettings.farmCampaigns.includes(camp.id)) return true;
   return platSettings.priority.some((item) =>
-    item.kind === 'campaign' ? item.campaignId === camp.id : item.gameId === camp.game.id,
+    item.kind === 'campaign'
+      ? item.campaignId === camp.id
+      : priorityItemMatchesGame(item, camp.game.id, camp.game.name),
   );
 }
 
 export function isGamePrioritizedFor(camp: Campaign, settings: Settings): boolean {
-  return settings[camp.platform].priority.some(
-    (item) => item.kind === 'game' && item.gameId === camp.game.id,
+  return settings[camp.platform].priority.some((item) =>
+    priorityItemMatchesGame(item, camp.game.id, camp.game.name),
   );
 }
 
 export function isCampaignCompleted(camp: Campaign): boolean {
   return camp.drops.length > 0 && camp.drops.every((d) => d.claimed);
+}
+
+export function isCampaignActiveNow(camp: Campaign, now = Date.now()): boolean {
+  if (camp.status !== 'active') return false;
+  const endTs = new Date(camp.endsAt).getTime();
+  return Number.isNaN(endTs) || endTs > now;
 }
 
 export function hasClaimableDrop(camp: Campaign): boolean {
@@ -56,13 +77,17 @@ export function isCampaignUnlinked(camp: Campaign): boolean {
 export function computeCampaignCounts(
   campaigns: Campaign[],
   settings: Settings,
+  now = Date.now(),
 ): Record<CampaignFilter, number> {
+  const liveOrCompleted = campaigns.filter(
+    (c) => isCampaignActiveNow(c, now) || c.status === 'upcoming' || isCampaignCompleted(c) || hasClaimableDrop(c),
+  );
   return {
-    all: campaigns.length,
-    active: campaigns.filter((c) => c.status === 'active').length,
-    connected: campaigns.filter((c) => isCampaignConnected(c)).length,
-    unlinked: campaigns.filter((c) => isCampaignUnlinked(c)).length,
-    farming: campaigns.filter((c) => isCampaignFarmed(c, settings) && !isCampaignCompleted(c)).length,
+    all: liveOrCompleted.length,
+    active: campaigns.filter((c) => isCampaignActiveNow(c, now)).length,
+    connected: liveOrCompleted.filter((c) => isCampaignConnected(c)).length,
+    unlinked: liveOrCompleted.filter((c) => isCampaignUnlinked(c)).length,
+    farming: campaigns.filter((c) => isCampaignActiveNow(c, now) && isCampaignFarmed(c, settings) && !isCampaignCompleted(c)).length,
     claimable: campaigns.filter((c) => hasClaimableDrop(c)).length,
     upcoming: campaigns.filter((c) => c.status === 'upcoming').length,
     completed: campaigns.filter((c) => isCampaignCompleted(c)).length,
@@ -88,14 +113,18 @@ export function filterAndSortCampaigns(
   sort: CampaignSort,
   search: string,
   selectedGame = 'all',
+  now = Date.now(),
 ): Campaign[] {
   const q = search.trim().toLowerCase();
   const list = campaigns.filter((c) => {
-    if (filter === 'active' && c.status !== 'active') return false;
-    if (filter === 'connected' && !isCampaignConnected(c)) return false;
-    if (filter === 'unlinked' && !isCampaignUnlinked(c)) return false;
+    const activeNow = isCampaignActiveNow(c, now);
+    const keepInGeneral = activeNow || c.status === 'upcoming' || isCampaignCompleted(c) || hasClaimableDrop(c);
+    if (filter === 'all' && !keepInGeneral) return false;
+    if (filter === 'active' && !activeNow) return false;
+    if (filter === 'connected' && (!keepInGeneral || !isCampaignConnected(c))) return false;
+    if (filter === 'unlinked' && (!keepInGeneral || !isCampaignUnlinked(c))) return false;
     if (filter === 'upcoming' && c.status !== 'upcoming') return false;
-    if (filter === 'farming' && (!isCampaignFarmed(c, settings) || isCampaignCompleted(c))) return false;
+    if (filter === 'farming' && (!activeNow || !isCampaignFarmed(c, settings) || isCampaignCompleted(c))) return false;
     if (filter === 'claimable' && !hasClaimableDrop(c)) return false;
     if (filter === 'completed' && !isCampaignCompleted(c)) return false;
     if (selectedGame !== 'all' && c.game.name !== selectedGame) return false;
@@ -202,7 +231,7 @@ export function computeDashboardStats(
   }).length;
 
   const allCampaigns = [...snapshot.twitch.campaigns, ...snapshot.kick.campaigns];
-  const activeCampaigns = allCampaigns.filter((c) => c.status === 'active').length;
+  const activeCampaigns = allCampaigns.filter((c) => isCampaignActiveNow(c, now)).length;
   const claimableNow = allCampaigns.reduce(
     (sum, c) => sum + c.drops.filter((d) => (d.claimable && !d.claimed) || d.needsManualClaim).length,
     0,
@@ -230,11 +259,13 @@ export function computeUpNextQueue(
     const platSnap = snapshot[plat];
     const platSettings = settings[plat];
     const eligible = platSnap.campaigns.filter((c) => {
-      if (c.status !== 'active') return false;
-      if (new Date(c.endsAt).getTime() <= now) return false;
+      if (!isCampaignActiveNow(c, now)) return false;
       if (platSettings.excludedCampaigns.includes(c.id)) return false;
-      if (c.requiresLink && !c.linked && !settings.farmUnlinked) return false;
-      return c.drops.some((d) => !d.claimed && !d.needsManualClaim);
+      const explicitlyChosen = isCampaignFarmed(c, settings);
+      if (c.requiresLink && !c.linked && !settings.farmUnlinked && !(plat === 'twitch' && explicitlyChosen)) {
+        return false;
+      }
+      return c.drops.length === 0 || c.drops.some((d) => !d.claimed && !d.needsManualClaim);
     });
 
     const scored = eligible
@@ -242,7 +273,7 @@ export function computeUpNextQueue(
         let rank = 900;
         platSettings.priority.forEach((p, idx) => {
           if (p.kind === 'campaign' && p.campaignId === camp.id) rank = Math.min(rank, idx);
-          if (p.kind === 'game' && p.gameId === camp.game.id) rank = Math.min(rank, idx);
+          if (priorityItemMatchesGame(p, camp.game.id, camp.game.name)) rank = Math.min(rank, idx);
         });
         if (rank === 900 && platSettings.farmCampaigns.includes(camp.id)) rank = 500;
         if (rank === 900 && settings.idleBehavior !== 'farm_any') return null;
@@ -252,6 +283,30 @@ export function computeUpNextQueue(
       .sort((a, b) => a.rank - b.rank || new Date(a.camp.endsAt).getTime() - new Date(b.camp.endsAt).getTime());
 
     for (const item of scored) {
+      if (item.camp.drops.length === 0) {
+        if (platSnap.currentCampaignId === item.camp.id && platSnap.watching) {
+          continue;
+        }
+        out.push({
+          platform: plat,
+          campaign: item.camp,
+          drop: {
+            id: `${item.camp.id}-summary`,
+            instanceId: null,
+            name: item.camp.name,
+            rewards: [{ name: item.camp.name, imageUrl: item.camp.game.boxArtUrl }],
+            requiredMinutes: 60,
+            currentMinutes: 0,
+            claimable: false,
+            claimed: false,
+            needsManualClaim: false,
+          },
+          priorityRank: item.rank,
+        });
+        if (out.length >= limit * 2) break;
+        continue;
+      }
+
       for (const drop of item.camp.drops) {
         if (drop.claimed || drop.needsManualClaim) continue;
         // Skip the exact drop currently being mined so "Up next" shows upcoming items

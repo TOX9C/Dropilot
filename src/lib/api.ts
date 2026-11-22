@@ -1,6 +1,7 @@
 import { invoke } from '@tauri-apps/api/core';
 import type {
   AppSnapshot,
+  Campaign,
   LogEntry,
   LogLevel,
   PlatformId,
@@ -363,7 +364,38 @@ export const api = {
   setCampaignFarm: (platform: PlatformId, campaignId: string, farm: boolean) =>
     call<Settings>('set_campaign_farm', { platform, campaignId, farm }, cloneSettings),
   setGameFarm: (platform: PlatformId, gameId: string, gameName: string, farm: boolean) =>
-    call<Settings>('set_game_farm', { platform, gameId, gameName, farm }, cloneSettings),
+    call<Settings>('set_game_farm', { platform, gameId, gameName, farm }, () => {
+      const cleanName = gameName.trim();
+      const lower = cleanName.toLowerCase();
+      if (farm && cleanName) {
+        const exists = previewSettings[platform].priority.some(
+          (i) =>
+            i.kind === 'game' &&
+            ((gameId && i.gameId === gameId) || i.gameName.trim().toLowerCase() === lower),
+        );
+        if (!exists) {
+          previewSettings[platform].priority = [
+            ...previewSettings[platform].priority,
+            { kind: 'game', gameId, gameName: cleanName },
+          ];
+        }
+      } else if (!farm) {
+        previewSettings[platform].priority = previewSettings[platform].priority.filter(
+          (i) =>
+            !(
+              i.kind === 'game' &&
+              ((gameId && i.gameId === gameId) || (lower && i.gameName.trim().toLowerCase() === lower))
+            ),
+        );
+      }
+      return cloneSettings();
+    }),
+  fetchCampaignDetails: (platform: PlatformId, campaignId: string) =>
+    call<Campaign>('fetch_campaign_details', { platform, campaignId }, () => {
+      const found = previewSnapshot[platform].campaigns.find((c) => c.id === campaignId);
+      if (!found) throw new Error('Campaign not found');
+      return structuredClone(found);
+    }),
   setPriority: (platform: PlatformId, items: PriorityItem[]) =>
     call<Settings>('set_priority', { platform, items }, () => {
       previewSettings[platform].priority = items;

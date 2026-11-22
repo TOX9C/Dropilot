@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use crate::miner::selector::{
     evaluate_switch, select_best_channel, select_target_campaign, SwitchContext, SwitchDecision,
 };
 use crate::net::backoff::Backoff;
+use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::{
     Account, AppError, Campaign, Channel, Drop, DropProgress, MinerState, Platform, PlatformId,
     PlatformSnapshot, RecentClaim, WatchTickResult,
@@ -115,6 +117,7 @@ struct RuntimeContext {
     backoff: Backoff,
     retry_not_before: Option<Instant>,
     paused: bool,
+    hydrated_campaign_ids: HashSet<String>,
 }
 
 impl RuntimeContext {
@@ -141,6 +144,7 @@ impl RuntimeContext {
             backoff: Backoff::new(),
             retry_not_before: None,
             paused: false,
+            hydrated_campaign_ids: HashSet::new(),
         }
     }
 
@@ -154,6 +158,7 @@ impl RuntimeContext {
         self.current_drop_id = None;
         self.candidates.clear();
         self.campaigns.clear();
+        self.hydrated_campaign_ids.clear();
         self.last_campaign_fetch = None;
         self.last_progress_fetch = None;
         self.last_live_check = None;
@@ -383,6 +388,12 @@ async fn handle_control(
                 step_miner(platform_id, app, state, backend, ctx).await;
             }
         }
+        MinerControl::CampaignDetailsLoaded(detailed) => {
+            ctx.hydrated_campaign_ids.insert(detailed.id.clone());
+            if let Some(camp) = ctx.campaigns.iter_mut().find(|c| c.id == detailed.id) {
+                apply_campaign_details(camp, *detailed);
+            }
+        }
     }
     ControlOutcome::Continue
 }
@@ -499,7 +510,16 @@ async fn step_miner(
 
     if need_campaigns {
         match plat.fetch_campaigns(&token).await {
-            Ok(fetched) => {
+            Ok(mut fetched) => {
+                for next_c in &mut fetched {
+                    if !next_c.link_verified && next_c.drops.is_empty() {
+                        if let Some(prev_c) = ctx.campaigns.iter().find(|old| old.id == next_c.id) {
+                            if prev_c.link_verified || !prev_c.drops.is_empty() {
+                                apply_campaign_details(next_c, prev_c.clone());
+                            }
+                        }
+                    }
+                }
                 ctx.campaigns = fetched;
                 ctx.last_campaign_fetch = Some(Instant::now());
                 ctx.backoff.reset();
@@ -545,7 +565,8 @@ async fn step_miner(
 
     // 5. Select target campaign according to user priority & settings.
     let now = Utc::now();
-    let target_campaign = select_target_campaign(&ctx.campaigns, &settings, &plat_settings, now).cloned();
+    let target_campaign =
+        select_target_campaign(&ctx.campaigns, &settings, &plat_settings, now).cloned();
 
     let Some(target) = target_campaign else {
         close_compat_watch_window(app, platform_id);

@@ -7,6 +7,7 @@ import type {
   DropsViewMode,
   LogEntry,
   NavRoute,
+  PlatformId,
   Settings,
   ToastItem,
 } from './types';
@@ -156,6 +157,56 @@ export async function toggleGameFarmAction(
     notifyUi(`Saved! Log in to ${platName} to start farming ${camp.game.name}.`);
   }
   appSettings.set(updated);
+}
+
+export async function addWatchedGameAction(
+  gameName: string,
+  target: 'twitch' | 'kick' | 'both',
+  snapshot: AppSnapshot | null,
+): Promise<void> {
+  const trimmed = gameName.trim();
+  if (!trimmed) return;
+  const platforms: PlatformId[] = target === 'both' ? ['twitch', 'kick'] : [target];
+  const lower = trimmed.toLowerCase();
+  let latest: Settings | null = null;
+
+  for (const plat of platforms) {
+    const match = snapshot?.[plat].campaigns.find(
+      (c) => c.game.name.trim().toLowerCase() === lower,
+    );
+    const gameId = match?.game.id ?? '';
+    const canonicalName = match?.game.name ?? trimmed;
+    latest = await api.setGameFarm(plat, gameId, canonicalName, true);
+  }
+
+  if (latest) {
+    appSettings.set(latest);
+  }
+
+  const missingAccount = platforms.some((p) => !snapshot?.[p].account);
+  notifyUi(
+    missingAccount
+      ? `Added "${trimmed}" to Auto-Mine Watchlist. Log in to auto-farm when a drop goes live.`
+      : `Watching "${trimmed}" — will auto-mine whenever a drop goes live.`,
+  );
+}
+
+export function updateSnapshotCampaign(updated: Campaign): void {
+  appSnapshot.update((snap) => {
+    if (!snap) return snap;
+    const platSnap = snap[updated.platform];
+    const idx = platSnap.campaigns.findIndex((c) => c.id === updated.id);
+    if (idx === -1) return snap;
+    const nextCampaigns = [...platSnap.campaigns];
+    nextCampaigns[idx] = updated;
+    return {
+      ...snap,
+      [updated.platform]: {
+        ...platSnap,
+        campaigns: nextCampaigns,
+      },
+    };
+  });
 }
 
 function trackSessionProgress(snap: AppSnapshot, isBaseline: boolean) {

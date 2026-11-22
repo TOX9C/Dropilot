@@ -1,6 +1,7 @@
 use chrono::{DateTime, Utc};
 use serde_json::Value;
 
+use crate::miner::selector::game_names_match;
 use crate::platforms::{
     Account, AppError, Campaign, CampaignStatus, Channel, ChannelRef, Drop, DropProgress, Game,
     PlatformId, Reward,
@@ -107,6 +108,12 @@ fn parse_single_campaign(v: &Value) -> Option<Campaign> {
             .and_then(|s| s.as_str())
             .unwrap_or("Unknown Category")
             .to_string(),
+        slug: cat
+            .and_then(|c| c.get("slug"))
+            .and_then(|s| s.as_str())
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string),
         box_art_url: cat
             .and_then(|c| {
                 c.get("image_url")
@@ -114,6 +121,7 @@ fn parse_single_campaign(v: &Value) -> Option<Campaign> {
                     .or_else(|| c.pointer("/banner/url"))
             })
             .and_then(|s| s.as_str())
+            .filter(|s| !s.trim().is_empty())
             .map(str::to_string),
     };
 
@@ -121,17 +129,29 @@ fn parse_single_campaign(v: &Value) -> Option<Campaign> {
         .get("is_connected")
         .or_else(|| v.get("connected"))
         .and_then(|b| b.as_bool());
-    let linked = explicit_linked.unwrap_or(true);
-    let link_url = v
+    let connect_url = v
         .get("connect_url")
-        .or_else(|| v.get("url"))
         .and_then(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let fallback_url = v
+        .get("url")
+        .and_then(|s| s.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
         .map(str::to_string);
     let requires_link = v
         .get("requires_connection")
         .and_then(|b| b.as_bool())
-        .unwrap_or_else(|| link_url.is_some());
-    let link_verified = !requires_link || explicit_linked.is_some();
+        .unwrap_or_else(|| connect_url.is_some());
+    let link_url = connect_url.or(fallback_url);
+    let linked = if requires_link {
+        explicit_linked.unwrap_or(false)
+    } else {
+        explicit_linked.unwrap_or(true)
+    };
+    let link_verified = true;
 
     let allowed_channels = v.get("channels").and_then(|c| c.as_array()).map(|arr| {
         arr.iter()
@@ -190,7 +210,15 @@ fn parse_reward_as_drop(r: &Value) -> Option<Drop> {
     let image_url = r
         .get("image_url")
         .and_then(|s| s.as_str())
-        .map(str::to_string);
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(|s| {
+            if s.starts_with("https://") || s.starts_with("http://") {
+                s.to_string()
+            } else {
+                format!("https://ext.cdn.kick.com/{}", s.trim_start_matches('/'))
+            }
+        });
     let required_minutes = r
         .get("required_units")
         .or_else(|| r.get("required_minutes"))
@@ -252,6 +280,11 @@ pub fn parse_progress(v: &Value) -> Result<Vec<DropProgress>, AppError> {
             };
             let claimed = r.get("claimed").and_then(|b| b.as_bool()).unwrap_or(false);
             let claimable = !claimed && required > 0 && current_minutes >= required;
+            let linked = if current_minutes > 0 || claimed {
+                Some(true)
+            } else {
+                None
+            };
 
             out.push(DropProgress {
                 campaign_id: camp_id.clone(),
@@ -260,7 +293,7 @@ pub fn parse_progress(v: &Value) -> Result<Vec<DropProgress>, AppError> {
                 current_minutes,
                 claimable,
                 claimed,
-                linked: None,
+                linked,
                 drop: None,
             });
         }
@@ -319,7 +352,12 @@ pub fn parse_channel_v2(v: &Value, expected_game: &str) -> Result<Channel, AppEr
     })
 }
 
-pub fn parse_category_livestreams(v: &Value, expected_game: &str) -> Result<Vec<Channel>, AppError> {
+pub fn parse_category_livestreams(
+    v: &Value,
+    expected_game: &str,
+    expected_category_id: &str,
+    expected_slug: Option<&str>,
+) -> Result<Vec<Channel>, AppError> {
     let arr = v
         .get("data")
         .and_then(|d| d.as_array())
@@ -340,6 +378,43 @@ pub fn parse_category_livestreams(v: &Value, expected_game: &str) -> Result<Vec<
         let Some(slug) = ch_obj.get("slug").and_then(|s| s.as_str()) else {
             continue;
         };
+
+        // Verify the stream's actual category matches the target game when category metadata is present.
+        if let Some(cat_node) = item
+            .pointer("/categories/0")
+            .or_else(|| item.get("category"))
+        {
+            let cat_id = cat_node
+                .get("id")
+                .and_then(|x| x.as_u64().map(|n| n.to_string()).or_else(|| x.as_str().map(str::to_string)))
+                .unwrap_or_default();
+            let cat_slug = cat_node
+                .get("slug")
+                .and_then(|s| s.as_str())
+                .unwrap_or_default();
+            let cat_name = cat_node
+                .get("name")
+                .and_then(|s| s.as_str())
+                .unwrap_or_default();
+
+            let id_ok = !expected_category_id.is_empty()
+                && !cat_id.is_empty()
+                && cat_id == expected_category_id;
+            let slug_ok = expected_slug
+                .filter(|s| !s.is_empty())
+                .map(|s| !cat_slug.is_empty() && cat_slug.eq_ignore_ascii_case(s))
+                .unwrap_or(false);
+            let name_ok = !cat_name.is_empty() && game_names_match(cat_name, expected_game);
+
+            if (!cat_id.is_empty() || !cat_slug.is_empty() || !cat_name.is_empty())
+                && !id_ok
+                && !slug_ok
+                && !name_ok
+            {
+                continue;
+            }
+        }
+
         let display_name = ch_obj
             .pointer("/user/username")
             .and_then(|s| s.as_str())
@@ -347,6 +422,7 @@ pub fn parse_category_livestreams(v: &Value, expected_game: &str) -> Result<Vec<
             .to_string();
         let avatar_url = ch_obj
             .pointer("/user/profile_pic")
+            .or_else(|| ch_obj.pointer("/user/profilepic"))
             .and_then(|s| s.as_str())
             .map(str::to_string);
         let viewer_count = item
@@ -368,4 +444,107 @@ pub fn parse_category_livestreams(v: &Value, expected_game: &str) -> Result<Vec<
         });
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use chrono::Duration;
+    use serde_json::json;
+
+    #[test]
+    fn handles_empty_connect_url_and_normalizes_kick_reward_images() {
+        let now = Utc::now();
+        let future = (now + Duration::hours(24)).to_rfc3339();
+        let past = (now - Duration::hours(2)).to_rfc3339();
+        let payload = json!({
+            "data": [
+                {
+                    "id": "mw4-camp",
+                    "name": "Modern Warfare 4",
+                    "status": "active",
+                    "starts_at": past,
+                    "ends_at": future,
+                    "connect_url": "",
+                    "url": "https://kick.com/category/call-of-duty-modern-warfare-4",
+                    "category": {
+                        "id": 14138,
+                        "name": "Call of Duty: Modern Warfare 4",
+                        "slug": "call-of-duty-modern-warfare-4"
+                    },
+                    "rewards": [
+                        {
+                            "id": "r1",
+                            "name": "MW4 Ghost Badge",
+                            "image_url": "drops/reward-image/ghost.png",
+                            "required_units": 3000
+                        }
+                    ]
+                },
+                {
+                    "id": "rotk-camp",
+                    "name": "ROTK X KICK",
+                    "status": "active",
+                    "starts_at": past,
+                    "ends_at": future,
+                    "connect_url": "https://rotk.app/connections/kick",
+                    "category": {
+                        "id": 14321,
+                        "name": "Return Of The King",
+                        "slug": "return-of-the-king"
+                    },
+                    "rewards": []
+                }
+            ]
+        });
+
+        let camps = parse_campaigns(&payload).expect("kick campaigns");
+        assert_eq!(camps.len(), 2);
+        assert!(!camps[0].requires_link);
+        assert!(camps[0].linked);
+        assert_eq!(
+            camps[0].game.slug.as_deref(),
+            Some("call-of-duty-modern-warfare-4")
+        );
+        assert_eq!(
+            camps[0].drops[0].rewards[0].image_url.as_deref(),
+            Some("https://ext.cdn.kick.com/drops/reward-image/ghost.png")
+        );
+
+        assert!(camps[1].requires_link);
+        assert!(!camps[1].linked);
+        assert!(camps[1].link_verified);
+    }
+
+    #[test]
+    fn filters_out_mismatched_category_streams_on_kick() {
+        let payload = json!({
+            "data": [
+                {
+                    "viewer_count": 122000,
+                    "channel": { "id": 1, "slug": "coringa", "user": { "username": "Coringa" } },
+                    "categories": [
+                        { "id": 13155, "name": "Grand Theft Auto VI (GTA)", "slug": "grand-theft-auto-vi" }
+                    ]
+                },
+                {
+                    "viewer_count": 3400,
+                    "channel": { "id": 2, "slug": "cod_pro", "user": { "username": "CoDPro" } },
+                    "categories": [
+                        { "id": 14138, "name": "Call of Duty: Modern Warfare 4", "slug": "call-of-duty-modern-warfare-4" }
+                    ]
+                }
+            ]
+        });
+
+        let channels = parse_category_livestreams(
+            &payload,
+            "Call of Duty: Modern Warfare 4",
+            "14138",
+            Some("call-of-duty-modern-warfare-4"),
+        )
+        .expect("filtered kick streams");
+        assert_eq!(channels.len(), 1);
+        assert_eq!(channels[0].login, "cod_pro");
+    }
 }

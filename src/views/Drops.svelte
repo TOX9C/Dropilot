@@ -2,7 +2,10 @@
   import Clock from 'lucide-svelte/icons/clock';
   import Gift from 'lucide-svelte/icons/gift';
   import LogIn from 'lucide-svelte/icons/log-in';
+  import Plus from 'lucide-svelte/icons/plus';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import Sparkles from 'lucide-svelte/icons/sparkles';
+  import X from 'lucide-svelte/icons/x';
   import Badge from '../components/Badge.svelte';
   import Button from '../components/Button.svelte';
   import CampaignCard from '../components/CampaignCard.svelte';
@@ -16,12 +19,16 @@
     isCampaignCompleted,
     isCampaignFarmed,
     isGamePrioritizedFor,
+    priorityItemMatchesGame,
   } from '../lib/selectors';
   import {
+    addWatchedGameAction,
+    appSettings,
     dropsViewMode,
     notifyUi,
     toggleCampaignFarmAction,
     toggleGameFarmAction,
+    updateSnapshotCampaign,
   } from '../lib/stores';
   import type {
     AppSnapshot,
@@ -45,8 +52,48 @@
   let sort = $state<CampaignSort>('ending_soon');
   let search = $state('');
   let selectedGame = $state('all');
+  let watchInput = $state('');
+  let watchScope = $state<'both' | 'twitch' | 'kick'>('both');
+  let addingWatch = $state(false);
 
   const allCampaigns = $derived([...snapshot.twitch.campaigns, ...snapshot.kick.campaigns]);
+
+  interface WatchedGameChip {
+    key: string;
+    name: string;
+    twitchId: string | null;
+    kickId: string | null;
+    hasLiveDrop: boolean;
+  }
+
+  const allGameSuggestions = $derived(extractGameOptions(allCampaigns).map((g) => g.name));
+
+  const watchedGames = $derived.by<WatchedGameChip[]>(() => {
+    const map = new Map<string, WatchedGameChip>();
+    for (const plat of ['twitch', 'kick'] as const) {
+      for (const item of settings[plat].priority) {
+        if (item.kind !== 'game') continue;
+        const cleanName = item.gameName.trim();
+        const key = (cleanName || item.gameId).toLowerCase();
+        if (!key) continue;
+        const existing = map.get(key) ?? {
+          key,
+          name: cleanName || item.gameId,
+          twitchId: null,
+          kickId: null,
+          hasLiveDrop: false,
+        };
+        if (plat === 'twitch') existing.twitchId = item.gameId;
+        if (plat === 'kick') existing.kickId = item.gameId;
+        const activeNow = snapshot[plat].campaigns.some(
+          (c) => c.status === 'active' && priorityItemMatchesGame(item, c.game.id, c.game.name),
+        );
+        if (activeNow) existing.hasLiveDrop = true;
+        map.set(key, existing);
+      }
+    }
+    return Array.from(map.values());
+  });
 
   const platformCounts = $derived<Record<PlatformFilter, number>>({
     all: allCampaigns.length,
@@ -58,10 +105,10 @@
     platformFilter === 'all' ? allCampaigns : snapshot[platformFilter].campaigns,
   );
 
-  const counts = $derived(computeCampaignCounts(scopedCampaigns, settings));
+  const counts = $derived(computeCampaignCounts(scopedCampaigns, settings, $nowMs));
   const games = $derived(extractGameOptions(scopedCampaigns));
   const filteredCampaigns = $derived(
-    filterAndSortCampaigns(scopedCampaigns, settings, filter, sort, search, selectedGame),
+    filterAndSortCampaigns(scopedCampaigns, settings, filter, sort, search, selectedGame, $nowMs),
   );
 
   const endingUnder24h = $derived(
@@ -137,6 +184,41 @@
       notifyUi(String(err), 'error');
     }
   }
+
+  async function handleAddWatchSubmit(ev: SubmitEvent) {
+    ev.preventDefault();
+    const clean = watchInput.trim();
+    if (!clean || addingWatch) return;
+    addingWatch = true;
+    try {
+      await addWatchedGameAction(clean, watchScope, snapshot);
+      watchInput = '';
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    } finally {
+      addingWatch = false;
+    }
+  }
+
+  async function handleRemoveWatchedGame(chip: WatchedGameChip) {
+    try {
+      let latest = settings;
+      if (chip.twitchId !== null) {
+        latest = await api.setGameFarm('twitch', chip.twitchId, chip.name, false);
+      }
+      if (chip.kickId !== null) {
+        latest = await api.setGameFarm('kick', chip.kickId, chip.name, false);
+      }
+      appSettings.set(latest);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
+
+  async function handleFetchDetails(camp: Campaign) {
+    const detailed = await api.fetchCampaignDetails(camp.platform, camp.id);
+    updateSnapshotCampaign(detailed);
+  }
 </script>
 
 <div class="page">
@@ -176,6 +258,68 @@
       </Button>
     </div>
   </header>
+
+  <section class="card watchlist-bar" aria-label="Auto-mine game watchlist">
+    <div class="wl-top">
+      <div class="wl-title">
+        <Sparkles size={14} />
+        <strong>Auto-Mine Watchlist</strong>
+        <span class="wl-sub">Add any game — DropPilot automatically mines it whenever drops go live</span>
+      </div>
+
+      <form class="wl-form" onsubmit={handleAddWatchSubmit}>
+        <input
+          type="text"
+          class="wl-input"
+          list="all-drops-game-suggestions"
+          bind:value={watchInput}
+          placeholder="Type any game (e.g. Escape from Tarkov, Rust, VALORANT)..."
+          aria-label="Game name to auto-mine"
+        />
+        <datalist id="all-drops-game-suggestions">
+          {#each allGameSuggestions as gName (gName)}
+            <option value={gName}></option>
+          {/each}
+        </datalist>
+
+        <div class="wl-scope" role="group" aria-label="Watchlist platform">
+          <button type="button" class="scope-pill" class:active={watchScope === 'both'} onclick={() => (watchScope = 'both')}>Both</button>
+          <button type="button" class="scope-pill" class:active={watchScope === 'twitch'} onclick={() => (watchScope = 'twitch')}>Twitch</button>
+          <button type="button" class="scope-pill" class:active={watchScope === 'kick'} onclick={() => (watchScope = 'kick')}>Kick</button>
+        </div>
+
+        <Button variant="primary" size="sm" type="submit" disabled={!watchInput.trim() || addingWatch}>
+          <Plus size={13} />
+          <span>Watch game</span>
+        </Button>
+      </form>
+    </div>
+
+    {#if watchedGames.length > 0}
+      <div class="wl-chips">
+        {#each watchedGames as chip (chip.key)}
+          <div class="wl-chip" class:wl-chip-live={chip.hasLiveDrop}>
+            <span class="wl-dots" aria-hidden="true">
+              {#if chip.twitchId !== null}<span class="plat-dot dot-twitch" title="Twitch"></span>{/if}
+              {#if chip.kickId !== null}<span class="plat-dot dot-kick" title="Kick"></span>{/if}
+            </span>
+            <span class="wl-chip-name">{chip.name}</span>
+            <span class="wl-chip-status" class:status-live={chip.hasLiveDrop}>
+              {chip.hasLiveDrop ? 'Live drop' : 'Waiting'}
+            </span>
+            <button
+              type="button"
+              class="wl-chip-rm"
+              aria-label={`Remove ${chip.name} from watchlist`}
+              onclick={() => handleRemoveWatchedGame(chip)}
+            >
+              <X size={11} />
+            </button>
+          </div>
+        {/each}
+      </div>
+    {/if}
+  </section>
 
   <FilterBar
     {filter}
@@ -236,6 +380,7 @@
           onExclude={() => handleToggleFarm(camp, false)}
           onOpenUrl={handleOpenUrl}
           onOpenInventory={() => handleOpenInventory(camp.platform)}
+          onFetchDetails={() => handleFetchDetails(camp)}
         />
       {/each}
     </div>
@@ -243,6 +388,156 @@
 </div>
 
 <style>
+  .watchlist-bar {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 10px 14px;
+    background: linear-gradient(135deg, rgba(129, 140, 248, 0.10), rgba(168, 85, 247, 0.06) 55%, transparent);
+  }
+
+  .wl-top {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .wl-title {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 7px;
+    color: var(--accent-text);
+    font-size: var(--text-sm);
+  }
+
+  .wl-title strong {
+    color: var(--text);
+  }
+
+  .wl-sub {
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+  }
+
+  .wl-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    justify-content: flex-end;
+    min-width: 280px;
+  }
+
+  .wl-input {
+    flex: 1;
+    min-width: 210px;
+    max-width: 340px;
+    height: 30px;
+    padding: 0 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text);
+    font-size: var(--text-xs);
+  }
+
+  .wl-input::placeholder {
+    color: var(--text-faint);
+  }
+
+  .wl-input:focus {
+    outline: none;
+    border-color: var(--accent);
+  }
+
+  .wl-scope {
+    display: inline-flex;
+    align-items: center;
+    padding: 2px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+
+  .scope-pill {
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 11px;
+    font-weight: 600;
+    padding: 3px 8px;
+    border-radius: var(--radius-pill);
+  }
+
+  .scope-pill.active {
+    background: var(--accent-tint);
+    color: var(--accent-text);
+  }
+
+  .wl-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .wl-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 3px 8px;
+    border-radius: var(--radius-pill);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 12px;
+  }
+
+  .wl-chip-live {
+    border-color: rgba(52, 211, 153, 0.38);
+    background: rgba(52, 211, 153, 0.08);
+  }
+
+  .wl-dots {
+    display: inline-flex;
+    align-items: center;
+    gap: 3px;
+  }
+
+  .wl-chip-name {
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .wl-chip-status {
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-faint);
+  }
+
+  .wl-chip-status.status-live {
+    color: var(--success-text);
+  }
+
+  .wl-chip-rm {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    height: 16px;
+    border: none;
+    border-radius: var(--radius-pill);
+    background: transparent;
+    color: var(--text-faint);
+  }
+
+  .wl-chip-rm:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+  }
+
   .drops-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));

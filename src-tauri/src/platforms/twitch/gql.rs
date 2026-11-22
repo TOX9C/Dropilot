@@ -277,3 +277,56 @@ pub async fn execute_persisted_gql_batch(
 
     Ok(items)
 }
+
+pub async fn fetch_game_directory_streams(
+    http: &AllowlistedClient,
+    token: Option<&str>,
+    game_id: &str,
+    game_name: &str,
+    tag_id: &str,
+) -> Result<Value, AppError> {
+    const BY_ID_QUERY: &str = "query($id: ID!, $tags: [String!]) { game(id: $id) { id name displayName slug streams(first: 30, options: { sort: VIEWER_COUNT, tags: $tags }) { edges { node { id viewersCount broadcaster { id login displayName profileImageURL(width: 70) } } } } } }";
+    const BY_NAME_QUERY: &str = "query($name: String!, $tags: [String!]) { game(name: $name) { id name displayName slug streams(first: 30, options: { sort: VIEWER_COUNT, tags: $tags }) { edges { node { id viewersCount broadcaster { id login displayName profileImageURL(width: 70) } } } } } }";
+
+    let headers = build_twitch_headers(token)?;
+    let payload = if !game_id.trim().is_empty() {
+        json!({
+            "query": BY_ID_QUERY,
+            "variables": {
+                "id": game_id.trim(),
+                "tags": [tag_id],
+            }
+        })
+    } else {
+        json!({
+            "query": BY_NAME_QUERY,
+            "variables": {
+                "name": game_name.trim(),
+                "tags": [tag_id],
+            }
+        })
+    };
+
+    let resp = http
+        .request_platform(
+            PlatformId::Twitch,
+            "GameDirectoryById",
+            Method::POST,
+            TWITCH_GQL_URL,
+            headers,
+            Some(&payload),
+        )
+        .await?;
+
+    if let Some(err) = map_gql_http_status("GameDirectoryById", resp.status, &resp.body) {
+        return Err(err);
+    }
+
+    let parsed: Value = serde_json::from_str(&resp.body).map_err(|e| {
+        AppError::PlatformChanged(format!("Invalid JSON from GameDirectoryById: {e}"))
+    })?;
+
+    check_gql_errors("GameDirectoryById", &parsed)?;
+
+    Ok(parsed)
+}

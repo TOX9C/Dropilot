@@ -3,12 +3,12 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
 
 use tauri::AppHandle;
-use tokio::sync::{mpsc, oneshot, RwLock};
+use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 
 use crate::events::EventHub;
 use crate::logging::{LogBuffer, LogHandle};
 use crate::net::client::AllowlistedClient;
-use crate::platforms::{AppSnapshot, PlatformId, PlatformSnapshot, RecentClaim};
+use crate::platforms::{AppSnapshot, Campaign, PlatformId, PlatformSnapshot, RecentClaim};
 use crate::settings::{save_settings, Settings};
 
 const MAX_RECENT_CLAIMS: usize = 50;
@@ -26,6 +26,7 @@ pub enum MinerControl {
     RetryNow,
     SettingsUpdated,
     RefreshNow,
+    CampaignDetailsLoaded(Box<Campaign>),
     Shutdown,
 }
 
@@ -40,6 +41,7 @@ pub struct AppState {
     pub recent_claims: Arc<RwLock<VecDeque<RecentClaim>>>,
     pub miner_channels: RwLock<HashMap<PlatformId, mpsc::Sender<MinerControl>>>,
     pub kick_bridge_waiters: BridgeWaiters,
+    pub twitch_bridge_lock: Arc<Mutex<()>>,
     pub allow_exit: AtomicBool,
     pub mock_active: AtomicBool,
 }
@@ -62,6 +64,7 @@ impl AppState {
             recent_claims: Arc::new(RwLock::new(VecDeque::with_capacity(MAX_RECENT_CLAIMS))),
             miner_channels: RwLock::new(HashMap::new()),
             kick_bridge_waiters: Arc::new(StdMutex::new(HashMap::new())),
+            twitch_bridge_lock: Arc::new(Mutex::new(())),
             allow_exit: AtomicBool::new(false),
             mock_active: AtomicBool::new(mock_active),
         }

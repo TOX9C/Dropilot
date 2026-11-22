@@ -11,6 +11,7 @@ use reqwest::Method;
 use tauri::AppHandle;
 
 use crate::auth::login_window::{close_compat_watch_window, close_kick_bridge_window};
+use crate::miner::selector::game_names_match;
 use crate::net::client::AllowlistedClient;
 use crate::platforms::kick::api::{
     kick_request_json, KickRequest, KICK_CAMPAIGNS_URL, KICK_CHANNEL_V2_BASE,
@@ -20,6 +21,7 @@ use crate::platforms::kick::models::{
     parse_account, parse_campaigns, parse_category_livestreams, parse_channel_v2, parse_progress,
 };
 use crate::platforms::kick::watch::KickWatchSession;
+use crate::platforms::twitch::twitch_game_slug;
 use crate::platforms::{
     Account, AppError, Campaign, Channel, Drop, DropProgress, Platform, PlatformId,
     WatchTickResult,
@@ -158,7 +160,9 @@ impl Platform for KickPlatform {
                         is_followed: false,
                     };
                     if let Ok(checked) = self.check_live(token, &probe).await {
-                        if checked.is_live {
+                        if checked.is_live
+                            && game_names_match(&checked.game_name, &campaign.game.name)
+                        {
                             live.push(checked);
                         }
                     }
@@ -167,10 +171,20 @@ impl Platform for KickPlatform {
             }
         }
 
-        let category_query = if campaign.game.id.is_empty() {
-            String::new()
-        } else {
+        let slug = campaign
+            .game
+            .slug
+            .as_deref()
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .unwrap_or_else(|| twitch_game_slug(&campaign.game.name));
+
+        let category_query = if !slug.is_empty() {
+            format!("?subcategory={slug}&sort=desc&limit=25")
+        } else if !campaign.game.id.is_empty() {
             format!("?category_id={}&sort=desc&limit=25", campaign.game.id)
+        } else {
+            String::new()
         };
         let url = format!("{KICK_LIVESTREAMS_BASE}{category_query}");
 
@@ -189,7 +203,12 @@ impl Platform for KickPlatform {
         )
         .await?;
 
-        parse_category_livestreams(&payload, &campaign.game.name)
+        parse_category_livestreams(
+            &payload,
+            &campaign.game.name,
+            &campaign.game.id,
+            Some(slug.as_str()),
+        )
     }
 
     async fn check_live(&self, token: &str, channel: &Channel) -> Result<Channel, AppError> {
