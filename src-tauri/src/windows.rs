@@ -29,10 +29,14 @@ pub const UI_WEBVIEW_BROWSER_ARGS: &str = concat!(
 );
 
 /// Lean Chromium flags shared across ALL platform windows using `webview_data_dir()`
-/// (login, inventory, and rare fallback bridges). Keeps GPU intact for official login/security checks.
+/// (login, inventory, and rare fallback bridges). Keeps GPU intact for official login/security checks
+/// and disables occluded-window throttling so short-lived hidden bridges render React pages promptly.
 pub const PLATFORM_WEBVIEW_BROWSER_ARGS: &str = concat!(
     "--disable-extensions ",
     "--disable-background-networking ",
+    "--disable-background-timer-throttling ",
+    "--disable-renderer-backgrounding ",
+    "--disable-backgrounding-occluded-windows ",
     "--disable-sync ",
     "--disable-component-update ",
     "--disable-default-apps ",

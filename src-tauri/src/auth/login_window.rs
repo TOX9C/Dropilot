@@ -975,6 +975,7 @@ pub(crate) enum TwitchGqlInspect {
     Data(serde_json::Value),
     Unauthenticated(String),
     TransientIntegrity(String),
+    Failed(String),
 }
 
 pub(crate) fn inspect_twitch_gql_payload(
@@ -1162,6 +1163,7 @@ pub(crate) fn inspect_twitch_claim_payload(
                 .pointer("/data/claimDropRewards/status")
                 .and_then(|v| v.as_str())
             {
+                info!(status, "Received Twitch DropsPage_ClaimDropRewards response");
                 if matches!(
                     status,
                     "ELIGIBLE_FOR_ALL" | "DROP_INSTANCE_ALREADY_CLAIMED" | "SUCCESS"
@@ -1170,6 +1172,17 @@ pub(crate) fn inspect_twitch_claim_payload(
                 }
                 if status.to_ascii_lowercase().contains("integrity") {
                     return Some(TwitchGqlInspect::TransientIntegrity(status.to_string()));
+                }
+                if status == "ACCOUNT_NOT_LINKED" {
+                    return Some(TwitchGqlInspect::Failed(
+                        "Twitch reports your game account is not linked — reconnect it in Twitch Drops Inventory"
+                            .to_string(),
+                    ));
+                }
+                if !status.is_empty() {
+                    return Some(TwitchGqlInspect::Failed(format!(
+                        "Twitch claim returned status: {status}"
+                    )));
                 }
             }
         }
@@ -1413,6 +1426,27 @@ fn build_twitch_claim_drop_script(
   const targetDrop = norm({drop_json});
   const targetRewards = ({rewards_json}).map(norm).filter(Boolean);
 
+  function postStatus(payload) {{
+    try {{
+      if (window.chrome && window.chrome.webview) {{
+        window.chrome.webview.postMessage(
+          JSON.stringify(Object.assign({{ dpTwitchClaimEvent: true }}, payload))
+        );
+      }}
+    }} catch (_) {{}}
+  }}
+
+  function isClaimLabel(txt) {{
+    if (!txt || txt.includes("claimed")) return false;
+    return (
+      txt === "claim now" ||
+      txt === "claim" ||
+      txt === "claim drop" ||
+      txt.startsWith("claim now ") ||
+      txt.startsWith("claim drop ")
+    );
+  }}
+
   function collectClaimButtons() {{
     const seen = new Set();
     const out = [];
@@ -1438,17 +1472,13 @@ fn build_twitch_claim_drop_script(
 
     const buttons = document.querySelectorAll("button");
     for (let i = 0; i < buttons.length; i++) {{
-      const txt = norm(buttons[i].textContent);
-      const aria = norm(buttons[i].getAttribute("aria-label"));
-      if (
-        txt === "claim now" ||
-        txt === "claim" ||
-        txt === "claim drop" ||
-        aria === "claim now" ||
-        aria === "claim" ||
-        aria === "claim drop"
-      ) {{
-        maybeAdd(buttons[i]);
+      const btn = buttons[i];
+      const coreLabel = btn.querySelector('[data-a-target="tw-core-button-label-text"]');
+      const coreTxt = coreLabel ? norm(coreLabel.textContent) : "";
+      const txt = norm(btn.textContent);
+      const aria = norm(btn.getAttribute("aria-label"));
+      if (isClaimLabel(coreTxt) || isClaimLabel(txt) || isClaimLabel(aria)) {{
+        maybeAdd(btn);
       }}
     }}
     return out;
@@ -1483,35 +1513,66 @@ fn build_twitch_claim_drop_script(
     return score;
   }}
 
+  function hasConnectButtonForTarget() {{
+    const els = document.querySelectorAll("a, button");
+    for (let i = 0; i < els.length; i++) {{
+      const el = els[i];
+      const txt = norm(el.textContent);
+      if (txt !== "connect") continue;
+      if (scoreButton(el) >= 1) return true;
+    }}
+    return false;
+  }}
+
+  function triggerClick(btn) {{
+    btn.scrollIntoView({{ block: "center" }});
+    btn.focus();
+    const opts = {{ bubbles: true, cancelable: true, view: window }};
+    try {{
+      btn.dispatchEvent(new PointerEvent("pointerdown", opts));
+      btn.dispatchEvent(new MouseEvent("mousedown", opts));
+      btn.dispatchEvent(new PointerEvent("pointerup", opts));
+      btn.dispatchEvent(new MouseEvent("mouseup", opts));
+    }} catch (_) {{}}
+    btn.click();
+  }}
+
   let attempts = 0;
   let clickCount = 0;
   let lastClickAt = 0;
   let readyAt = 0;
-  const timer = setInterval(function () {{
-    attempts += 1;
-    if (attempts > 45 || clickCount >= 5) {{
-      clearInterval(timer);
-      return;
-    }}
+  let reportedConnect = false;
+
+  function tryClaimNow() {{
+    if (clickCount >= 5 || reportedConnect) return;
     if (document.readyState === "loading") return;
     const now = Date.now();
     if (readyAt === 0) {{
       readyAt = now;
       return;
     }}
-    if (now - readyAt < 1000) return;
-    if (lastClickAt > 0 && now - lastClickAt < 3000) return;
+    if (now - readyAt < 600) return;
+    if (lastClickAt > 0 && now - lastClickAt < 2500) return;
 
     try {{
       const buttons = collectClaimButtons();
-      if (buttons.length === 0) return;
+      if (buttons.length === 0) {{
+        if (!reportedConnect && now - readyAt > 8000 && hasConnectButtonForTarget()) {{
+          reportedConnect = true;
+          postStatus({{
+            action: "connect_required",
+            detail: "Twitch Inventory shows 'Connect' instead of 'Claim Now' for this drop — check your Twitch Connections"
+          }});
+        }}
+        return;
+      }}
 
       let bestBtn = null;
       let bestScore = -1;
       for (let i = 0; i < buttons.length; i++) {{
         const btn = buttons[i];
         const prev = btn.__dpClaimClickedAt || 0;
-        if (prev > 0 && now - prev < 3500) continue;
+        if (prev > 0 && now - prev < 3000) continue;
         const s = scoreButton(btn);
         if (s > bestScore) {{
           bestScore = s;
@@ -1523,12 +1584,40 @@ fn build_twitch_claim_drop_script(
         bestBtn.__dpClaimClickedAt = now;
         lastClickAt = now;
         clickCount += 1;
-        bestBtn.scrollIntoView({{ block: "center" }});
-        bestBtn.focus();
-        bestBtn.click();
+        postStatus({{
+          action: "clicked",
+          label: norm(bestBtn.textContent).slice(0, 60),
+          score: bestScore,
+          totalButtons: buttons.length
+        }});
+        triggerClick(bestBtn);
       }}
     }} catch (_) {{}}
-  }}, 400);
+  }}
+
+  const observer = new MutationObserver(function () {{
+    tryClaimNow();
+  }});
+  function attachObserver() {{
+    if (document.body) {{
+      observer.observe(document.body, {{ childList: true, subtree: true, attributes: true }});
+    }}
+  }}
+  if (document.body) {{
+    attachObserver();
+  }} else {{
+    document.addEventListener("DOMContentLoaded", attachObserver, {{ once: true }});
+  }}
+
+  const timer = setInterval(function () {{
+    attempts += 1;
+    if (attempts > 90 || clickCount >= 5 || reportedConnect) {{
+      clearInterval(timer);
+      observer.disconnect();
+      return;
+    }}
+    tryClaimNow();
+  }}, 350);
 }})();
 "##
     ))
@@ -1547,7 +1636,7 @@ async fn run_twitch_bridge(
     use std::sync::Mutex as StdMutex;
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_2;
     use webview2_com::{
-        take_pwstr, WebResourceResponseReceivedEventHandler,
+        take_pwstr, WebMessageReceivedEventHandler, WebResourceResponseReceivedEventHandler,
         WebResourceResponseViewGetContentCompletedHandler,
     };
     use windows::core::{Interface, PWSTR};
@@ -1589,8 +1678,6 @@ async fn run_twitch_bridge(
         .build()
         .map_err(|e| AppError::Internal(format!("Failed creating Twitch bridge window: {e}")))?;
 
-    apply_low_memory_mode(&win);
-
     let (result_tx, result_rx) = oneshot::channel::<Result<serde_json::Value, String>>();
     let result_tx_slot = Arc::new(StdMutex::new(Some(result_tx)));
     let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
@@ -1611,6 +1698,7 @@ async fn run_twitch_bridge(
                 .cast()
                 .map_err(|e| format!("ICoreWebView2_2 cast failed: {e}"))?;
 
+            let msg_tx = attach_tx.clone();
             let mut token = 0i64;
             let handler = WebResourceResponseReceivedEventHandler::create(Box::new(
                 move |_webview, args| {
@@ -1685,6 +1773,15 @@ async fn run_twitch_bridge(
                                                     }
                                                 }
                                             }
+                                            Some(TwitchGqlInspect::Failed(msg)) => {
+                                                if let Ok(mut guard) = tx_inner.lock() {
+                                                    if let Some(tx) = guard.take() {
+                                                        let _ = tx.send(Err(format!(
+                                                            "blocked:{msg}"
+                                                        )));
+                                                    }
+                                                }
+                                            }
                                             None => {}
                                         }
                                     }
@@ -1701,6 +1798,72 @@ async fn run_twitch_bridge(
             core2
                 .add_WebResourceResponseReceived(&handler, &mut token)
                 .map_err(|e| format!("add_WebResourceResponseReceived failed: {e}"))?;
+
+            let mut msg_token = 0i64;
+            let msg_handler = WebMessageReceivedEventHandler::create(Box::new(
+                move |_webview, args| {
+                    let Some(args) = args else {
+                        return Ok(());
+                    };
+                    let mut src_pwstr = PWSTR::null();
+                    args.Source(&mut src_pwstr)?;
+                    let src = take_pwstr(src_pwstr);
+                    if !src.starts_with("https://www.twitch.tv") {
+                        return Ok(());
+                    }
+                    let mut msg_pwstr = PWSTR::null();
+                    if args.TryGetWebMessageAsString(&mut msg_pwstr).is_err() {
+                        return Ok(());
+                    }
+                    let raw = take_pwstr(msg_pwstr);
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&raw) {
+                        if val.get("dpTwitchClaimEvent").and_then(|v| v.as_bool()) == Some(true) {
+                            let action = val
+                                .get("action")
+                                .and_then(|v| v.as_str())
+                                .unwrap_or_default();
+                            match action {
+                                "clicked" => {
+                                    let label = val
+                                        .get("label")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or("claim");
+                                    let score = val
+                                        .get("score")
+                                        .and_then(|v| v.as_i64())
+                                        .unwrap_or(0);
+                                    let total = val
+                                        .get("totalButtons")
+                                        .and_then(|v| v.as_u64())
+                                        .unwrap_or(0);
+                                    info!(
+                                        label,
+                                        score,
+                                        total_buttons = total,
+                                        "Clicked Twitch Claim Now button in official inventory"
+                                    );
+                                }
+                                "connect_required" => {
+                                    let detail = val
+                                        .get("detail")
+                                        .and_then(|v| v.as_str())
+                                        .unwrap_or(
+                                            "Twitch Inventory shows 'Connect' instead of 'Claim Now'",
+                                        );
+                                    if let Ok(mut guard) = msg_tx.lock() {
+                                        if let Some(tx) = guard.take() {
+                                            let _ = tx.send(Err(format!("blocked:{detail}")));
+                                        }
+                                    }
+                                }
+                                _ => {}
+                            }
+                        }
+                    }
+                    Ok(())
+                },
+            ));
+            let _ = core.add_WebMessageReceived(&msg_handler, &mut msg_token);
             Ok(())
         })();
 
@@ -1757,13 +1920,13 @@ async fn run_twitch_bridge(
                     "Twitch integrity check did not succeed after retries; check Logs for integrity handshake status"
                         .to_string(),
                 ))
-            } else if expected_kind == "directory" || expected_kind == "campaign-details" {
-                Err(AppError::Network(
-                    "Twitch page request timed out; please retry in a moment".to_string(),
+            } else if expected_kind == "claim-drop" {
+                Err(AppError::Blocked(
+                    "Twitch Inventory did not show a Claim Now button in time".to_string(),
                 ))
             } else {
-                Err(AppError::Blocked(
-                    "Twitch official drops page did not respond in time".to_string(),
+                Err(AppError::Network(
+                    "Twitch page sync timed out; retrying automatically".to_string(),
                 ))
             }
         }
@@ -1788,7 +1951,7 @@ pub async fn twitch_bridge_capture(
     #[cfg(windows)]
     {
         let kind_owned = expected_kind.to_string();
-        let timeout_secs = if expected_kind == "directory" { 35 } else { 25 };
+        let timeout_secs = 35;
         let inspector: TwitchPayloadInspector =
             Arc::new(move |bytes| inspect_twitch_gql_payload(bytes, &kind_owned));
         run_twitch_bridge(app, page_url, expected_kind, timeout_secs, None, inspector).await
@@ -1872,7 +2035,7 @@ pub async fn twitch_bridge_claim_drop(
             app,
             "https://www.twitch.tv/drops/inventory",
             "claim-drop",
-            20,
+            35,
             Some(script),
             inspector,
         )
