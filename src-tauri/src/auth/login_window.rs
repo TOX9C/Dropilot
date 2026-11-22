@@ -421,9 +421,9 @@ pub async fn open_login_window(
                     platform = platform.as_str(),
                     "Captured official session cookie into Credential Manager"
                 );
-                if platform == PlatformId::Kick {
-                    sleep(Duration::from_millis(600)).await;
-                }
+                // Give Twitch/Kick web pages a brief moment to finish writing companion cookies
+                // and flush WebView2's cookie database to disk before closing the login window.
+                sleep(Duration::from_millis(1200)).await;
                 if let Some(login_win) = app_clone.get_webview_window(&label_string) {
                     let _ = login_win.close();
                 }
@@ -1639,7 +1639,7 @@ async fn run_twitch_bridge(
         take_pwstr, WebMessageReceivedEventHandler, WebResourceResponseReceivedEventHandler,
         WebResourceResponseViewGetContentCompletedHandler,
     };
-    use windows::core::{Interface, PWSTR};
+    use windows::core::{Interface, HSTRING, PWSTR};
 
     let parsed = Url::parse(page_url)
         .map_err(|e| AppError::Internal(format!("Invalid Twitch bridge URL: {e}")))?;
@@ -1682,10 +1682,16 @@ async fn run_twitch_bridge(
     let result_tx_slot = Arc::new(StdMutex::new(Some(result_tx)));
     let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
     let integrity_attempts = Arc::new(AtomicUsize::new(0));
+    let seen_gql_ops: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
+    let saved_twitch_token = SecretStore::load_token(PlatformId::Twitch)
+        .ok()
+        .flatten()
+        .map(|s| s.expose().to_string());
 
     let kind_log = expected_kind.to_string();
     let attach_tx = result_tx_slot.clone();
     let attach_attempts = integrity_attempts.clone();
+    let attach_ops = seen_gql_ops.clone();
 
     if let Err(err) = win.with_webview(move |wv| {
         let attach_res: Result<(), String> = (|| unsafe {
@@ -1697,6 +1703,24 @@ async fn run_twitch_bridge(
             let core2: ICoreWebView2_2 = core
                 .cast()
                 .map_err(|e| format!("ICoreWebView2_2 cast failed: {e}"))?;
+
+            // Keep WebView2's Twitch session cookie synchronized with the user's validated
+            // Credential Manager token so official drops pages never silently load logged-out.
+            if let Some(ref auth_tok) = saved_twitch_token {
+                if let Ok(cm) = core2.CookieManager() {
+                    let name_h = HSTRING::from("auth-token");
+                    let val_h = HSTRING::from(auth_tok.as_str());
+                    let dom_h = HSTRING::from(".twitch.tv");
+                    let path_h = HSTRING::from("/");
+                    if let Ok(cookie) = cm.CreateCookie(&name_h, &val_h, &dom_h, &path_h) {
+                        let _ = cookie.SetIsSecure(true);
+                        let _ = cookie.SetIsHttpOnly(false);
+                        let expires = chrono::Utc::now().timestamp() as f64 + 180.0 * 86400.0;
+                        let _ = cookie.SetExpires(expires);
+                        let _ = cm.AddOrUpdateCookie(&cookie);
+                    }
+                }
+            }
 
             let msg_tx = attach_tx.clone();
             let mut token = 0i64;
@@ -1723,12 +1747,14 @@ async fn run_twitch_bridge(
                     let mut status = 0i32;
                     resp.StatusCode(&mut status)?;
                     if status != 200 {
+                        warn!(kind = %kind_log, status, "Twitch GQL returned non-200 in official page");
                         return Ok(());
                     }
 
                     let tx_inner = attach_tx.clone();
                     let kind_inner = kind_log.clone();
                     let attempts_inner = attach_attempts.clone();
+                    let ops_inner = attach_ops.clone();
                     let inspector_inner = inspector.clone();
                     let content_handler =
                         WebResourceResponseViewGetContentCompletedHandler::create(Box::new(
@@ -1736,6 +1762,29 @@ async fn run_twitch_bridge(
                                 if hr.is_ok() {
                                     if let Some(stream) = stream {
                                         let bytes = read_istream_to_vec(&stream);
+                                        if let Ok(parsed_val) =
+                                            serde_json::from_slice::<serde_json::Value>(&bytes)
+                                        {
+                                            let items: &[serde_json::Value] =
+                                                match parsed_val.as_array() {
+                                                    Some(arr) => arr.as_slice(),
+                                                    None => std::slice::from_ref(&parsed_val),
+                                                };
+                                            if let Ok(mut ops_guard) = ops_inner.lock() {
+                                                for it in items {
+                                                    if let Some(op) = it
+                                                        .pointer("/extensions/operationName")
+                                                        .and_then(|v| v.as_str())
+                                                    {
+                                                        if !ops_guard.iter().any(|s| s == op)
+                                                            && ops_guard.len() < 24
+                                                        {
+                                                            ops_guard.push(op.to_string());
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
                                         match inspector_inner(&bytes) {
                                             Some(TwitchGqlInspect::Data(val)) => {
                                                 if let Ok(mut guard) = tx_inner.lock() {
@@ -1898,6 +1947,10 @@ async fn run_twitch_bridge(
     }
 
     let wait_res = timeout(Duration::from_secs(timeout_secs), result_rx).await;
+    let final_url = win
+        .url()
+        .map(|u| u.path().to_string())
+        .unwrap_or_else(|_| "unknown".to_string());
     close_twitch_bridge_window(app);
 
     match wait_res {
@@ -1915,6 +1968,16 @@ async fn run_twitch_bridge(
             }
         }
         Ok(Err(_)) | Err(_) => {
+            let ops_seen = seen_gql_ops
+                .lock()
+                .map(|g| g.join(","))
+                .unwrap_or_default();
+            warn!(
+                kind = expected_kind,
+                page_path = %final_url,
+                gql_ops = %ops_seen,
+                "Twitch bridge timed out before matching expected GQL response"
+            );
             if integrity_attempts.load(Ordering::Relaxed) > 0 {
                 Err(AppError::Blocked(
                     "Twitch integrity check did not succeed after retries; check Logs for integrity handshake status"
