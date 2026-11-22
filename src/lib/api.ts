@@ -492,7 +492,7 @@ export const api = {
       available: false,
       currentVersion: '0.1.0',
       latestVersion: '0.1.0',
-      releaseUrl: 'https://github.com/theflash1211/dropilot/releases',
+      releaseUrl: 'https://github.com/theflash1211/dropilot-releases/releases',
       publishedAt: null,
     })),
   isMockAvailable: () => call<boolean>('is_mock_available', undefined, () => true),

@@ -5,7 +5,7 @@ use crate::net::allowlist::{UPDATE_CHECK_HOST, UPDATE_CHECK_PATH};
 use crate::net::client::AllowlistedClient;
 use crate::platforms::AppError;
 
-pub const RELEASES_PAGE_URL: &str = "https://github.com/theflash1211/dropilot/releases";
+pub const RELEASES_PAGE_URL: &str = "https://github.com/theflash1211/dropilot-releases/releases";
 
 #[derive(Debug, Deserialize)]
 struct GitHubRelease {
@@ -38,7 +38,7 @@ pub async fn check_for_updates(http: &AllowlistedClient) -> Result<UpdateStatus,
 
     let safe_url = if release
         .html_url
-        .starts_with("https://github.com/theflash1211/dropilot/")
+        .starts_with("https://github.com/theflash1211/dropilot-releases/")
     {
         release.html_url
     } else {
