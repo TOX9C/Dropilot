@@ -190,6 +190,14 @@ pub fn resolve_twitch_client_id(bundled_default: &str) -> String {
     bundled_default.to_string()
 }
 
+/// Resolves extra CSS selectors for Twitch's Claim Now button from remote config.
+pub fn resolve_claim_selectors() -> Vec<String> {
+    if let Ok(guard) = active_lock().read() {
+        return guard.twitch_claim_selectors.clone();
+    }
+    Vec::new()
+}
+
 pub fn cache_path() -> PathBuf {
     appdata_dir().join("remote_config.json")
 }

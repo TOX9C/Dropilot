@@ -1409,6 +1409,9 @@ fn build_twitch_claim_drop_script(
         .map_err(|e| AppError::Internal(format!("Serialize drop name failed: {e}")))?;
     let rewards_json = serde_json::to_string(reward_names)
         .map_err(|e| AppError::Internal(format!("Serialize reward names failed: {e}")))?;
+    let extra_selectors = crate::remote_config::resolve_claim_selectors();
+    let extra_selectors_json = serde_json::to_string(&extra_selectors)
+        .map_err(|e| AppError::Internal(format!("Serialize claim selectors failed: {e}")))?;
 
     Ok(format!(
         r##"
@@ -1425,6 +1428,7 @@ fn build_twitch_claim_drop_script(
   const targetGame = norm({game_json});
   const targetDrop = norm({drop_json});
   const targetRewards = ({rewards_json}).map(norm).filter(Boolean);
+  const extraSelectors = {extra_selectors_json};
 
   function postStatus(payload) {{
     try {{
@@ -1470,6 +1474,17 @@ fn build_twitch_claim_drop_script(
       maybeAdd(tagged[i]);
     }}
 
+    if (Array.isArray(extraSelectors)) {{
+      for (let s = 0; s < extraSelectors.length; s++) {{
+        try {{
+          const found = document.querySelectorAll(extraSelectors[s]);
+          for (let j = 0; j < found.length; j++) {{
+            maybeAdd(found[j]);
+          }}
+        }} catch (_) {{}}
+      }}
+    }}
+
     const buttons = document.querySelectorAll("button");
     for (let i = 0; i < buttons.length; i++) {{
       const btn = buttons[i];
@@ -1487,9 +1502,12 @@ fn build_twitch_claim_drop_script(
   function scoreButton(btn) {{
     let score = 0;
     let cur = btn.parentElement;
-    for (let depth = 0; depth < 12 && cur && cur !== document.body; depth++) {{
+    for (let depth = 0; depth < 9 && cur && cur !== document.body; depth++) {{
       if (cur.tagName === "MAIN") break;
       const text = norm(cur.textContent);
+      // Never climb into the full inventory list wrapper that mixes multiple unrelated games.
+      if (text.length > 2400) break;
+      if (depth >= 4 && cur.querySelectorAll("a, button").length > 20) break;
       if (depth < 6) {{
         for (let r = 0; r < targetRewards.length; r++) {{
           if (targetRewards[r] && text.includes(targetRewards[r])) {{
@@ -1513,13 +1531,30 @@ fn build_twitch_claim_drop_script(
     return score;
   }}
 
+  function isConnectInsideTargetCard(el) {{
+    let cur = el.parentElement;
+    for (let depth = 0; depth < 6 && cur && cur !== document.body; depth++) {{
+      if (cur.tagName === "MAIN") break;
+      const text = norm(cur.textContent);
+      if (text.length > 1200) break;
+      if (cur.querySelectorAll("a, button").length > 10) break;
+      for (let r = 0; r < targetRewards.length; r++) {{
+        if (targetRewards[r] && text.includes(targetRewards[r])) return true;
+      }}
+      if (targetDrop && text.includes(targetDrop)) return true;
+      if (targetCampaign && text.includes(targetCampaign)) return true;
+      cur = cur.parentElement;
+    }}
+    return false;
+  }}
+
   function hasConnectButtonForTarget() {{
     const els = document.querySelectorAll("a, button");
     for (let i = 0; i < els.length; i++) {{
       const el = els[i];
       const txt = norm(el.textContent);
       if (txt !== "connect") continue;
-      if (scoreButton(el) >= 1) return true;
+      if (isConnectInsideTargetCard(el)) return true;
     }}
     return false;
   }}
@@ -1557,7 +1592,7 @@ fn build_twitch_claim_drop_script(
     try {{
       const buttons = collectClaimButtons();
       if (buttons.length === 0) {{
-        if (!reportedConnect && now - readyAt > 8000 && hasConnectButtonForTarget()) {{
+        if (!reportedConnect && now - readyAt > 12000 && hasConnectButtonForTarget()) {{
           reportedConnect = true;
           postStatus({{
             action: "connect_required",
