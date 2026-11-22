@@ -100,7 +100,7 @@ pub async fn kick_request_json(
     }
 
     if allow_bridge && should_fallback_to_kick_bridge(resp.status, &resp.headers, &resp.body) {
-        // Fallback: execute the same request from inside DropPilot's hidden kick.com WebView2 page.
+        // Fallback: execute the same request from inside Dropilot's hidden kick.com WebView2 page.
         if let Some(app_handle) = app {
             let method_str = if method == Method::POST { "POST" } else { "GET" };
             let body_str = json_body.and_then(|v| serde_json::to_string(v).ok());

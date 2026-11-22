@@ -12,9 +12,9 @@ fn ensure_webview2_or_prompt() -> bool {
         MessageBoxW, IDYES, MB_ICONWARNING, MB_YESNO,
     };
 
-    let title: Vec<u16> = "DropPilot — WebView2 Required\0".encode_utf16().collect();
+    let title: Vec<u16> = "Dropilot — WebView2 Required\0".encode_utf16().collect();
     let msg: Vec<u16> = concat!(
-        "DropPilot requires the Microsoft Edge WebView2 Runtime, which was not detected on this PC.\n\n",
+        "Dropilot requires the Microsoft Edge WebView2 Runtime, which was not detected on this PC.\n\n",
         "Would you like to open Microsoft's official WebView2 download page in your browser?"
     )
     .encode_utf16()
@@ -46,5 +46,5 @@ fn main() {
     if !ensure_webview2_or_prompt() {
         return;
     }
-    droppilot_lib::run();
+    dropilot_lib::run();
 }

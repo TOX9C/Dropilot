@@ -264,7 +264,7 @@
       <div class="lo-icon"><LogIn size={24} /></div>
       <h2>Sign in to {platName}</h2>
       <p>
-        Open {platName}'s official site inside DropPilot's isolated window to load active campaigns and track drops.
+        Open {platName}'s official site inside Dropilot's isolated window to load active campaigns and track drops.
       </p>
       <Button variant={platform} size="md" onclick={handleLogin}>
         <LogIn size={15} />

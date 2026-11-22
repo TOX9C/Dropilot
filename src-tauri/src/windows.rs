@@ -7,7 +7,7 @@ use tracing::warn;
 use crate::settings::{ThemeMode, WindowBounds};
 use crate::state::AppState;
 
-/// Ultra-light Chromium flags for DropPilot's local Svelte UI window (`main`).
+/// Ultra-light Chromium flags for Dropilot's local Svelte UI window (`main`).
 /// Disables the separate GPU & out-of-process audio processes, caps disk/media caches
 /// and V8 heap, and disables unused Chromium background features while preserving WRY's defaults.
 pub const UI_WEBVIEW_BROWSER_ARGS: &str = concat!(
@@ -42,13 +42,13 @@ pub const PLATFORM_WEBVIEW_BROWSER_ARGS: &str = concat!(
     "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,BackForwardCache,MediaRouter,OptimizationHints,InterestFeedContentSuggestions"
 );
 
-/// Isolated WebView2 user-data directory solely for DropPilot's local Svelte UI (`main`).
+/// Isolated WebView2 user-data directory solely for Dropilot's local Svelte UI (`main`).
 /// Separate from `webview_data_dir()` so `main` can use stricter low-RAM flags (`--disable-gpu`)
 /// and never accumulates Twitch/Kick site caches or service workers.
 pub fn ui_webview_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("DropPilot")
+        .join("Dropilot")
         .join("WebView2-UI")
 }
 
@@ -56,8 +56,28 @@ pub fn ui_webview_data_dir() -> PathBuf {
 pub fn webview_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("DropPilot")
+        .join("Dropilot")
         .join("WebView2")
+}
+
+/// One-time migration of the isolated Twitch/Kick WebView2 session folder from legacy `DropPilot`
+/// to `Dropilot` so existing logged-in browser sessions carry over automatically.
+pub fn migrate_legacy_webview_dir() {
+    let new_dir = webview_data_dir();
+    if new_dir.exists() {
+        return;
+    }
+    let legacy_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("DropPilot")
+        .join("WebView2");
+    if !legacy_dir.exists() {
+        return;
+    }
+    if let Some(parent) = new_dir.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    let _ = std::fs::rename(&legacy_dir, &new_dir);
 }
 
 #[cfg(windows)]
@@ -157,7 +177,7 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         .unwrap_or((1040.0, 700.0));
 
     let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
-        .title("DropPilot")
+        .title("Dropilot")
         .inner_size(width, height)
         .min_inner_size(840.0, 560.0)
         .resizable(true)

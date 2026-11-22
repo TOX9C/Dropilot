@@ -360,7 +360,7 @@ impl AllowlistedClient {
         let resp: Response = self
             .http_update
             .get(parsed)
-            .header(USER_AGENT, format!("DropPilot/{}", env!("CARGO_PKG_VERSION")))
+            .header(USER_AGENT, format!("Dropilot/{}", env!("CARGO_PKG_VERSION")))
             .header("Accept", "application/vnd.github+json")
             .send()
             .await

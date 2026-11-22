@@ -5,6 +5,7 @@
   import type { LogEntry, LogLevel, PlatformId } from '../lib/types';
   import Badge from './Badge.svelte';
   import Button from './Button.svelte';
+  import CustomSelect, { type SelectOption } from './CustomSelect.svelte';
   import Toggle from './Toggle.svelte';
 
   interface Props {
@@ -60,6 +61,20 @@
     }
   });
 
+  const levelOptions: SelectOption[] = [
+    { value: 'all', label: 'All levels', dotTone: 'accent' },
+    { value: 'info', label: 'Info', dotTone: 'info' },
+    { value: 'warn', label: 'Warn', dotTone: 'warn' },
+    { value: 'error', label: 'Error', dotTone: 'error' },
+    { value: 'debug', label: 'Debug', dotTone: 'muted' },
+  ];
+
+  const platformOptions: SelectOption[] = [
+    { value: 'all', label: 'All platforms', dotTone: 'accent' },
+    { value: 'twitch', label: 'Twitch', dotTone: 'twitch' },
+    { value: 'kick', label: 'Kick', dotTone: 'kick' },
+  ];
+
   function copyVisible() {
     const text = collapsedRows
       .map(
@@ -82,19 +97,23 @@
         aria-label="Search log messages"
       />
 
-      <select aria-label="Filter logs by level" bind:value={levelFilter}>
-        <option value="all">All levels</option>
-        <option value="info">Info</option>
-        <option value="warn">Warn</option>
-        <option value="error">Error</option>
-        <option value="debug">Debug</option>
-      </select>
+      <CustomSelect
+        options={levelOptions}
+        value={levelFilter}
+        onchange={(v) => (levelFilter = v as typeof levelFilter)}
+        ariaLabel="Filter logs by level"
+        size="sm"
+        minMenuWidth={160}
+      />
 
-      <select aria-label="Filter logs by platform" bind:value={platformFilter}>
-        <option value="all">All platforms</option>
-        <option value="twitch">Twitch</option>
-        <option value="kick">Kick</option>
-      </select>
+      <CustomSelect
+        options={platformOptions}
+        value={platformFilter}
+        onchange={(v) => (platformFilter = v as typeof platformFilter)}
+        ariaLabel="Filter logs by platform"
+        size="sm"
+        minMenuWidth={170}
+      />
 
       <label class="follow-toggle">
         <Toggle checked={followLogs} ariaLabel="Auto-follow newest logs" onchange={(v) => (followLogs = v)} />

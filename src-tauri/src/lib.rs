@@ -33,11 +33,13 @@ use crate::settings::{load_settings, save_settings};
 use crate::state::{AppState, MinerControl};
 use crate::tray::setup_tray;
 use crate::windows::{
-    capture_bounds_sync, ensure_main_window, resume_webview, suspend_webview,
+    capture_bounds_sync, ensure_main_window, migrate_legacy_webview_dir, resume_webview,
+    suspend_webview,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    migrate_legacy_webview_dir();
     let mut settings = load_settings();
     // Always start on Auto channel by default instead of carrying over stale pins from prior sessions.
     if settings.twitch.pinned_channel.is_some() || settings.kick.pinned_channel.is_some() {
@@ -245,7 +247,7 @@ pub fn run() {
     let app = match app_result {
         Ok(a) => a,
         Err(err) => {
-            eprintln!("Failed starting DropPilot: {err}");
+            eprintln!("Failed starting Dropilot: {err}");
             return;
         }
     };

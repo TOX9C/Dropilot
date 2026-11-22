@@ -26,7 +26,7 @@ pub const KICK_EXACT_HOSTS: &[&str] = &["kick.com"];
 pub const KICK_SUFFIX_HOSTS: &[&str] = &[".kick.com", ".live-video.net"];
 
 pub const UPDATE_CHECK_HOST: &str = "api.github.com";
-pub const UPDATE_CHECK_PATH: &str = "/repos/droppilot/droppilot/releases/latest";
+pub const UPDATE_CHECK_PATH: &str = "/repos/theflash1211/dropilot/releases/latest";
 
 pub const LOGIN_IDP_EXACT_HOSTS: &[&str] = &[
     "accounts.google.com",
@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn update_check_requires_exact_repo_path() {
         assert!(validate_url(
-            &parse("https://api.github.com/repos/droppilot/droppilot/releases/latest"),
+            &parse("https://api.github.com/repos/theflash1211/dropilot/releases/latest"),
             AllowlistKind::UpdateCheck
         ).is_ok());
         assert!(validate_url(
@@ -195,7 +195,7 @@ mod tests {
             AllowlistKind::UpdateCheck
         ).is_err());
         assert!(validate_url(
-            &parse("https://api.github.com/repos/droppilot/droppilot/releases/latest"),
+            &parse("https://api.github.com/repos/theflash1211/dropilot/releases/latest"),
             AllowlistKind::Platform
         ).is_err());
     }

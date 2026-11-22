@@ -23,6 +23,7 @@
   import Badge from './Badge.svelte';
   import Button from './Button.svelte';
   import Countdown from './Countdown.svelte';
+  import CustomSelect, { type SelectOption } from './CustomSelect.svelte';
   import Monogram from './Monogram.svelte';
   import ProgressBar from './ProgressBar.svelte';
   import StatusPill from './StatusPill.svelte';
@@ -78,6 +79,38 @@
   const isPinned = $derived(
     Boolean(channel && pinnedChannel && channel.login.toLowerCase() === pinnedChannel.toLowerCase()),
   );
+  const channelOptions = $derived.by((): SelectOption[] => {
+    const opts: SelectOption[] = [
+      {
+        value: '',
+        label: 'Auto channel',
+        subtitle: 'Best live participating streamer',
+        dotTone: 'accent',
+      },
+    ];
+    if (
+      pinnedChannel &&
+      !participatingCandidates.some((c) => c.login.toLowerCase() === pinnedChannel.toLowerCase())
+    ) {
+      opts.push({
+        value: pinnedChannel,
+        label: pinnedChannel,
+        subtitle: 'Currently offline',
+        dotTone: 'offline',
+      });
+    }
+    for (const cand of participatingCandidates) {
+      opts.push({
+        value: cand.login,
+        label: cand.displayName,
+        meta: formatViewerCount(cand.viewerCount),
+        subtitle: 'Drops enabled · Live',
+        avatarUrl: cand.avatarUrl,
+        dotTone: 'live',
+      });
+    }
+    return opts;
+  });
   const campEnd = $derived(campaign ? formatEndCountdown(campaign.endsAt, $nowMs) : null);
 
   const liveProg = $derived(
@@ -129,26 +162,18 @@
 
       <div class="controls">
         {#if participatingCandidates.length > 0 || pinnedChannel}
-          <select
-            class="pin-select"
-            aria-label="Select participating channel"
-            title="Auto channel by default — only channels participating in this drop are listed"
+          <CustomSelect
+            options={channelOptions}
             value={pinnedChannel ?? ''}
-            onchange={(e) => {
-              const val = (e.currentTarget as HTMLSelectElement).value;
-              onPinChannel(val || null);
-            }}
-          >
-            <option value="">Auto channel</option>
-            {#if pinnedChannel && !participatingCandidates.some((c) => c.login.toLowerCase() === pinnedChannel.toLowerCase())}
-              <option value={pinnedChannel}>{pinnedChannel} (offline)</option>
-            {/if}
-            {#each participatingCandidates as cand (cand.login)}
-              <option value={cand.login}>
-                {cand.displayName} ({formatViewerCount(cand.viewerCount)})
-              </option>
-            {/each}
-          </select>
+            onchange={(val) => onPinChannel(val || null)}
+            ariaLabel="Select participating channel"
+            title="Auto channel by default — only channels participating in this drop are listed"
+            searchable={participatingCandidates.length >= 6}
+            searchPlaceholder="Search participating streamers..."
+            size="md"
+            minMenuWidth={256}
+            maxWidth="210px"
+          />
         {/if}
 
         <Button

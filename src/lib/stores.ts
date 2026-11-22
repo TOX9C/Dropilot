@@ -13,59 +13,62 @@ import type {
   ToastItem,
 } from './types';
 
-function readBool(key: string, fallback: boolean): boolean {
+function readStorage(key: string, legacyKey: string): string | null {
   try {
     const v = localStorage.getItem(key);
-    return v === null ? fallback : v === 'true';
+    if (v !== null) return v;
+    const legacy = localStorage.getItem(legacyKey);
+    if (legacy !== null) {
+      localStorage.setItem(key, legacy);
+      return legacy;
+    }
+    return null;
   } catch {
-    return fallback;
+    return null;
   }
+}
+
+function readBool(key: string, legacyKey: string, fallback: boolean): boolean {
+  const v = readStorage(key, legacyKey);
+  return v === null ? fallback : v === 'true';
 }
 
 function readDropsViewMode(): DropsViewMode {
-  try {
-    const v = localStorage.getItem('droppilot.dropsViewMode');
-    return v === 'compact' ? 'compact' : 'grid';
-  } catch {
-    return 'grid';
-  }
+  const v = readStorage('dropilot.dropsViewMode', 'droppilot.dropsViewMode');
+  return v === 'compact' ? 'compact' : 'grid';
 }
 
 function readRoute(): NavRoute {
-  try {
-    const v = localStorage.getItem('droppilot.route');
-    if (
-      v === 'dashboard' ||
-      v === 'drops' ||
-      v === 'twitch' ||
-      v === 'kick' ||
-      v === 'logs' ||
-      v === 'settings'
-    ) {
-      return v;
-    }
-  } catch {
-    // ignore storage errors
+  const v = readStorage('dropilot.route', 'droppilot.route');
+  if (
+    v === 'dashboard' ||
+    v === 'drops' ||
+    v === 'twitch' ||
+    v === 'kick' ||
+    v === 'logs' ||
+    v === 'settings'
+  ) {
+    return v;
   }
   return 'dashboard';
 }
 
 function readAccentPreset(): AccentPreset {
-  try {
-    const v = localStorage.getItem('droppilot.accentPreset');
-    if (v === 'cyan' || v === 'emerald' || v === 'amber' || v === 'crimson' || v === 'violet') {
-      return v;
-    }
-  } catch {
-    // ignore
+  const v = readStorage('dropilot.accentPreset', 'droppilot.accentPreset');
+  if (v === 'cyan' || v === 'emerald' || v === 'amber' || v === 'crimson' || v === 'violet') {
+    return v;
   }
   return 'cyan';
 }
 
 export const activeRoute = writable<NavRoute>(readRoute());
 export const accentPreset = writable<AccentPreset>(readAccentPreset());
-export const sidebarCollapsed = writable<boolean>(readBool('droppilot.sidebarCollapsed', false));
-export const checklistDismissed = writable<boolean>(readBool('droppilot.checklistDismissed', false));
+export const sidebarCollapsed = writable<boolean>(
+  readBool('dropilot.sidebarCollapsed', 'droppilot.sidebarCollapsed', false),
+);
+export const checklistDismissed = writable<boolean>(
+  readBool('dropilot.checklistDismissed', 'droppilot.checklistDismissed', false),
+);
 export const dropsViewMode = writable<DropsViewMode>(readDropsViewMode());
 export const shortcutsOpen = writable<boolean>(false);
 
@@ -86,7 +89,7 @@ const previousDropMinutes = new Map<string, number>();
 activeRoute.subscribe((route) => {
   currentRoute = route;
   try {
-    localStorage.setItem('droppilot.route', route);
+    localStorage.setItem('dropilot.route', route);
   } catch {
     // ignore
   }
@@ -97,7 +100,7 @@ activeRoute.subscribe((route) => {
 
 sidebarCollapsed.subscribe((collapsed) => {
   try {
-    localStorage.setItem('droppilot.sidebarCollapsed', String(collapsed));
+    localStorage.setItem('dropilot.sidebarCollapsed', String(collapsed));
   } catch {
     // ignore
   }
@@ -105,7 +108,7 @@ sidebarCollapsed.subscribe((collapsed) => {
 
 accentPreset.subscribe((preset) => {
   try {
-    localStorage.setItem('droppilot.accentPreset', preset);
+    localStorage.setItem('dropilot.accentPreset', preset);
   } catch {
     // ignore
   }
@@ -113,7 +116,7 @@ accentPreset.subscribe((preset) => {
 
 checklistDismissed.subscribe((dismissed) => {
   try {
-    localStorage.setItem('droppilot.checklistDismissed', String(dismissed));
+    localStorage.setItem('dropilot.checklistDismissed', String(dismissed));
   } catch {
     // ignore
   }
@@ -121,7 +124,7 @@ checklistDismissed.subscribe((dismissed) => {
 
 dropsViewMode.subscribe((mode) => {
   try {
-    localStorage.setItem('droppilot.dropsViewMode', mode);
+    localStorage.setItem('dropilot.dropsViewMode', mode);
   } catch {
     // ignore
   }

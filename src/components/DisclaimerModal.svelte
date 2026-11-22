@@ -11,18 +11,18 @@
   let { open, onAccept }: Props = $props();
 </script>
 
-<Modal {open} title="Before you start using DropPilot" blocking>
+<Modal {open} title="Before you start using Dropilot" blocking>
   <div class="warn-head">
     <AlertTriangle size={20} />
     <span>Platform Terms &amp; Account Responsibility</span>
   </div>
   <p>
-    DropPilot automates drop progress tracking and reward claiming for your own logged-in Twitch
+    Dropilot automates drop progress tracking and reward claiming for your own logged-in Twitch
     and Kick accounts using standard web sessions.
   </p>
   <p>
     Automated stream watching or claiming may conflict with each platform's Terms of Service. You
-    are solely responsible for your accounts and how you choose to use DropPilot. DropPilot is not
+    are solely responsible for your accounts and how you choose to use Dropilot. Dropilot is not
     affiliated with or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
   </p>
   <p class="note">

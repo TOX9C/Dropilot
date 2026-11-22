@@ -8,7 +8,7 @@ use crate::net::client::{parse_header_name_value, AllowlistedClient};
 use crate::platforms::{AppError, PlatformId};
 
 /// Official public Twitch web client ID observed on https://www.twitch.tv.
-/// DropPilot never impersonates mobile, TV, or console clients.
+/// Dropilot never impersonates mobile, TV, or console clients.
 pub const TWITCH_WEB_CLIENT_ID: &str = "kimne78kx3ncx6brgo4mv6wki5h1ko";
 
 pub const TWITCH_GQL_URL: &str = "https://gql.twitch.tv/gql";
@@ -22,7 +22,7 @@ pub struct PersistedOp {
 }
 
 /// Persisted GQL operations used by Twitch's web client.
-/// If Twitch rotates a hash and returns `PersistedQueryNotFound`, DropPilot surfaces
+/// If Twitch rotates a hash and returns `PersistedQueryNotFound`, Dropilot surfaces
 /// `AppError::PlatformChanged` rather than retrying aggressively. See `docs/ENDPOINTS.md`
 /// for instructions on verifying hashes in browser DevTools.
 pub mod ops {

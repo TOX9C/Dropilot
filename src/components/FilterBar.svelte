@@ -1,9 +1,12 @@
 <script lang="ts">
+  import ArrowUpDown from 'lucide-svelte/icons/arrow-up-down';
+  import Gamepad2 from 'lucide-svelte/icons/gamepad-2';
   import LayoutGrid from 'lucide-svelte/icons/layout-grid';
   import List from 'lucide-svelte/icons/list';
   import Search from 'lucide-svelte/icons/search';
   import X from 'lucide-svelte/icons/x';
   import type { CampaignFilter, CampaignSort, DropsViewMode, PlatformFilter } from '../lib/types';
+  import CustomSelect, { type SelectOption } from './CustomSelect.svelte';
 
   interface Props {
     filter: CampaignFilter;
@@ -62,6 +65,53 @@
     platformFilter !== 'all' || filter !== 'all' || selectedGame !== 'all' || search.trim() !== '',
   );
 
+  const gameOptions = $derived.by((): SelectOption[] => [
+    {
+      value: 'all',
+      label: 'All games',
+      meta: String(games.length),
+      dotTone: 'accent',
+    },
+    ...games.map((g) => ({
+      value: g.name,
+      label: g.name,
+      meta: String(g.count),
+    })),
+  ]);
+
+  const sortOptions: SelectOption[] = [
+    {
+      value: 'ending_soon',
+      label: 'Ending soonest',
+      subtitle: 'Prioritize drops closing soon',
+      dotTone: 'warn',
+    },
+    {
+      value: 'progress',
+      label: 'Most progress',
+      subtitle: 'Closest to unlocking first',
+      dotTone: 'accent',
+    },
+    {
+      value: 'shortest',
+      label: 'Shortest watch time',
+      subtitle: 'Fastest drops to complete',
+      dotTone: 'live',
+    },
+    {
+      value: 'rewards',
+      label: 'Most rewards',
+      subtitle: 'Campaigns with the most skins',
+      dotTone: 'twitch',
+    },
+    {
+      value: 'name',
+      label: 'Name (A–Z)',
+      subtitle: 'Alphabetical by game',
+      dotTone: 'muted',
+    },
+  ];
+
   function resetAll() {
     onplatform?.('all');
     onfilter('all');
@@ -109,29 +159,37 @@
 
     <div class="selects">
       {#if ongame && games.length > 0}
-        <select
-          aria-label="Filter by game"
+        <CustomSelect
+          options={gameOptions}
           value={selectedGame}
-          onchange={(e) => ongame((e.currentTarget as HTMLSelectElement).value)}
+          onchange={(val) => ongame(val)}
+          ariaLabel="Filter by game"
+          searchable={games.length > 6}
+          searchPlaceholder="Search games..."
+          size="sm"
+          minMenuWidth={240}
+          maxWidth="185px"
         >
-          <option value="all">All games ({games.length})</option>
-          {#each games as g (g.name)}
-            <option value={g.name}>{g.name} ({g.count})</option>
-          {/each}
-        </select>
+          {#snippet icon()}
+            <Gamepad2 size={13} />
+          {/snippet}
+        </CustomSelect>
       {/if}
 
-      <select
-        aria-label="Sort campaigns"
+      <CustomSelect
+        options={sortOptions}
         value={sort}
-        onchange={(e) => onsort((e.currentTarget as HTMLSelectElement).value as CampaignSort)}
+        onchange={(val) => onsort(val as CampaignSort)}
+        ariaLabel="Sort campaigns"
+        size="sm"
+        minMenuWidth={228}
+        maxWidth="175px"
+        align="right"
       >
-        <option value="ending_soon">Ending soonest</option>
-        <option value="progress">Most progress</option>
-        <option value="shortest">Shortest watch time</option>
-        <option value="rewards">Most rewards</option>
-        <option value="name">Name (A–Z)</option>
-      </select>
+        {#snippet icon()}
+          <ArrowUpDown size={13} />
+        {/snippet}
+      </CustomSelect>
 
       {#if hasActiveFilters}
         <button type="button" class="reset-btn" onclick={resetAll} title="Clear all filters">
@@ -279,10 +337,6 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 6px;
-  }
-
-  .selects select {
-    max-width: 165px;
   }
 
   .reset-btn {

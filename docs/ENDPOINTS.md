@@ -1,6 +1,6 @@
 # Network Allowlist & Platform Endpoints
 
-All outbound HTTP and WebSocket traffic in DropPilot passes through a single Rust module (`src-tauri/src/net/client.rs`) and is validated against `src-tauri/src/net/allowlist.rs` (including redirect targets). Non-allowlisted hosts, direct IP literals, embedded URL credentials, and insecure schemes (`http://`, `ws://`) are rejected before any socket is opened.
+All outbound HTTP and WebSocket traffic in Dropilot passes through a single Rust module (`src-tauri/src/net/client.rs`) and is validated against `src-tauri/src/net/allowlist.rs` (including redirect targets). Non-allowlisted hosts, direct IP literals, embedded URL credentials, and insecure schemes (`http://`, `ws://`) are rejected before any socket is opened.
 
 All platform calls are additionally throttled per platform in `src-tauri/src/net/rate_limit.rs` (sustained `<= 1 req/s`, burst `<= 5`), with `+-10%` jitter and exponential full-jitter backoff (`5s` to `15m`, honoring `Retry-After`).
 
@@ -13,14 +13,14 @@ All platform calls are additionally throttled per platform in `src-tauri/src/net
 | **Twitch** | `twitch.tv`, `www.twitch.tv`, `gql.twitch.tv`, `id.twitch.tv`, `passport.twitch.tv`, `spade.twitch.tv`, `beacon.twitch.tv`, `assets.twitch.tv`, `static.twitchcdn.net`, `usher.ttvnw.net`, `*.ttvnw.net`, `static-cdn.jtvnw.net`, `*.jtvnw.net` | Official login window, token validation, web GQL operations, stream-less authenticated HLS segment `HEAD` watcher (0 Mbps video), companion Spade telemetry, box art & reward thumbnails |
 | **Kick** | `kick.com`, `*.kick.com` (`web.kick.com`, `websockets.kick.com`, `files.kick.com`), `*.live-video.net` | Official login window, drops APIs, channel livestreams, viewer presence WebSocket, compatibility playback CDNs |
 | **Login IdPs (Login Window Only)** | `accounts.google.com`, `appleid.apple.com`, `challenges.cloudflare.com`, `*.google.com`, `*.apple.com`, `*.amazon.com`, `*.gstatic.com`, `*.googleapis.com` | Only permitted inside the embedded login window when a user chooses OAuth social login or verification on Twitch/Kick |
-| **Update Check (Off by Default)** | `api.github.com` (`/repos/droppilot/droppilot/releases/latest` exact path only) | Optional check triggered only if enabled or manually clicked; only opens the release webpage in the browser |
+| **Update Check (Off by Default)** | `api.github.com` (`/repos/theflash1211/dropilot/releases/latest` exact path only) | Optional check triggered only if enabled or manually clicked; only opens the release webpage in the browser |
 
 ---
 
 ## Twitch Endpoints (`src-tauri/src/platforms/twitch/gql.rs`)
 
 - **Client identity:** Uses Twitch's public web `Client-ID` (`kimne78kx3ncx6brgo4mv6wki5h1ko`) paired with the embedded WebView2's own `User-Agent`. Never spoofs mobile, TV, or console clients.
-- **Auth:** `Authorization: OAuth <token>` (obtained from `auth-token` cookie in DropPilot's own WebView2 after user login at `https://www.twitch.tv`).
+- **Auth:** `Authorization: OAuth <token>` (obtained from `auth-token` cookie in Dropilot's own WebView2 after user login at `https://www.twitch.tv`).
 
 | Operation / Endpoint | Purpose | Cadence | Auth | Status & Notes |
 | --- | --- | --- | --- | --- |
@@ -47,8 +47,8 @@ Because Twitch rotates GraphQL persisted query SHA-256 hashes periodically (`Per
 
 ## Kick Endpoints (`src-tauri/src/platforms/kick/api.rs`)
 
-- **Auth:** `session_token` cookie captured from DropPilot's own WebView2 after user login at `https://kick.com` (sent as `Bearer` / session cookie).
-- **Anti-bot handling:** Direct HTTP requests that hit a Cloudflare challenge (`403` / `cf-mitigated`) fall back transparently to executing the same `fetch()` inside DropPilot's hidden `https://kick.com` WebView2 page (where Kick's own scripts run normally). If that hidden page is also blocked, DropPilot stops and returns `AppError::Blocked`.
+- **Auth:** `session_token` cookie captured from Dropilot's own WebView2 after user login at `https://kick.com` (sent as `Bearer` / session cookie).
+- **Anti-bot handling:** Direct HTTP requests that hit a Cloudflare challenge (`403` / `cf-mitigated`) fall back transparently to executing the same `fetch()` inside Dropilot's hidden `https://kick.com` WebView2 page (where Kick's own scripts run normally). If that hidden page is also blocked, Dropilot stops and returns `AppError::Blocked`.
 
 | Endpoint | Purpose | Cadence | Auth | Status & Notes |
 | --- | --- | --- | --- | --- |

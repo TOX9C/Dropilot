@@ -985,7 +985,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "droppilot"
+name = "dropilot"
 version = "0.1.0"
 dependencies = [
  "async-trait",

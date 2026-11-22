@@ -1,12 +1,12 @@
-# DropPilot
+# Dropilot
 
-DropPilot is a lightweight, modern Windows desktop application that automatically tracks and farms **Twitch Drops** and **Kick Drops** for your own logged-in accounts.
+Dropilot is a lightweight, modern Windows desktop application that automatically tracks and farms **Twitch Drops** and **Kick Drops** for your own logged-in accounts.
 
-> **Disclaimer:** Using automation tools may violate Twitch or Kick Terms of Service. You are solely responsible for your own accounts. DropPilot is an independent utility and is not affiliated with, sponsored by, or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
+> **Disclaimer:** Using automation tools may violate Twitch or Kick Terms of Service. You are solely responsible for your own accounts. Dropilot is an independent utility and is not affiliated with, sponsored by, or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
 
 ## Why this stack
 
-DropPilot needs a modern UI and a real browser engine for the platforms' official login pages, while staying tiny and idle-cheap.
+Dropilot needs a modern UI and a real browser engine for the platforms' official login pages, while staying tiny and idle-cheap.
 
 - Electron bundles a whole Chromium, so it ships at 100 MB+ and uses a lot of RAM.
 - Python/PyInstaller builds are heavy and are well known for antivirus false positives.
@@ -17,7 +17,7 @@ Tauri 2 reuses the WebView2 runtime that is already on Windows, for both the UI 
 
 ## Key Features
 
-- **Official WebView2 Login Only:** No username/password fields inside DropPilot. Login uses the official site inside DropPilot's isolated WebView2 window, and tokens are saved strictly in Windows Credential Manager.
+- **Official WebView2 Login Only:** No username/password fields inside Dropilot. Login uses the official site inside Dropilot's isolated WebView2 window, and tokens are saved strictly in Windows Credential Manager.
 - **Twitch & Kick Support:** Tracks active and upcoming drop campaigns, game-account link status, per-drop watch progress, and automatic claiming.
 - **Priority Queue:** Drag-and-drop and keyboard-accessible ordering by game or campaign, plus per-channel pinning and hysteresis-guarded switching.
 - **Tray-First Footprint:** Closing the main window to the system tray destroys the UI WebView2 window while keeping the lightweight Rust core active, and recreates the window on demand.
@@ -68,9 +68,9 @@ See [docs/PACKAGING.md](docs/PACKAGING.md) for portable ZIP creation, Authentico
 
 ## Privacy & Security
 
-- Tokens are stored only in Windows Credential Manager (`DropPilot/twitch`, `DropPilot/kick`).
-- Settings live at `%APPDATA%\DropPilot\settings.json`; rolling logs live at `%LOCALAPPDATA%\DropPilot\logs\`.
-- DropPilot's isolated WebView2 profile lives at `%LOCALAPPDATA%\DropPilot\WebView2\` and never touches Chrome, Edge, Firefox, Brave, or Opera profile folders.
+- Tokens are stored only in Windows Credential Manager (`Dropilot/twitch`, `Dropilot/kick`).
+- Settings live at `%APPDATA%\Dropilot\settings.json`; rolling logs live at `%LOCALAPPDATA%\Dropilot\logs\`.
+- Dropilot's isolated WebView2 profile lives at `%LOCALAPPDATA%\Dropilot\WebView2\` and never touches Chrome, Edge, Firefox, Brave, or Opera profile folders.
 - See [docs/PRIVACY.md](docs/PRIVACY.md), [docs/ENDPOINTS.md](docs/ENDPOINTS.md), and [SECURITY.md](SECURITY.md) for complete details.
 
 ## License

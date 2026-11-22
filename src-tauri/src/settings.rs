@@ -157,7 +157,14 @@ impl Settings {
 pub fn appdata_dir() -> PathBuf {
     dirs::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
+        .join("Dropilot")
+}
+
+fn legacy_settings_path() -> PathBuf {
+    dirs::config_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
         .join("DropPilot")
+        .join("settings.json")
 }
 
 pub fn settings_path() -> PathBuf {
@@ -165,7 +172,17 @@ pub fn settings_path() -> PathBuf {
 }
 
 pub fn load_settings() -> Settings {
-    load_from_path(&settings_path())
+    let path = settings_path();
+    if path.exists() {
+        return load_from_path(&path);
+    }
+    let legacy = legacy_settings_path();
+    if legacy.exists() {
+        let migrated = load_from_path(&legacy);
+        let _ = save_atomic_to_path(&path, &migrated);
+        return migrated;
+    }
+    Settings::default()
 }
 
 pub fn save_settings(settings: &Settings) -> Result<(), String> {
@@ -312,7 +329,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .expect("clock valid")
             .as_nanos();
-        let dir = std::env::temp_dir().join(format!("droppilot_test_{name}_{ts}"));
+        let dir = std::env::temp_dir().join(format!("dropilot_test_{name}_{ts}"));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
     }

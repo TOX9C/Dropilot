@@ -259,7 +259,7 @@
       <div class="wl-title">
         <Sparkles size={14} />
         <strong>Auto-Mine Watchlist</strong>
-        <span class="wl-sub">Add any game — DropPilot automatically mines it whenever drops go live</span>
+        <span class="wl-sub">Add any game — Dropilot automatically mines it whenever drops go live</span>
       </div>
 
       <div class="wl-form">

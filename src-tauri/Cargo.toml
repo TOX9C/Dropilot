@@ -1,14 +1,14 @@
 [package]
-name = "droppilot"
+name = "dropilot"
 version = "0.1.0"
 description = "Lightweight Windows desktop app that automatically farms Twitch Drops and Kick Drops for your own logged-in accounts."
-authors = ["DropPilot Contributors"]
+authors = ["Dropilot Contributors"]
 license = "MIT"
 edition = "2021"
 rust-version = "1.77"
 
 [lib]
-name = "droppilot_lib"
+name = "dropilot_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [features]

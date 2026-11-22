@@ -7,8 +7,8 @@ use tokio::sync::Mutex;
 use crate::logging::LogEntry;
 use crate::platforms::AppSnapshot;
 
-pub const EVENT_SNAPSHOT: &str = "droppilot://snapshot";
-pub const EVENT_LOG: &str = "droppilot://log";
+pub const EVENT_SNAPSHOT: &str = "dropilot://snapshot";
+pub const EVENT_LOG: &str = "dropilot://log";
 
 #[derive(Debug)]
 struct ThrottleState {

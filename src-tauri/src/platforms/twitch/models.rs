@@ -381,7 +381,7 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
 }
 
 /// Parses Twitch's lightweight `DropCurrentSessionContext` GQL response.
-/// Returns `(progress, completed_needs_claim)` so DropPilot can sync active watch progress
+/// Returns `(progress, completed_needs_claim)` so Dropilot can sync active watch progress
 /// over pure-Rust HTTP (0 MB WebView2) and only invoke full Inventory when a drop completes.
 pub fn parse_drop_current_session_progress(payload: &Value) -> Option<(DropProgress, bool)> {
     let session = payload

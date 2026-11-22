@@ -19,7 +19,7 @@ pub struct TrayHandles {
 pub struct TrayState(pub Mutex<TrayHandles>);
 
 pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
-    let open_item = MenuItemBuilder::with_id("open", "Open DropPilot")
+    let open_item = MenuItemBuilder::with_id("open", "Open Dropilot")
         .build(app)
         .map_err(|e| format!("Tray menu open item error: {e}"))?;
     let toggle_pause = MenuItemBuilder::with_id("toggle-pause", "Pause all")
@@ -37,7 +37,7 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
         .map_err(|e| format!("Tray kick status item error: {e}"))?;
     let sep2 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("Tray separator error: {e}"))?;
-    let quit_item = MenuItemBuilder::with_id("quit", "Quit DropPilot")
+    let quit_item = MenuItemBuilder::with_id("quit", "Quit Dropilot")
         .build(app)
         .map_err(|e| format!("Tray quit item error: {e}"))?;
 
@@ -56,7 +56,7 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
 
     let mut builder = TrayIconBuilder::with_id("main-tray")
         .menu(&menu)
-        .tooltip("DropPilot")
+        .tooltip("Dropilot")
         .show_menu_on_left_click(false);
 
     if let Some(icon) = app.default_window_icon() {

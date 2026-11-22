@@ -103,31 +103,46 @@
 <aside class="sidebar" class:collapsed={$sidebarCollapsed} aria-label="Main navigation">
   <div class="brand-row">
     <div class="brand">
-      <svg class="mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
+      <svg class="mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
         <defs>
-          <linearGradient id="dp-mark-grad" x1="0" y1="0" x2="1" y2="1">
+          <linearGradient id="dp-bg-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#171e38" />
+            <stop offset="100%" stop-color="#090d1a" />
+          </linearGradient>
+          <linearGradient id="dp-rim-grad" x1="0" y1="0" x2="1" y2="1">
+            <stop offset="0%" stop-color="#67e8f9" stop-opacity="0.55" />
+            <stop offset="50%" stop-color="#818cf8" stop-opacity="0.28" />
+            <stop offset="100%" stop-color="#a855f7" stop-opacity="0.48" />
+          </linearGradient>
+          <linearGradient id="dp-drop-grad" x1="0.15" y1="0.1" x2="0.88" y2="0.88">
             <stop offset="0%" stop-color="#22d3ee" />
-            <stop offset="52%" stop-color="#0ea5e9" />
-            <stop offset="100%" stop-color="#14b8a6" />
+            <stop offset="35%" stop-color="#22c55e" />
+            <stop offset="68%" stop-color="#6366f1" />
+            <stop offset="100%" stop-color="#a855f7" />
           </linearGradient>
         </defs>
-        <rect x="2" y="2" width="28" height="28" rx="9" fill="url(#dp-mark-grad)" />
-        <path
-          d="M16 7.5C16 7.5 22 14.5 22 18.5C22 21.8137 19.3137 24.5 16 24.5C12.6863 24.5 10 21.8137 10 18.5C10 14.5 16 7.5 16 7.5Z"
-          fill="#07131a"
+        <rect
+          x="1.5"
+          y="1.5"
+          width="29"
+          height="29"
+          rx="9"
+          fill="url(#dp-bg-grad)"
+          stroke="url(#dp-rim-grad)"
+          stroke-width="1.2"
         />
         <path
-          d="M13 19.5L16 16.5L19 19.5"
-          stroke="#67e8f9"
-          stroke-width="2"
-          stroke-linecap="round"
-          stroke-linejoin="round"
-          fill="none"
+          d="M16 6.2C16 6.2 23 14.2 23 19.1C23 22.97 19.87 26.1 16 26.1C12.13 26.1 9 22.97 9 19.1C9 14.2 16 6.2 16 6.2Z"
+          fill="url(#dp-drop-grad)"
+        />
+        <path
+          d="M16 14.3L20.2 20.9L18.1 21.6L16 18.2L13.9 21.6L11.8 20.9L16 14.3Z"
+          fill="#0b1020"
         />
       </svg>
       {#if !$sidebarCollapsed}
         <div class="brand-text">
-          <span class="brand-name">DropPilot</span>
+          <span class="brand-name">Dropilot</span>
           <span class="brand-sub">Auto Drops</span>
         </div>
       {/if}

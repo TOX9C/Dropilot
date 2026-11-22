@@ -451,7 +451,7 @@ pub async fn accept_disclaimer(
         guard.clone()
     };
 
-    info!("User accepted DropPilot terms disclaimer");
+    info!("User accepted Dropilot terms disclaimer");
     state.persist_settings().await?;
     state.send_all_miners(MinerControl::SettingsUpdated).await;
     state.publish_snapshot(&app, true).await;
@@ -481,7 +481,7 @@ pub async fn clear_app_data(
     state.persist_settings().await?;
     state.send_all_miners(MinerControl::SettingsUpdated).await;
     state.publish_snapshot(&app, true).await;
-    info!("Cleared DropPilot accounts, WebView2 data, and reset settings");
+    info!("Cleared Dropilot accounts, WebView2 data, and reset settings");
     Ok(())
 }
 
@@ -563,7 +563,7 @@ pub async fn report_user_agent(
     Ok(())
 }
 
-/// Closes & destroys the UI WebView2 window so DropPilot keeps farming in the system tray
+/// Closes & destroys the UI WebView2 window so Dropilot keeps farming in the system tray
 /// with ~11 MB RAM and 0 background WebView2 processes.
 #[tauri::command]
 pub async fn hide_to_tray(

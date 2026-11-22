@@ -353,7 +353,7 @@ pub async fn open_login_window(
         .map_err(|e| AppError::Internal(format!("Invalid login URL: {e}")))?;
 
     let theme = state.settings.read().await.theme;
-    let title = format!("Sign in to {} — DropPilot", platform.display_name());
+    let title = format!("Sign in to {} — Dropilot", platform.display_name());
 
     let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start_url))
         .title(&title)
@@ -376,7 +376,7 @@ pub async fn open_login_window(
 
     info!(platform = platform.as_str(), "Opened official login window");
 
-    // Poll DropPilot's own isolated WebView2 cookie jar off the UI thread.
+    // Poll Dropilot's own isolated WebView2 cookie jar off the UI thread.
     let app_clone = app.clone();
     let state_clone = state.clone();
     let label_string = label.to_string();
@@ -462,7 +462,7 @@ pub async fn open_drops_inventory_window(
         .map_err(|e| AppError::Internal(format!("Invalid inventory URL: {e}")))?;
 
     let theme = state.settings.read().await.theme;
-    let title = format!("{} Drops Inventory — DropPilot", platform.display_name());
+    let title = format!("{} Drops Inventory — Dropilot", platform.display_name());
 
     WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
         .title(&title)
@@ -573,7 +573,7 @@ pub fn ensure_compat_watch_window(
     }
 
     let win = WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
-        .title("DropPilot Compatibility Player")
+        .title("Dropilot Compatibility Player")
         .inner_size(960.0, 540.0)
         .center()
         .visible(false)
@@ -660,7 +660,7 @@ pub fn close_kick_bridge_window(app: &AppHandle) {
     }
 }
 
-/// Executes a same-origin/credentialed fetch from inside DropPilot's hidden `kick.com`
+/// Executes a same-origin/credentialed fetch from inside Dropilot's hidden `kick.com`
 /// WebView2 window using native WebView2 `WebMessageReceived` / `PostWebMessageAsString`
 /// messaging when direct HTTP requests receive a 403/503 or Cloudflare challenge.
 /// Does not bypass anti-bot checks: if the hidden official page itself is blocked,
@@ -715,7 +715,7 @@ pub async fn kick_webview_fetch_with_waiters(
                 "kick-bridge",
                 WebviewUrl::External(blank),
             )
-            .title("DropPilot Kick Bridge")
+            .title("Dropilot Kick Bridge")
             .inner_size(980.0, 680.0)
             .center()
             .visible(false)
@@ -1568,7 +1568,7 @@ async fn run_twitch_bridge(
         .map_err(|e| AppError::Internal(format!("Invalid about:blank URL: {e}")))?;
 
     let mut builder = WebviewWindowBuilder::new(app, "twitch-bridge", WebviewUrl::External(blank))
-        .title("DropPilot Twitch Sync")
+        .title("Dropilot Twitch Sync")
         .inner_size(1200.0, 800.0)
         .center()
         .visible(false)

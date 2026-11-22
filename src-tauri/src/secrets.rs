@@ -4,7 +4,8 @@ use keyring::Entry;
 
 use crate::platforms::{AppError, PlatformId};
 
-const SERVICE_NAME: &str = "DropPilot";
+const SERVICE_NAME: &str = "Dropilot";
+const LEGACY_SERVICE_NAME: &str = "DropPilot";
 
 #[derive(Clone)]
 pub struct SecretToken(String);
@@ -28,14 +29,14 @@ impl fmt::Debug for SecretToken {
 pub struct SecretStore;
 
 impl SecretStore {
-    fn target_name(platform: PlatformId) -> String {
-        format!("{SERVICE_NAME}/{}", platform.as_str())
+    fn entry_for_service(service: &str, platform: PlatformId) -> Result<Entry, AppError> {
+        let target = format!("{service}/{}", platform.as_str());
+        Entry::new_with_target(&target, service, platform.as_str())
+            .map_err(|e| AppError::Internal(format!("Credential Manager entry error: {e}")))
     }
 
     fn entry(platform: PlatformId) -> Result<Entry, AppError> {
-        let target = Self::target_name(platform);
-        Entry::new_with_target(&target, SERVICE_NAME, platform.as_str())
-            .map_err(|e| AppError::Internal(format!("Credential Manager entry error: {e}")))
+        Self::entry_for_service(SERVICE_NAME, platform)
     }
 
     pub fn save_token(platform: PlatformId, token: &str) -> Result<(), AppError> {
@@ -48,16 +49,32 @@ impl SecretStore {
     pub fn load_token(platform: PlatformId) -> Result<Option<SecretToken>, AppError> {
         let entry = Self::entry(platform)?;
         match entry.get_password() {
-            Ok(tok) if !tok.trim().is_empty() => Ok(Some(SecretToken::new(tok))),
-            Ok(_) => Ok(None),
-            Err(keyring::Error::NoEntry) => Ok(None),
-            Err(e) => Err(AppError::Internal(format!(
-                "Failed reading token from Credential Manager: {e}"
-            ))),
+            Ok(tok) if !tok.trim().is_empty() => return Ok(Some(SecretToken::new(tok))),
+            Ok(_) | Err(keyring::Error::NoEntry) => {}
+            Err(e) => {
+                return Err(AppError::Internal(format!(
+                    "Failed reading token from Credential Manager: {e}"
+                )));
+            }
         }
+
+        // Seamless one-time migration from legacy "DropPilot" Credential Manager entry.
+        if let Ok(legacy_entry) = Self::entry_for_service(LEGACY_SERVICE_NAME, platform) {
+            if let Ok(tok) = legacy_entry.get_password() {
+                if !tok.trim().is_empty() {
+                    let _ = Self::save_token(platform, &tok);
+                    return Ok(Some(SecretToken::new(tok)));
+                }
+            }
+        }
+
+        Ok(None)
     }
 
     pub fn delete_token(platform: PlatformId) -> Result<(), AppError> {
+        if let Ok(legacy_entry) = Self::entry_for_service(LEGACY_SERVICE_NAME, platform) {
+            let _ = legacy_entry.delete_credential();
+        }
         let entry = Self::entry(platform)?;
         match entry.delete_credential() {
             Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),

@@ -15,6 +15,7 @@
   import Zap from 'lucide-svelte/icons/zap';
   import Badge from '../components/Badge.svelte';
   import Button from '../components/Button.svelte';
+  import CustomSelect, { type SelectOption } from '../components/CustomSelect.svelte';
   import Modal from '../components/Modal.svelte';
   import Monogram from '../components/Monogram.svelte';
   import StatusPill from '../components/StatusPill.svelte';
@@ -167,7 +168,7 @@
       const fresh = await api.getSettings();
       appSettings.set(fresh);
       clearModalOpen = false;
-      notifyUi('Cleared DropPilot accounts and local WebView2 data');
+      notifyUi('Cleared Dropilot accounts and local WebView2 data');
     } catch (err) {
       notifyUi(String(err), 'error');
     }
@@ -392,7 +393,7 @@
           </div>
         </div>
         <h3>Campaign refresh cadence</h3>
-        <p>How often DropPilot reloads the full drops catalog (10–240 min). Progress itself syncs every 60s.</p>
+        <p>How often Dropilot reloads the full drops catalog (10–240 min). Progress itself syncs every 60s.</p>
       </div>
 
       <div class="card pref-card pref-wide">
@@ -401,18 +402,29 @@
             <h3>When nothing in priority list is live</h3>
             <p>Choose whether to stay idle or automatically farm any eligible active campaign while waiting.</p>
           </div>
-          <select
-            class="pref-select"
-            aria-label="Idle fallback behavior"
+          <CustomSelect
+            options={[
+              {
+                value: 'stay_idle',
+                label: 'Stay idle (default)',
+                subtitle: 'Wait quietly until a priority drop goes live',
+                dotTone: 'muted',
+              },
+              {
+                value: 'farm_any',
+                label: 'Farm any available campaign',
+                subtitle: 'Auto-mine other active drops while waiting',
+                dotTone: 'live',
+              },
+            ] satisfies SelectOption[]}
             value={settings.idleBehavior}
-            onchange={(e) => {
-              const val = (e.currentTarget as HTMLSelectElement).value as Settings['idleBehavior'];
-              savePatch((d) => (d.idleBehavior = val));
-            }}
-          >
-            <option value="stay_idle">Stay idle (default)</option>
-            <option value="farm_any">Farm any available campaign</option>
-          </select>
+            onchange={(val) =>
+              savePatch((d) => (d.idleBehavior = val as Settings['idleBehavior']))}
+            ariaLabel="Idle fallback behavior"
+            size="md"
+            minMenuWidth={270}
+            align="right"
+          />
         </div>
       </div>
     </div>
@@ -428,7 +440,7 @@
           />
         </div>
         <h3>Start with Windows</h3>
-        <p>Launches DropPilot automatically at Windows sign-in via standard HKCU Run entry.</p>
+        <p>Launches Dropilot automatically at Windows sign-in via standard HKCU Run entry.</p>
       </div>
 
       <div class="card pref-card">
@@ -476,18 +488,28 @@
             <h3>Diagnostic log verbosity</h3>
             <p>Keep on Info for normal use; switch to Debug when troubleshooting platform responses.</p>
           </div>
-          <select
-            class="pref-select"
-            aria-label="Log level"
+          <CustomSelect
+            options={[
+              {
+                value: 'info',
+                label: 'Info (Recommended)',
+                subtitle: 'Clean activity and claim summary',
+                dotTone: 'info',
+              },
+              {
+                value: 'debug',
+                label: 'Debug (Verbose)',
+                subtitle: 'Detailed diagnostic trace for troubleshooting',
+                dotTone: 'warn',
+              },
+            ] satisfies SelectOption[]}
             value={settings.logLevel}
-            onchange={(e) => {
-              const val = (e.currentTarget as HTMLSelectElement).value as Settings['logLevel'];
-              savePatch((d) => (d.logLevel = val));
-            }}
-          >
-            <option value="info">Info (Recommended)</option>
-            <option value="debug">Debug (Verbose)</option>
-          </select>
+            onchange={(val) => savePatch((d) => (d.logLevel = val as Settings['logLevel']))}
+            ariaLabel="Log level"
+            size="md"
+            minMenuWidth={250}
+            align="right"
+          />
         </div>
       </div>
 
@@ -523,7 +545,7 @@
             </div>
           </div>
           <h3>Local app folders</h3>
-          <p>Inspect saved settings (`%APPDATA%\DropPilot`) or redacted rolling logs (`%LOCALAPPDATA%\DropPilot\logs`).</p>
+          <p>Inspect saved settings (`%APPDATA%\Dropilot`) or redacted rolling logs (`%LOCALAPPDATA%\Dropilot\logs`).</p>
         </div>
 
         <div class="card pref-card">
@@ -554,21 +576,21 @@
         <div class="about-head">
           <div class="pref-ico ico-accent"><Info size={16} /></div>
           <div>
-            <h2>About DropPilot</h2>
+            <h2>About Dropilot</h2>
             <p class="studio-sub">Version 0.1.0 · MIT License · Standard user privileges (`asInvoker`)</p>
           </div>
         </div>
         <p class="about-note">
-          <strong>Disclaimer:</strong> Using automation tools may violate Twitch or Kick Terms of Service. You are solely responsible for your accounts. DropPilot is not affiliated with, sponsored by, or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
+          <strong>Disclaimer:</strong> Using automation tools may violate Twitch or Kick Terms of Service. You are solely responsible for your accounts. Dropilot is not affiliated with, sponsored by, or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
         </p>
         <div class="about-links">
-          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/droppilot/droppilot#readme')}>
+          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot#readme')}>
             README ↗
           </Button>
-          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/droppilot/droppilot/blob/main/docs/PRIVACY.md')}>
+          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot/blob/main/docs/PRIVACY.md')}>
             Privacy ↗
           </Button>
-          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/droppilot/droppilot/blob/main/docs/ENDPOINTS.md')}>
+          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot/blob/main/docs/ENDPOINTS.md')}>
             Endpoints ↗
           </Button>
         </div>
@@ -577,8 +599,8 @@
       <section class="card danger-card">
         <div class="danger-row">
           <div>
-            <h3>Reset &amp; clear all DropPilot data</h3>
-            <p>Deletes Credential Manager tokens, DropPilot's isolated WebView2 cookies, and resets preferences to defaults.</p>
+            <h3>Reset &amp; clear all Dropilot data</h3>
+            <p>Deletes Credential Manager tokens, Dropilot's isolated WebView2 cookies, and resets preferences to defaults.</p>
           </div>
           <Button variant="danger" size="sm" onclick={() => (clearModalOpen = true)}>
             <Trash2 size={14} />
@@ -590,9 +612,9 @@
   {/if}
 </div>
 
-<Modal open={clearModalOpen} title="Clear all DropPilot data?" onclose={() => (clearModalOpen = false)}>
+<Modal open={clearModalOpen} title="Clear all Dropilot data?" onclose={() => (clearModalOpen = false)}>
   <p>
-    This signs out of Twitch and Kick, deletes stored tokens from Windows Credential Manager, clears DropPilot's isolated WebView2 cookies, and resets settings to defaults.
+    This signs out of Twitch and Kick, deletes stored tokens from Windows Credential Manager, clears Dropilot's isolated WebView2 cookies, and resets settings to defaults.
   </p>
   <p style="margin-top: 8px; color: var(--text-muted); font-size: 13px;">
     Your personal web browsers (Chrome, Edge, Firefox) are never touched.

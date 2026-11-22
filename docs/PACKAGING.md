@@ -1,10 +1,10 @@
 # Packaging, Signing & Microsoft Defender Submission
 
-DropPilot is built and distributed without packers, UPX, self-extracting Python wrappers, or elevation requirements.
+Dropilot is built and distributed without packers, UPX, self-extracting Python wrappers, or elevation requirements.
 
 ## 1. Release Build (Per-User NSIS Installer)
 
-From the project root (`droppilot/`):
+From the project root (`dropilot/`):
 
 ```powershell
 npm install
@@ -13,8 +13,8 @@ npm run tauri:build
 ```
 
 Outputs land in:
-- **Executable:** `src-tauri\target\release\droppilot.exe`
-- **Per-user NSIS installer:** `src-tauri\target\release\bundle\nsis\DropPilot_0.1.0_x64-setup.exe`
+- **Executable:** `src-tauri\target\release\dropilot.exe`
+- **Per-user NSIS installer:** `src-tauri\target\release\bundle\nsis\Dropilot_0.1.0_x64-setup.exe`
 
 Configuration highlights in `src-tauri/tauri.conf.json` & `src-tauri/build.rs`:
 - `bundle.targets`: `["nsis"]`
@@ -28,12 +28,12 @@ Configuration highlights in `src-tauri/tauri.conf.json` & `src-tauri/build.rs`:
 Create a plain portable ZIP folder directly from the release binary (no self-extractor):
 
 ```powershell
-$portableDir = ".\dist-portable\DropPilot-0.1.0-win64"
+$portableDir = ".\dist-portable\Dropilot-0.1.0-win64"
 New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
-Copy-Item ".\src-tauri\target\release\droppilot.exe" "$portableDir\DropPilot.exe"
+Copy-Item ".\src-tauri\target\release\dropilot.exe" "$portableDir\Dropilot.exe"
 Copy-Item ".\LICENSE" "$portableDir\LICENSE.txt"
 Copy-Item ".\README.md" "$portableDir\README.md"
-Compress-Archive -Path "$portableDir\*" -DestinationPath ".\dist-portable\DropPilot-0.1.0-win64-portable.zip" -Force
+Compress-Archive -Path "$portableDir\*" -DestinationPath ".\dist-portable\Dropilot-0.1.0-win64-portable.zip" -Force
 ```
 
 ## 3. SHA-256 Checksums
@@ -42,8 +42,8 @@ Generate checksums next to every release artifact:
 
 ```powershell
 Get-FileHash `
-  ".\src-tauri\target\release\bundle\nsis\DropPilot_0.1.0_x64-setup.exe", `
-  ".\dist-portable\DropPilot-0.1.0-win64-portable.zip" `
+  ".\src-tauri\target\release\bundle\nsis\Dropilot_0.1.0_x64-setup.exe", `
+  ".\dist-portable\Dropilot-0.1.0-win64-portable.zip" `
   -Algorithm SHA256 | Format-List
 ```
 
@@ -52,11 +52,11 @@ Get-FileHash `
 When an Authenticode or Azure Trusted Signing certificate is available:
 
 1. Set `bundle.windows.certificateThumbprint` in `src-tauri/tauri.conf.json` (or configure `TAURI_SIGNING_PRIVATE_KEY` / custom `signCommand`).
-2. Or sign both `droppilot.exe` (before bundling) and the NSIS setup executable directly with `signtool.exe`:
+2. Or sign both `dropilot.exe` (before bundling) and the NSIS setup executable directly with `signtool.exe`:
 
 ```powershell
-signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 <CERT_THUMBPRINT> ".\src-tauri\target\release\droppilot.exe"
-signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 <CERT_THUMBPRINT> ".\src-tauri\target\release\bundle\nsis\DropPilot_0.1.0_x64-setup.exe"
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 <CERT_THUMBPRINT> ".\src-tauri\target\release\dropilot.exe"
+signtool sign /fd SHA256 /tr http://timestamp.digicert.com /td SHA256 /sha1 <CERT_THUMBPRINT> ".\src-tauri\target\release\bundle\nsis\Dropilot_0.1.0_x64-setup.exe"
 ```
 
 ## 5. Submitting False Positives to Microsoft Defender (WDSI)
@@ -65,7 +65,7 @@ Unsigned Windows binaries can occasionally receive heuristic warnings until repu
 
 1. Visit **https://www.microsoft.com/wdsi/filesubmission**.
 2. Sign in with a Microsoft account and select **Software developer**.
-3. Upload the signed/clean NSIS installer (`DropPilot_<version>_x64-setup.exe`) and/or `DropPilot.exe`.
+3. Upload the signed/clean NSIS installer (`Dropilot_<version>_x64-setup.exe`) and/or `Dropilot.exe`.
 4. Select **Incorrectly detected as malware/malicious**.
-5. Provide the product name (`DropPilot`), version (`0.1.0`), official repository URL, and a brief description noting it is an open-source Tauri 2 desktop application.
+5. Provide the product name (`Dropilot`), version (`0.1.0`), official repository URL, and a brief description noting it is an open-source Tauri 2 desktop application.
 6. After Microsoft updates signatures, run `mpcmdrun -SignatureUpdate` locally to verify clearance.

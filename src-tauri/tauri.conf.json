@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DropPilot",
+  "productName": "Dropilot",
   "version": "0.1.0",
-  "identifier": "io.droppilot.app",
+  "identifier": "io.dropilot.app",
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://127.0.0.1:1420",
@@ -25,11 +25,11 @@
       "icons/icon.ico",
       "icons/icon.png"
     ],
-    "publisher": "DropPilot Contributors",
-    "copyright": "Copyright (c) 2026 DropPilot Contributors",
+    "publisher": "Dropilot Contributors",
+    "copyright": "Copyright (c) 2026 Dropilot Contributors",
     "category": "Utility",
     "shortDescription": "Automatic Twitch and Kick Drops farmer",
-    "longDescription": "DropPilot is a lightweight, privacy-focused Windows desktop app that automatically tracks and farms Twitch Drops and Kick Drops for your own logged-in accounts.",
+    "longDescription": "Dropilot is a lightweight, privacy-focused Windows desktop app that automatically tracks and farms Twitch Drops and Kick Drops for your own logged-in accounts.",
     "windows": {
       "certificateThumbprint": null,
       "digestAlgorithm": "sha256",

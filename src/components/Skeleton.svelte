@@ -1,7 +1,7 @@
 <script lang="ts">
 </script>
 
-<div class="skel-page" aria-busy="true" aria-label="Loading DropPilot">
+<div class="skel-page" aria-busy="true" aria-label="Loading Dropilot">
   <div class="shimmer skel-title"></div>
   <div class="skel-stats">
     <div class="card shimmer skel-stat"></div>

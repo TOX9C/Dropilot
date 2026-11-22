@@ -146,8 +146,8 @@ pub struct LogHandle {
 impl LogHandle {
     pub fn set_level(&self, level: LogLevelSetting) {
         let directive = match level {
-            LogLevelSetting::Info => "droppilot_lib=info,droppilot=info,warn",
-            LogLevelSetting::Debug => "droppilot_lib=debug,droppilot=debug,info",
+            LogLevelSetting::Info => "dropilot_lib=info,dropilot=info,warn",
+            LogLevelSetting::Debug => "dropilot_lib=debug,dropilot=debug,info",
         };
         if let Ok(filter) = EnvFilter::try_new(directive) {
             let _ = self.filter_reload.reload(filter);
@@ -158,7 +158,7 @@ impl LogHandle {
 pub fn log_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("DropPilot")
+        .join("Dropilot")
         .join("logs")
 }
 
@@ -170,7 +170,7 @@ fn enforce_log_size_cap(dir: &Path) {
         let path = entry.path();
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if !name_str.starts_with("droppilot.log") {
+        if !name_str.starts_with("dropilot.log") {
             continue;
         }
         if let Ok(meta) = entry.metadata() {
@@ -261,7 +261,7 @@ pub fn init_logging(initial_level: LogLevelSetting, buffer: LogBuffer) -> Result
 
     let file_appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
-        .filename_prefix("droppilot.log")
+        .filename_prefix("dropilot.log")
         .max_log_files(MAX_LOG_FILES)
         .build(&dir)
         .map_err(|e| format!("Failed initializing rolling log appender: {e}"))?;
@@ -269,8 +269,8 @@ pub fn init_logging(initial_level: LogLevelSetting, buffer: LogBuffer) -> Result
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
     let directive = match initial_level {
-        LogLevelSetting::Info => "droppilot_lib=info,droppilot=info,warn",
-        LogLevelSetting::Debug => "droppilot_lib=debug,droppilot=debug,info",
+        LogLevelSetting::Info => "dropilot_lib=info,dropilot=info,warn",
+        LogLevelSetting::Debug => "dropilot_lib=debug,dropilot=debug,info",
     };
     let filter = EnvFilter::try_new(directive).unwrap_or_else(|_| EnvFilter::new("info"));
     let (filter_layer, filter_reload) = reload::Layer::new(filter);

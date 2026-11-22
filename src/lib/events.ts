@@ -15,12 +15,12 @@ export async function subscribeBackendEvents(
 
   const unlisteners: UnlistenFn[] = [];
   unlisteners.push(
-    await listen<AppSnapshot>('droppilot://snapshot', (ev) => {
+    await listen<AppSnapshot>('dropilot://snapshot', (ev) => {
       onSnapshot(ev.payload);
     }),
   );
   unlisteners.push(
-    await listen<LogEntry>('droppilot://log', (ev) => {
+    await listen<LogEntry>('dropilot://log', (ev) => {
       onLog(ev.payload);
     }),
   );

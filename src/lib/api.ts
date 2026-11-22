@@ -337,7 +337,7 @@ function createPreviewData(): {
         timestamp: new Date(previewNow - 20_000).toISOString(),
         level: 'info',
         platform: null,
-        message: 'DropPilot preview initialized',
+        message: 'Dropilot preview initialized',
       },
     ],
   };
@@ -457,7 +457,7 @@ export const api = {
       available: false,
       currentVersion: '0.1.0',
       latestVersion: '0.1.0',
-      releaseUrl: 'https://github.com/droppilot/droppilot/releases',
+      releaseUrl: 'https://github.com/theflash1211/dropilot/releases',
       publishedAt: null,
     })),
   isMockAvailable: () => call<boolean>('is_mock_available', undefined, () => true),
