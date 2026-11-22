@@ -61,6 +61,8 @@ pub struct Channel {
     pub is_live: bool,
     pub drops_enabled: bool,
     pub is_followed: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub stream_id: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -118,6 +120,10 @@ pub struct DropProgress {
     pub drop_id: String,
     pub instance_id: Option<String>,
     pub current_minutes: u32,
+    /// Optional completion ratio in basis points (0..=10_000) when a platform progress API
+    /// reports fractional progress without repeating `required_minutes`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub progress_bps: Option<u32>,
     pub claimable: bool,
     pub claimed: bool,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -156,10 +162,16 @@ pub struct PlatformSnapshot {
     pub watching: Option<Channel>,
     pub current_campaign_id: Option<String>,
     pub current_drop_id: Option<String>,
+    #[serde(default)]
+    pub watching_since: Option<DateTime<Utc>>,
+    #[serde(default)]
+    pub progress_synced_at: Option<DateTime<Utc>>,
     pub next_action_at: Option<DateTime<Utc>>,
     pub last_error: Option<String>,
     pub campaigns: Vec<Campaign>,
     pub candidate_channels: Vec<Channel>,
+    #[serde(default)]
+    pub pinned_channel: Option<String>,
 }
 
 impl PlatformSnapshot {
@@ -172,10 +184,13 @@ impl PlatformSnapshot {
             watching: None,
             current_campaign_id: None,
             current_drop_id: None,
+            watching_since: None,
+            progress_synced_at: None,
             next_action_at: None,
             last_error: None,
             campaigns: Vec::new(),
             candidate_channels: Vec::new(),
+            pinned_channel: None,
         }
     }
 }
@@ -285,12 +300,29 @@ pub trait Platform: Send + Sync {
 
     async fn check_live(&self, token: &str, channel: &Channel) -> Result<Channel, AppError>;
 
+    /// Verifies that a live channel is currently participating in the target campaign.
+    /// Defaults to `true` for platforms without per-channel drop campaign verification.
+    async fn is_channel_participating(
+        &self,
+        _token: &str,
+        _channel: &Channel,
+        _campaign: &Campaign,
+    ) -> Result<bool, AppError> {
+        Ok(true)
+    }
+
     async fn watch_tick(
         &self,
         token: &str,
         channel: &Channel,
         compat_mode: bool,
     ) -> Result<WatchTickResult, AppError>;
+
+    async fn stop_watching(&self) {}
+
+    /// Clears any background progress-bridge cooldown so an explicit user refresh
+    /// or an imminent drop claim syncs immediately.
+    fn reset_progress_sync_cooldown(&self) {}
 
     async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<(), AppError>;
 

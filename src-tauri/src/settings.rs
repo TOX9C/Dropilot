@@ -60,6 +60,8 @@ pub struct PlatformSettings {
     pub farm_campaigns: Vec<String>,
     pub excluded_campaigns: Vec<String>,
     pub pinned_channel: Option<String>,
+    #[serde(default)]
+    pub prioritize_ending_soon: bool,
 }
 
 impl Default for PlatformSettings {
@@ -70,6 +72,7 @@ impl Default for PlatformSettings {
             farm_campaigns: Vec::new(),
             excluded_campaigns: Vec::new(),
             pinned_channel: None,
+            prioritize_ending_soon: false,
         }
     }
 }

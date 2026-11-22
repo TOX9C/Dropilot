@@ -1,6 +1,6 @@
 <script lang="ts">
   import Clock from 'lucide-svelte/icons/clock';
-  import { nowMs } from '../lib/clock';
+  import { slowNowMs } from '../lib/clock';
   import { formatRelativeTime } from '../lib/format';
   import { activeRoute } from '../lib/stores';
   import type { LogEntry } from '../lib/types';
@@ -36,7 +36,7 @@
         <li class="feed-row">
           <span class="dot dot-{entry.level}" aria-hidden="true"></span>
           <span class="msg">{entry.message}</span>
-          <span class="ts tabular">{formatRelativeTime(entry.timestamp, $nowMs)}</span>
+          <span class="ts tabular">{formatRelativeTime(entry.timestamp, $slowNowMs)}</span>
         </li>
       {/each}
     </ul>

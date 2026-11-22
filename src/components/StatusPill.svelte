@@ -31,7 +31,7 @@
 </script>
 
 <span class="pill tone-{tone}" class:compact={compact}>
-  <span class="dot" class:pulse={state === 'Mining'} aria-hidden="true"></span>
+  <span class="dot" aria-hidden="true"></span>
   <span class="label">
     {#if labelPrefix}{labelPrefix}: {/if}{displayState}
   </span>
@@ -99,23 +99,5 @@
   }
   .tone-neutral .dot {
     background: var(--neutral-dot);
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .dot.pulse {
-      animation: mining-pulse 2s ease-in-out infinite;
-    }
-
-    @keyframes mining-pulse {
-      0%,
-      100% {
-        opacity: 1;
-        transform: scale(1);
-      }
-      50% {
-        opacity: 0.45;
-        transform: scale(0.85);
-      }
-    }
   }
 </style>

@@ -2,13 +2,13 @@ use std::fs;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Manager, State};
 use tracing::{info, warn};
 use url::Url;
 
 use crate::auth::login_window::{
-    clear_webview_browsing_data, open_drops_inventory_window, open_login_window,
-    twitch_bridge_fetch_campaign_details,
+    clear_webview_browsing_data, close_kick_bridge_window, close_twitch_bridge_window,
+    open_drops_inventory_window, open_login_window, twitch_bridge_fetch_campaign_details,
 };
 use crate::autostart::sync_autostart;
 use crate::logging::{log_dir, LogEntry, LogLevel};
@@ -50,6 +50,14 @@ pub async fn logout(
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
 ) -> Result<(), String> {
+    {
+        let mut guard = state.settings.write().await;
+        match platform {
+            PlatformId::Twitch => guard.twitch.pinned_channel = None,
+            PlatformId::Kick => guard.kick.pinned_channel = None,
+        }
+    }
+    let _ = state.persist_settings().await;
     state.send_miner(platform, MinerControl::Logout).await;
     if !state.mock_active.load(Ordering::Relaxed) {
         let _ = SecretStore::delete_token(platform);
@@ -201,6 +209,32 @@ pub async fn set_priority(
 }
 
 #[tauri::command]
+pub async fn set_prioritize_ending_soon(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    enabled: bool,
+) -> Result<Settings, String> {
+    let updated = {
+        let mut guard = state.settings.write().await;
+        let plat = match platform {
+            PlatformId::Twitch => &mut guard.twitch,
+            PlatformId::Kick => &mut guard.kick,
+        };
+        plat.prioritize_ending_soon = enabled;
+        guard.sanitize();
+        guard.clone()
+    };
+
+    state.persist_settings().await?;
+    state
+        .send_miner(platform, MinerControl::SettingsUpdated)
+        .await;
+    state.publish_snapshot(&app, true).await;
+    Ok(updated)
+}
+
+#[tauri::command]
 pub async fn pause(state: State<'_, Arc<AppState>>, platform: PlatformId) -> Result<(), String> {
     state.send_miner(platform, MinerControl::Pause).await;
     Ok(())
@@ -214,9 +248,23 @@ pub async fn resume(state: State<'_, Arc<AppState>>, platform: PlatformId) -> Re
 
 #[tauri::command]
 pub async fn switch_channel(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
 ) -> Result<(), String> {
+    {
+        let mut guard = state.settings.write().await;
+        match platform {
+            PlatformId::Twitch => guard.twitch.pinned_channel = None,
+            PlatformId::Kick => guard.kick.pinned_channel = None,
+        }
+    }
+    let _ = state.persist_settings().await;
+    {
+        let mut snap = state.snapshot_lock(platform).write().await;
+        snap.pinned_channel = None;
+    }
+    state.publish_snapshot(&app, true).await;
     state
         .send_miner(platform, MinerControl::SwitchChannel)
         .await;
@@ -225,6 +273,7 @@ pub async fn switch_channel(
 
 #[tauri::command]
 pub async fn pin_channel(
+    app: AppHandle,
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
     channel_login: Option<String>,
@@ -239,7 +288,12 @@ pub async fn pin_channel(
         guard.clone()
     };
 
+    {
+        let mut snap = state.snapshot_lock(platform).write().await;
+        snap.pinned_channel = channel_login.clone();
+    }
     state.persist_settings().await?;
+    state.publish_snapshot(&app, true).await;
     state
         .send_miner(platform, MinerControl::PinChannel(channel_login))
         .await;
@@ -308,6 +362,10 @@ pub async fn fetch_campaign_details(
             let mut snap = state.twitch_snapshot.write().await;
             if let Some(target) = snap.campaigns.iter_mut().find(|c| c.id == camp.id) {
                 *target = camp.clone();
+            }
+            crate::miner::engine::propagate_linked_games(&mut snap.campaigns);
+            if let Some(synced) = snap.campaigns.iter().find(|c| c.id == camp.id) {
+                camp = synced.clone();
             }
         }
         state
@@ -502,5 +560,27 @@ pub async fn report_user_agent(
         return Err("Invalid user-agent length".to_string());
     }
     state.http.set_user_agent(user_agent).await;
+    Ok(())
+}
+
+/// Closes & destroys the UI WebView2 window so DropPilot keeps farming in the system tray
+/// with ~11 MB RAM and 0 background WebView2 processes.
+#[tauri::command]
+pub async fn hide_to_tray(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    if let Some(win) = app.get_webview_window("main") {
+        if let Some(bounds) = crate::windows::capture_bounds_sync(&win.as_ref().window()) {
+            let mut guard = state.settings.write().await;
+            guard.window_bounds = Some(bounds);
+        }
+        let _ = state.persist_settings().await;
+        state.events.reset_cache().await;
+        let _ = win.destroy();
+    }
+    close_kick_bridge_window(&app);
+    close_twitch_bridge_window(&app);
+    info!("UI closed to system tray (ultra-light mode; WebView2 destroyed)");
     Ok(())
 }

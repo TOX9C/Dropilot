@@ -3,6 +3,54 @@ export function progressPercent(current: number, required: number): number {
   return Math.max(0, Math.min(100, Math.round((current / required) * 100)));
 }
 
+export function formatProgressPercent(current: number, required: number): string {
+  if (required <= 0 || current <= 0) return '0%';
+  const raw = Math.max(0, Math.min(100, (current / required) * 100));
+  if (raw < 1) return `${raw.toFixed(1)}%`;
+  return `${Math.round(raw)}%`;
+}
+
+export function formatLivePercent(currentFloat: number, required: number): string {
+  if (required <= 0 || currentFloat <= 0) return '0%';
+  const raw = Math.max(0, Math.min(100, (currentFloat / required) * 100));
+  if (raw >= 100) return '100%';
+  if (raw < 10) return `${raw.toFixed(1)}%`;
+  return `${raw.toFixed(1)}%`;
+}
+
+export function formatLiveDuration(minutesFloat: number): string {
+  const totalSecs = Math.max(0, Math.floor(minutesFloat * 60));
+  const hrs = Math.floor(totalSecs / 3600);
+  const mins = Math.floor((totalSecs % 3600) / 60);
+  const secs = totalSecs % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (hrs > 0) return `${hrs}h ${pad(mins)}m`;
+  if (mins > 0) return `${mins}m ${pad(secs)}s`;
+  return `${secs}s`;
+}
+
+export function formatLiveRemaining(remainingSeconds: number): string {
+  const secsTotal = Math.max(0, Math.ceil(remainingSeconds));
+  if (secsTotal === 0) return 'Ready to claim';
+  const hrs = Math.floor(secsTotal / 3600);
+  const mins = Math.floor((secsTotal % 3600) / 60);
+  const secs = secsTotal % 60;
+  const pad = (n: number) => String(n).padStart(2, '0');
+  if (hrs > 0) return `${hrs}h ${pad(mins)}m left`;
+  if (mins > 0) return `${mins}m ${pad(secs)}s left`;
+  return `${secs}s left`;
+}
+
+export function formatEtaClock(remainingSeconds: number, now = Date.now()): string {
+  if (remainingSeconds <= 0) return 'Now';
+  const target = new Date(now + remainingSeconds * 1000);
+  return `~${target.toLocaleTimeString([], {
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  })}`;
+}
+
 export function formatMinutes(mins: number): string {
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);

@@ -1,6 +1,6 @@
 <script lang="ts">
   import X from 'lucide-svelte/icons/x';
-  import { nowMs } from '../lib/clock';
+  import { slowNowMs } from '../lib/clock';
   import { formatRelativeTime, formatTimestamp } from '../lib/format';
   import type { LogEntry, LogLevel, PlatformId } from '../lib/types';
   import Badge from './Badge.svelte';
@@ -125,7 +125,7 @@
       {#each collapsedRows as row (row.entry.id)}
         <div
           class="log-line cv-row mono border-{row.entry.level}"
-          title={formatRelativeTime(row.entry.timestamp, $nowMs)}
+          title={formatRelativeTime(row.entry.timestamp, $slowNowMs)}
         >
           <span class="ts tabular">{formatTimestamp(row.entry.timestamp)}</span>
           <span class="lvl lvl-{row.entry.level}">{row.entry.level.toUpperCase()}</span>

@@ -2,7 +2,6 @@
   import Clock from 'lucide-svelte/icons/clock';
   import Gift from 'lucide-svelte/icons/gift';
   import LogIn from 'lucide-svelte/icons/log-in';
-  import Plus from 'lucide-svelte/icons/plus';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import X from 'lucide-svelte/icons/x';
@@ -10,8 +9,9 @@
   import Button from '../components/Button.svelte';
   import CampaignCard from '../components/CampaignCard.svelte';
   import FilterBar from '../components/FilterBar.svelte';
+  import GamePicker from '../components/GamePicker.svelte';
   import { api } from '../lib/api';
-  import { nowMs } from '../lib/clock';
+  import { slowNowMs } from '../lib/clock';
   import {
     computeCampaignCounts,
     extractGameOptions,
@@ -52,7 +52,6 @@
   let sort = $state<CampaignSort>('ending_soon');
   let search = $state('');
   let selectedGame = $state('all');
-  let watchInput = $state('');
   let watchScope = $state<'both' | 'twitch' | 'kick'>('both');
   let addingWatch = $state(false);
 
@@ -65,8 +64,6 @@
     kickId: string | null;
     hasLiveDrop: boolean;
   }
-
-  const allGameSuggestions = $derived(extractGameOptions(allCampaigns).map((g) => g.name));
 
   const watchedGames = $derived.by<WatchedGameChip[]>(() => {
     const map = new Map<string, WatchedGameChip>();
@@ -105,16 +102,16 @@
     platformFilter === 'all' ? allCampaigns : snapshot[platformFilter].campaigns,
   );
 
-  const counts = $derived(computeCampaignCounts(scopedCampaigns, settings, $nowMs));
+  const counts = $derived(computeCampaignCounts(scopedCampaigns, settings, $slowNowMs));
   const games = $derived(extractGameOptions(scopedCampaigns));
   const filteredCampaigns = $derived(
-    filterAndSortCampaigns(scopedCampaigns, settings, filter, sort, search, selectedGame, $nowMs),
+    filterAndSortCampaigns(scopedCampaigns, settings, filter, sort, search, selectedGame, $slowNowMs),
   );
 
   const endingUnder24h = $derived(
     allCampaigns.filter((c) => {
       if (c.status !== 'active' || isCampaignCompleted(c)) return false;
-      const diff = new Date(c.endsAt).getTime() - $nowMs;
+      const diff = new Date(c.endsAt).getTime() - $slowNowMs;
       return diff > 0 && diff < 24 * 3_600_000;
     }).length,
   );
@@ -185,14 +182,12 @@
     }
   }
 
-  async function handleAddWatchSubmit(ev: SubmitEvent) {
-    ev.preventDefault();
-    const clean = watchInput.trim();
+  async function handleSelectWatchedGame(gameName: string) {
+    const clean = gameName.trim();
     if (!clean || addingWatch) return;
     addingWatch = true;
     try {
       await addWatchedGameAction(clean, watchScope, snapshot);
-      watchInput = '';
     } catch (err) {
       notifyUi(String(err), 'error');
     } finally {
@@ -267,32 +262,24 @@
         <span class="wl-sub">Add any game — DropPilot automatically mines it whenever drops go live</span>
       </div>
 
-      <form class="wl-form" onsubmit={handleAddWatchSubmit}>
-        <input
-          type="text"
-          class="wl-input"
-          list="all-drops-game-suggestions"
-          bind:value={watchInput}
-          placeholder="Type any game (e.g. Escape from Tarkov, Rust, VALORANT)..."
-          aria-label="Game name to auto-mine"
-        />
-        <datalist id="all-drops-game-suggestions">
-          {#each allGameSuggestions as gName (gName)}
-            <option value={gName}></option>
-          {/each}
-        </datalist>
+      <div class="wl-form">
+        <div class="wl-picker-wrap">
+          <GamePicker
+            campaigns={allCampaigns}
+            watchedNames={watchedGames.map((w) => w.name)}
+            placeholder="Search or add any game (e.g. Escape from Tarkov, Rust, VALORANT)..."
+            disabled={addingWatch}
+            buttonLabel="Watch game"
+            onSelect={handleSelectWatchedGame}
+          />
+        </div>
 
         <div class="wl-scope" role="group" aria-label="Watchlist platform">
           <button type="button" class="scope-pill" class:active={watchScope === 'both'} onclick={() => (watchScope = 'both')}>Both</button>
           <button type="button" class="scope-pill" class:active={watchScope === 'twitch'} onclick={() => (watchScope = 'twitch')}>Twitch</button>
           <button type="button" class="scope-pill" class:active={watchScope === 'kick'} onclick={() => (watchScope = 'kick')}>Kick</button>
         </div>
-
-        <Button variant="primary" size="sm" type="submit" disabled={!watchInput.trim() || addingWatch}>
-          <Plus size={13} />
-          <span>Watch game</span>
-        </Button>
-      </form>
+      </div>
     </div>
 
     {#if watchedGames.length > 0}
@@ -432,26 +419,10 @@
     min-width: 280px;
   }
 
-  .wl-input {
+  .wl-picker-wrap {
     flex: 1;
-    min-width: 210px;
-    max-width: 340px;
-    height: 30px;
-    padding: 0 10px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: var(--text-xs);
-  }
-
-  .wl-input::placeholder {
-    color: var(--text-faint);
-  }
-
-  .wl-input:focus {
-    outline: none;
-    border-color: var(--accent);
+    min-width: 240px;
+    max-width: 400px;
   }
 
   .wl-scope {

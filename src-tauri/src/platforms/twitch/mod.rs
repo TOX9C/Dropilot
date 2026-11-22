@@ -3,7 +3,8 @@ pub mod gql;
 pub mod models;
 pub mod watch;
 
-use std::sync::Arc;
+use std::sync::{Arc, Mutex as StdMutex};
+use std::time::{Duration, Instant};
 
 use async_trait::async_trait;
 use serde_json::json;
@@ -17,11 +18,12 @@ use crate::miner::selector::game_names_match;
 use crate::net::client::AllowlistedClient;
 use crate::platforms::twitch::gql::{
     execute_persisted_gql, execute_persisted_gql_batch, execute_persisted_gql_opt,
+    fetch_channel_live_status, fetch_channels_available_drop_campaign_ids,
     fetch_game_directory_streams, ops, validate_oauth_token,
 };
 use crate::platforms::twitch::models::{
     parse_campaign_details, parse_campaigns_dashboard, parse_directory_channels,
-    parse_inventory_progress,
+    parse_drop_current_session_progress, parse_inventory_progress,
 };
 use crate::platforms::twitch::watch::TwitchWatchSession;
 use crate::platforms::{
@@ -30,12 +32,15 @@ use crate::platforms::{
 };
 
 const TWITCH_DROPS_TAG_ID: &str = "c2542d6d-cd10-4532-919b-3dcc9f54d5bf";
+const TWITCH_INVENTORY_BRIDGE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
 pub struct TwitchPlatform {
     http: Arc<AllowlistedClient>,
     app: Option<AppHandle>,
     bridge_lock: Arc<Mutex<()>>,
     watch: TwitchWatchSession,
+    last_watched_channel: StdMutex<Option<(String, String)>>,
+    last_inventory_bridge_at: StdMutex<Option<Instant>>,
 }
 
 impl TwitchPlatform {
@@ -49,6 +54,64 @@ impl TwitchPlatform {
             app,
             bridge_lock,
             watch: TwitchWatchSession::new(),
+            last_watched_channel: StdMutex::new(None),
+            last_inventory_bridge_at: StdMutex::new(None),
+        }
+    }
+
+    async fn filter_participating_channels(
+        &self,
+        token: &str,
+        campaign: &Campaign,
+        channels: Vec<Channel>,
+    ) -> Vec<Channel> {
+        let channels: Vec<Channel> = match campaign.allowed_channels.as_ref().filter(|a| !a.is_empty()) {
+            Some(allowed) => channels
+                .into_iter()
+                .filter(|ch| {
+                    allowed
+                        .iter()
+                        .any(|a| a.login.eq_ignore_ascii_case(&ch.login) || a.id == ch.id)
+                })
+                .collect(),
+            None => channels,
+        };
+
+        if channels.is_empty() {
+            return channels;
+        }
+        let ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
+        match fetch_channels_available_drop_campaign_ids(&self.http, Some(token), &ids).await {
+            Ok(avail_map) if !avail_map.is_empty() => {
+                let total = channels.len();
+                let mut participating: Vec<Channel> = channels
+                    .into_iter()
+                    .filter(|ch| {
+                        avail_map
+                            .get(&ch.id)
+                            .map(|camp_ids| camp_ids.iter().any(|id| id == &campaign.id))
+                            .unwrap_or(false)
+                    })
+                    .collect();
+                participating.sort_by_key(|a| std::cmp::Reverse(a.viewer_count));
+                tracing::info!(
+                    game = %campaign.game.name,
+                    campaign = %campaign.name,
+                    candidates = total,
+                    participating = participating.len(),
+                    "Verified Twitch participating channels for drop campaign"
+                );
+                participating
+            }
+            Ok(_) => Vec::new(),
+            Err(err) => {
+                tracing::warn!(
+                    campaign = %campaign.name,
+                    error = %err,
+                    "Could not verify Twitch DropsHighlightService_AvailableDrops; rejecting unverified directory candidates"
+                );
+                Vec::new()
+            }
         }
     }
 }
@@ -79,8 +142,9 @@ pub fn apply_campaign_details(camp: &mut Campaign, detailed: Campaign) {
         camp.link_url = detailed.link_url;
         camp.requires_link = detailed.requires_link;
     }
-    camp.linked = detailed.linked;
-    camp.link_verified = detailed.link_verified;
+    let already_linked = camp.linked && camp.link_verified;
+    camp.linked = already_linked || detailed.linked;
+    camp.link_verified = already_linked || detailed.link_verified;
     if !detailed.drops.is_empty() {
         let prev_drops = std::mem::take(&mut camp.drops);
         camp.drops = detailed
@@ -272,7 +336,8 @@ impl Platform for TwitchPlatform {
     }
 
     async fn fetch_progress(&self, token: &str) -> Result<Vec<DropProgress>, AppError> {
-        let payload = match execute_persisted_gql(
+        // 1. Try pure-Rust direct Inventory GQL first (0 MB WebView2 RAM).
+        match execute_persisted_gql(
             &self.http,
             token,
             ops::INVENTORY,
@@ -280,22 +345,75 @@ impl Platform for TwitchPlatform {
         )
         .await
         {
-            Ok(val) => val,
-            Err(AppError::Blocked(_)) if self.app.is_some() => {
-                let _guard = self.bridge_lock.lock().await;
-                let app_handle = self
-                    .app
-                    .as_ref()
-                    .ok_or_else(|| AppError::Internal("Missing app handle".to_string()))?;
-                twitch_bridge_capture(
-                    app_handle,
-                    "https://www.twitch.tv/drops/inventory",
-                    "inventory",
-                )
-                .await?
-            }
+            Ok(val) => return parse_inventory_progress(&val),
+            Err(AppError::Blocked(_)) => {}
             Err(err) => return Err(err),
+        }
+
+        // 2. Try pure-Rust DropCurrentSessionContext for the active watched channel
+        //    so live minutes sync over lightweight HTTP without spawning any hidden WebView2 tab.
+        let watched = self
+            .last_watched_channel
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+        let mut completed_needs_claim = false;
+        if let Some((ref ch_id, ref ch_login)) = watched {
+            if let Ok(sess_val) = execute_persisted_gql(
+                &self.http,
+                token,
+                ops::DROP_CURRENT_SESSION_CONTEXT,
+                json!({
+                    "channelID": ch_id,
+                    "channelLogin": ch_login,
+                }),
+            )
+            .await
+            {
+                if let Some((prog, completed)) = parse_drop_current_session_progress(&sess_val) {
+                    if !completed {
+                        return Ok(vec![prog]);
+                    }
+                    completed_needs_claim = true;
+                }
+            }
+        }
+
+        // 3. Only open the temporary official Inventory page bridge when truly needed:
+        //    - First sync after startup/login or explicit manual Refresh, OR
+        //    - A drop reached 100% and needs dropInstanceID for auto-claim, OR
+        //    - Actively watching and >= 10 minutes elapsed since last bridge sync.
+        let Some(ref app_handle) = self.app else {
+            return Ok(Vec::new());
         };
+
+        let last_bridge = self
+            .last_inventory_bridge_at
+            .lock()
+            .ok()
+            .and_then(|g| *g);
+
+        let should_run_bridge = match last_bridge {
+            None => true,
+            Some(_) if completed_needs_claim => true,
+            Some(at) => watched.is_some() && at.elapsed() >= TWITCH_INVENTORY_BRIDGE_COOLDOWN,
+        };
+
+        if !should_run_bridge {
+            return Ok(Vec::new());
+        }
+
+        let _guard = self.bridge_lock.lock().await;
+        let payload = twitch_bridge_capture(
+            app_handle,
+            "https://www.twitch.tv/drops/inventory",
+            "inventory",
+        )
+        .await?;
+
+        if let Ok(mut g) = self.last_inventory_bridge_at.lock() {
+            *g = Some(Instant::now());
+        }
 
         parse_inventory_progress(&payload)
     }
@@ -305,11 +423,12 @@ impl Platform for TwitchPlatform {
         token: &str,
         campaign: &Campaign,
     ) -> Result<Vec<Channel>, AppError> {
-        // If campaign restricts to specific allowed channels, verify live status on those first.
+        // If campaign restricts to specific allowed channels, verify live status on those ONLY.
+        // Never fall through to general directory streams for a channel-restricted campaign.
         if let Some(ref allowed) = campaign.allowed_channels {
             if !allowed.is_empty() {
                 let mut live_allowed = Vec::new();
-                for ch_ref in allowed.iter().take(20) {
+                for ch_ref in allowed.iter().take(25) {
                     let probe = Channel {
                         id: ch_ref.id.clone(),
                         login: ch_ref.login.clone(),
@@ -320,6 +439,7 @@ impl Platform for TwitchPlatform {
                         is_live: false,
                         drops_enabled: true,
                         is_followed: false,
+                        stream_id: None,
                     };
                     if let Ok(checked) = self.check_live(token, &probe).await {
                         if checked.is_live
@@ -329,9 +449,10 @@ impl Platform for TwitchPlatform {
                         }
                     }
                 }
-                if !live_allowed.is_empty() {
-                    return Ok(live_allowed);
-                }
+                let verified = self
+                    .filter_participating_channels(token, campaign, live_allowed)
+                    .await;
+                return Ok(verified);
             }
         }
 
@@ -342,7 +463,7 @@ impl Platform for TwitchPlatform {
             Some(token),
             &campaign.game.id,
             &campaign.game.name,
-            TWITCH_DROPS_TAG_ID,
+            Some(TWITCH_DROPS_TAG_ID),
         )
         .await
         {
@@ -353,7 +474,7 @@ impl Platform for TwitchPlatform {
                     None,
                     &campaign.game.id,
                     &campaign.game.name,
-                    TWITCH_DROPS_TAG_ID,
+                    Some(TWITCH_DROPS_TAG_ID),
                 )
                 .await
             }
@@ -367,6 +488,7 @@ impl Platform for TwitchPlatform {
             .filter(|s| !s.is_empty())
             .map(str::to_string);
 
+        let mut raw_candidates: Vec<Channel> = Vec::new();
         if let Ok(ref payload) = by_id_res {
             if let Some(s) = payload
                 .pointer("/data/game/slug")
@@ -376,9 +498,56 @@ impl Platform for TwitchPlatform {
                 resolved_slug = Some(s.to_string());
             }
             if let Ok(channels) = parse_directory_channels(payload, &campaign.game.name) {
-                if !channels.is_empty() {
-                    return Ok(channels);
+                raw_candidates = channels;
+            }
+        }
+
+        // Supplement with top game directory streams when Twitch's Drops tag index returns
+        // fewer than 8 streams — EVERY channel is strictly verified against
+        // DropsHighlightService_AvailableDrops so non-participating streamers are always excluded.
+        if raw_candidates.len() < 8 {
+            let untagged = match fetch_game_directory_streams(
+                &self.http,
+                Some(token),
+                &campaign.game.id,
+                &campaign.game.name,
+                None,
+            )
+            .await
+            {
+                Ok(val) => Ok(val),
+                Err(AppError::Blocked(_)) => {
+                    fetch_game_directory_streams(
+                        &self.http,
+                        None,
+                        &campaign.game.id,
+                        &campaign.game.name,
+                        None,
+                    )
+                    .await
                 }
+                Err(err) => Err(err),
+            };
+            if let Ok(ref payload) = untagged {
+                if let Ok(extra) = parse_directory_channels(payload, &campaign.game.name) {
+                    for ch in extra {
+                        if !raw_candidates
+                            .iter()
+                            .any(|existing| existing.id == ch.id || existing.login.eq_ignore_ascii_case(&ch.login))
+                        {
+                            raw_candidates.push(ch);
+                        }
+                    }
+                }
+            }
+        }
+
+        if !raw_candidates.is_empty() {
+            let verified = self
+                .filter_participating_channels(token, campaign, raw_candidates)
+                .await;
+            if !verified.is_empty() {
+                return Ok(verified);
             }
         }
 
@@ -419,7 +588,9 @@ impl Platform for TwitchPlatform {
 
         if let Ok(ref channels) = parsed_direct {
             if !channels.is_empty() {
-                return Ok(channels.clone());
+                return Ok(self
+                    .filter_participating_channels(token, campaign, channels.clone())
+                    .await);
             }
         }
 
@@ -440,25 +611,45 @@ impl Platform for TwitchPlatform {
                     candidates = channels.len(),
                     "Fetched Twitch directory candidates via official page"
                 );
-                return Ok(channels);
+                return Ok(self
+                    .filter_participating_channels(token, campaign, channels)
+                    .await);
             }
         }
 
-        parsed_direct
+        match parsed_direct {
+            Ok(channels) => Ok(self
+                .filter_participating_channels(token, campaign, channels)
+                .await),
+            Err(err) => Err(err),
+        }
     }
 
     async fn check_live(&self, token: &str, channel: &Channel) -> Result<Channel, AppError> {
-        let vars = json!({ "channelLogin": channel.login });
-        let payload = match execute_persisted_gql(&self.http, token, ops::USE_LIVE, vars.clone()).await {
-            Ok(val) => val,
+        let rich_payload = match fetch_channel_live_status(&self.http, Some(token), &channel.login).await {
+            Ok(val) => Ok(val),
             Err(AppError::Blocked(_)) => {
-                execute_persisted_gql_opt(&self.http, None, ops::USE_LIVE, vars).await?
+                fetch_channel_live_status(&self.http, None, &channel.login).await
             }
-            Err(err) => return Err(err),
+            Err(err) => Err(err),
+        };
+
+        let payload = match rich_payload {
+            Ok(val) => val,
+            Err(_) => {
+                let vars = json!({ "channelLogin": channel.login });
+                match execute_persisted_gql(&self.http, token, ops::USE_LIVE, vars.clone()).await {
+                    Ok(val) => val,
+                    Err(AppError::Blocked(_)) => {
+                        execute_persisted_gql_opt(&self.http, None, ops::USE_LIVE, vars).await?
+                    }
+                    Err(err) => return Err(err),
+                }
+            }
         };
 
         let user_node = payload.pointer("/data/user").ok_or_else(|| {
-            AppError::PlatformChanged("Missing /data/user in UseLive response".to_string())
+            AppError::PlatformChanged("Missing /data/user in channel live response".to_string())
         })?;
 
         if user_node.is_null() {
@@ -468,12 +659,12 @@ impl Platform for TwitchPlatform {
             )));
         }
 
-        let stream = user_node.get("stream");
-        let is_live = stream.map(|s| !s.is_null()).unwrap_or(false);
+        let stream = user_node.get("stream").filter(|s| !s.is_null());
+        let is_live = stream.is_some();
         let viewers = stream
             .and_then(|s| s.get("viewersCount"))
             .and_then(|v| v.as_u64())
-            .unwrap_or(0);
+            .unwrap_or(if is_live { channel.viewer_count } else { 0 });
         let game_name = stream
             .and_then(|s| s.pointer("/game/displayName").or_else(|| s.pointer("/game/name")))
             .and_then(|v| v.as_str())
@@ -481,10 +672,61 @@ impl Platform for TwitchPlatform {
             .to_string();
 
         let mut updated = channel.clone();
+        if let Some(uid) = user_node
+            .get("id")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            updated.id = uid.to_string();
+        }
+        if let Some(dn) = user_node
+            .get("displayName")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            updated.display_name = dn.to_string();
+        }
+        if let Some(av) = user_node
+            .get("profileImageURL")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+        {
+            updated.avatar_url = Some(av.to_string());
+        }
         updated.is_live = is_live;
         updated.viewer_count = viewers;
         updated.game_name = game_name;
+        updated.stream_id = stream
+            .and_then(|s| s.get("id"))
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
         Ok(updated)
+    }
+
+    async fn is_channel_participating(
+        &self,
+        token: &str,
+        channel: &Channel,
+        campaign: &Campaign,
+    ) -> Result<bool, AppError> {
+        if let Some(ref allowed) = campaign.allowed_channels {
+            if !allowed.is_empty()
+                && !allowed
+                    .iter()
+                    .any(|a| a.login.eq_ignore_ascii_case(&channel.login) || a.id == channel.id)
+            {
+                return Ok(false);
+            }
+        }
+        let ids = vec![channel.id.clone()];
+        match fetch_channels_available_drop_campaign_ids(&self.http, Some(token), &ids).await {
+            Ok(avail_map) if !avail_map.is_empty() => Ok(avail_map
+                .get(&channel.id)
+                .map(|camp_ids| camp_ids.iter().any(|id| id == &campaign.id))
+                .unwrap_or(false)),
+            _ => Ok(true),
+        }
     }
 
     async fn watch_tick(
@@ -493,9 +735,25 @@ impl Platform for TwitchPlatform {
         channel: &Channel,
         compat_mode: bool,
     ) -> Result<WatchTickResult, AppError> {
+        if let Ok(mut g) = self.last_watched_channel.lock() {
+            *g = Some((channel.id.clone(), channel.login.clone()));
+        }
         self.watch
             .tick(&self.http, self.app.as_ref(), token, channel, compat_mode)
             .await
+    }
+
+    async fn stop_watching(&self) {
+        self.watch.close().await;
+        if let Ok(mut g) = self.last_watched_channel.lock() {
+            *g = None;
+        }
+    }
+
+    fn reset_progress_sync_cooldown(&self) {
+        if let Ok(mut g) = self.last_inventory_bridge_at.lock() {
+            *g = None;
+        }
     }
 
     async fn claim(&self, token: &str, _campaign: &Campaign, drop: &Drop) -> Result<(), AppError> {
@@ -503,7 +761,13 @@ impl Platform for TwitchPlatform {
     }
 
     async fn logout(&self, _token: Option<&str>) -> Result<(), AppError> {
-        self.watch.invalidate_token();
+        self.watch.invalidate_token().await;
+        if let Ok(mut g) = self.last_watched_channel.lock() {
+            *g = None;
+        }
+        if let Ok(mut g) = self.last_inventory_bridge_at.lock() {
+            *g = None;
+        }
         if let Some(ref app_handle) = self.app {
             close_compat_watch_window(app_handle, PlatformId::Twitch);
             close_twitch_bridge_window(app_handle);

@@ -69,8 +69,8 @@
 
   .btn-primary {
     background: var(--grad-accent);
-    color: #ffffff;
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
+    color: var(--accent-on);
+    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
   }
   .btn-primary:hover:not(:disabled) {
     background: var(--grad-accent-hover);

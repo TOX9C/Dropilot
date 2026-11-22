@@ -35,6 +35,7 @@ pub struct AllowlistedClient {
     http_platform: reqwest::Client,
     http_update: reqwest::Client,
     twitch_limiter: Arc<TokenBucket>,
+    twitch_cdn_limiter: Arc<TokenBucket>,
     kick_limiter: Arc<TokenBucket>,
     user_agent: RwLock<String>,
 }
@@ -71,6 +72,7 @@ impl AllowlistedClient {
             http_platform,
             http_update,
             twitch_limiter: Arc::new(TokenBucket::standard_platform()),
+            twitch_cdn_limiter: Arc::new(TokenBucket::new(20.0, 5.0)),
             kick_limiter: Arc::new(TokenBucket::standard_platform()),
             user_agent: RwLock::new(DEFAULT_BROWSER_USER_AGENT.to_string()),
         })
@@ -163,6 +165,74 @@ impl AllowlistedClient {
         })
     }
 
+    pub async fn post_form_platform(
+        &self,
+        platform: PlatformId,
+        op_name: &str,
+        raw_url: &str,
+        headers: HeaderMap,
+        form_body: String,
+    ) -> Result<HttpResponse, AppError> {
+        let parsed = Url::parse(raw_url)
+            .map_err(|e| AppError::Internal(format!("Invalid URL for {op_name}: {e}")))?;
+        validate_url(&parsed, AllowlistKind::Platform)?;
+
+        self.limiter(platform).acquire().await;
+
+        let ua = self.user_agent().await;
+        let mut req = self
+            .http_platform
+            .post(parsed)
+            .header(USER_AGENT, ua)
+            .header("Content-Type", "application/x-www-form-urlencoded");
+        for (name, val) in &headers {
+            req = req.header(name, val);
+        }
+        req = req.body(form_body);
+
+        let started = Instant::now();
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_reqwest_error(op_name, e))?;
+
+        let status = resp.status();
+        let resp_headers = resp.headers().clone();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Network(format!("{op_name} body read error: {}", redact(&e.to_string()))))?;
+
+        debug!(
+            platform = platform.as_str(),
+            op = op_name,
+            status = status.as_u16(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "HTTP form POST completed"
+        );
+
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            let retry_after = parse_retry_after(&resp_headers);
+            return Err(AppError::RateLimited {
+                retry_after_secs: retry_after,
+                message: format!("{op_name} returned 429"),
+            });
+        }
+
+        if status.is_server_error() {
+            return Err(AppError::Network(format!(
+                "{op_name} returned HTTP {}",
+                status.as_u16()
+            )));
+        }
+
+        Ok(HttpResponse {
+            status,
+            headers: resp_headers,
+            body,
+        })
+    }
+
     pub async fn head_platform(
         &self,
         platform: PlatformId,
@@ -213,6 +283,69 @@ impl AllowlistedClient {
         }
 
         Ok(status)
+    }
+
+    /// Lightweight allowlisted GET for Twitch HLS playlists (`*.ttvnw.net`) using the
+    /// dedicated CDN token bucket so periodic playlist refreshes never starve GQL calls.
+    pub async fn get_twitch_cdn_text(
+        &self,
+        op_name: &str,
+        raw_url: &str,
+        close_connection: bool,
+    ) -> Result<HttpResponse, AppError> {
+        let parsed = Url::parse(raw_url)
+            .map_err(|e| AppError::Internal(format!("Invalid URL for {op_name}: {e}")))?;
+        validate_url(&parsed, AllowlistKind::Platform)?;
+
+        self.twitch_cdn_limiter.acquire().await;
+
+        let ua = self.user_agent().await;
+        let mut req = self.http_platform.get(parsed).header(USER_AGENT, ua);
+        if close_connection {
+            req = req.header("Connection", "close");
+        }
+
+        let resp = req
+            .send()
+            .await
+            .map_err(|e| map_reqwest_error(op_name, e))?;
+        let status = resp.status();
+        let headers = resp.headers().clone();
+        let body = resp
+            .text()
+            .await
+            .map_err(|e| AppError::Network(format!("{op_name} body read error: {}", redact(&e.to_string()))))?;
+
+        Ok(HttpResponse {
+            status,
+            headers,
+            body,
+        })
+    }
+
+    /// Lightweight allowlisted HEAD request for Twitch HLS edge chunks (`*.hls.ttvnw.net`).
+    /// Downloads 0 video bytes while signaling active stream playback to Twitch's drop tracker.
+    pub async fn head_twitch_cdn(
+        &self,
+        op_name: &str,
+        raw_url: &str,
+    ) -> Result<StatusCode, AppError> {
+        let parsed = Url::parse(raw_url)
+            .map_err(|e| AppError::Internal(format!("Invalid URL for {op_name}: {e}")))?;
+        validate_url(&parsed, AllowlistKind::Platform)?;
+
+        self.twitch_cdn_limiter.acquire().await;
+
+        let ua = self.user_agent().await;
+        let resp = self
+            .http_platform
+            .head(parsed)
+            .header(USER_AGENT, ua)
+            .send()
+            .await
+            .map_err(|e| map_reqwest_error(op_name, e))?;
+
+        Ok(resp.status())
     }
 
     pub async fn fetch_update_json<T: DeserializeOwned>(

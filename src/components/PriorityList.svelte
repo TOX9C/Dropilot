@@ -1,56 +1,72 @@
 <script lang="ts">
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import Plus from 'lucide-svelte/icons/plus';
+  import Clock from 'lucide-svelte/icons/clock';
   import X from 'lucide-svelte/icons/x';
+  import { slowNowMs } from '../lib/clock';
+  import { formatEndCountdown } from '../lib/format';
   import { priorityItemMatchesGame } from '../lib/selectors';
   import type { Campaign, PlatformId, PriorityItem } from '../lib/types';
   import Badge from './Badge.svelte';
+  import GamePicker from './GamePicker.svelte';
 
   interface Props {
     items: PriorityItem[];
     campaigns?: Campaign[];
     platform?: PlatformId;
+    prioritizeEndingSoon?: boolean;
     onReorder: (next: PriorityItem[]) => void;
     onAddGame?: (gameName: string) => void | Promise<void>;
+    onToggleEndingSoon?: (enabled: boolean) => void | Promise<void>;
   }
 
-  let { items, campaigns = [], platform, onReorder, onAddGame }: Props = $props();
+  let {
+    items,
+    campaigns = [],
+    platform: _platform,
+    prioritizeEndingSoon = false,
+    onReorder,
+    onAddGame,
+    onToggleEndingSoon,
+  }: Props = $props();
 
   let collapsed = $state(false);
   let dragIndex = $state<number | null>(null);
   let dropTargetIndex = $state<number | null>(null);
-  let gameInput = $state('');
-  let adding = $state(false);
 
-  const datalistId = $derived(`priority-games-${platform ?? 'all'}`);
+  const ENDING_SOON_MS = 24 * 60 * 60 * 1000;
 
-  const suggestedGames = $derived.by(() => {
-    const names = new Set<string>();
-    for (const c of campaigns) {
-      const n = c.game.name.trim();
-      if (n) names.add(n);
+  const watchedGameNames = $derived(
+    items.filter((i): i is { kind: 'game'; gameId: string; gameName: string } => i.kind === 'game').map((i) => i.gameName),
+  );
+
+  function matchingActiveCampaigns(item: PriorityItem): Campaign[] {
+    if (item.kind === 'campaign') {
+      return campaigns.filter((c) => c.status === 'active' && c.id === item.campaignId);
     }
-    return Array.from(names).sort((a, b) => a.localeCompare(b));
-  });
-
-  function hasActiveDropFor(item: PriorityItem): boolean {
-    if (item.kind !== 'game') return false;
-    return campaigns.some(
+    return campaigns.filter(
       (c) => c.status === 'active' && priorityItemMatchesGame(item, c.game.id, c.game.name),
     );
   }
 
-  async function handleSubmitGame(ev: SubmitEvent) {
-    ev.preventDefault();
-    const clean = gameInput.trim();
-    if (!clean || !onAddGame || adding) return;
-    adding = true;
-    try {
-      await onAddGame(clean);
-      gameInput = '';
-    } finally {
-      adding = false;
+  function hasActiveDropFor(item: PriorityItem): boolean {
+    return matchingActiveCampaigns(item).length > 0;
+  }
+
+  function urgentEndLabel(item: PriorityItem, now: number): string | null {
+    const active = matchingActiveCampaigns(item);
+    if (active.length === 0) return null;
+    let earliestMs = Infinity;
+    let earliestIso: string | null = null;
+    for (const c of active) {
+      const endMs = Date.parse(c.endsAt);
+      if (Number.isFinite(endMs) && endMs > now && endMs < earliestMs) {
+        earliestMs = endMs;
+        earliestIso = c.endsAt;
+      }
     }
+    if (!earliestIso || earliestMs - now > ENDING_SOON_MS) return null;
+    const cd = formatEndCountdown(earliestIso, now);
+    return cd.ended ? null : cd.text;
   }
 
   function itemLabel(item: PriorityItem): string {
@@ -92,35 +108,44 @@
       <span class="section-label">Priority</span>
       <Badge>{items.length}</Badge>
     </div>
-    <span class="hint">Top farms first</span>
+    <span class="hint">{prioritizeEndingSoon ? 'Ending soon boosted' : 'Top farms first'}</span>
   </button>
 
   {#if !collapsed}
     {#if onAddGame}
-      <form class="add-game-form" onsubmit={handleSubmitGame}>
-        <input
-          class="add-game-input"
-          type="text"
-          list={datalistId}
-          bind:value={gameInput}
-          placeholder="Add any game to auto-mine..."
-          aria-label="Game name to auto-mine"
-        />
-        <datalist id={datalistId}>
-          {#each suggestedGames as gName (gName)}
-            <option value={gName}></option>
-          {/each}
-        </datalist>
+      <GamePicker
+        {campaigns}
+        watchedNames={watchedGameNames}
+        placeholder="Add any game..."
+        compact
+        alignRight
+        onSelect={onAddGame}
+      />
+    {/if}
+
+    {#if onToggleEndingSoon}
+      <div class="ending-soon-opt" class:active={prioritizeEndingSoon}>
+        <div class="opt-text">
+          <span class="opt-title">
+            <Clock size={12} />
+            <span>Ending soon first</span>
+          </span>
+          <span class="opt-desc">
+            Farm lower priority drops ending within 24h while top ones still have time
+          </span>
+        </div>
         <button
-          type="submit"
-          class="add-game-btn"
-          disabled={!gameInput.trim() || adding}
-          title="Watch this game and auto-mine whenever a drop appears"
+          type="button"
+          role="switch"
+          aria-checked={prioritizeEndingSoon}
+          aria-label="Prioritize drops ending soon"
+          class="mini-switch"
+          class:on={prioritizeEndingSoon}
+          onclick={() => onToggleEndingSoon(!prioritizeEndingSoon)}
         >
-          <Plus size={12} />
-          <span>Watch</span>
+          <span class="mini-thumb"></span>
         </button>
-      </form>
+      </div>
     {/if}
 
     {#if items.length === 0}
@@ -131,10 +156,12 @@
       <ul class="list" role="listbox" aria-label="Sortable priority items">
         {#each items as item, idx}
           {@const activeDrop = hasActiveDropFor(item)}
+          {@const urgentEnd = urgentEndLabel(item, $slowNowMs)}
           <li
             class="item"
             class:dragging={dragIndex === idx}
             class:drop-over={dropTargetIndex === idx && dragIndex !== idx}
+            class:item-urgent={prioritizeEndingSoon && Boolean(urgentEnd)}
             role="option"
             aria-selected="false"
             draggable="true"
@@ -169,10 +196,15 @@
                 {#if item.kind === 'game'}
                   <span class="watch-dot" class:watch-live={activeDrop} aria-hidden="true"></span>
                   <span class:watch-live-text={activeDrop}>
-                    {activeDrop ? 'Game · Drop active' : 'Game · Waiting for drop'}
+                    {activeDrop ? 'Drop active' : 'Waiting for drop'}
                   </span>
                 {:else}
-                  Campaign
+                  <span>Campaign</span>
+                {/if}
+                {#if urgentEnd && prioritizeEndingSoon}
+                  <span class="urgent-chip tabular" title="Ending soon — boosted while higher-ranked drops still have time">
+                    Ends {urgentEnd}
+                  </span>
                 {/if}
               </span>
             </div>
@@ -341,58 +373,6 @@
     font-weight: 600;
   }
 
-  .add-game-form {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .add-game-input {
-    flex: 1;
-    min-width: 0;
-    height: 30px;
-    padding: 0 9px;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--text);
-    font-size: 12px;
-  }
-
-  .add-game-input::placeholder {
-    color: var(--text-faint);
-  }
-
-  .add-game-input:focus {
-    outline: none;
-    border-color: var(--accent);
-  }
-
-  .add-game-btn {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
-    height: 30px;
-    padding: 0 9px;
-    border-radius: var(--radius-sm);
-    border: 1px solid rgba(129, 140, 248, 0.35);
-    background: var(--accent-tint);
-    color: var(--accent-text);
-    font-size: 11px;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-
-  .add-game-btn:hover:not(:disabled) {
-    border-color: var(--accent);
-    filter: brightness(1.1);
-  }
-
-  .add-game-btn:disabled {
-    opacity: 0.45;
-    cursor: not-allowed;
-  }
-
   .item-actions {
     display: flex;
     align-items: center;
@@ -424,5 +404,96 @@
   .kbd-tip {
     font-size: 11px;
     color: var(--text-faint);
+  }
+
+  .ending-soon-opt {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    transition: border-color 140ms ease, background 140ms ease;
+  }
+
+  .ending-soon-opt.active {
+    border-color: rgba(245, 158, 11, 0.36);
+    background: rgba(245, 158, 11, 0.08);
+  }
+
+  .opt-text {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .opt-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 12px;
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .ending-soon-opt.active .opt-title {
+    color: var(--warning-text);
+  }
+
+  .opt-desc {
+    font-size: 11px;
+    line-height: 1.3;
+    color: var(--text-faint);
+  }
+
+  .mini-switch {
+    position: relative;
+    width: 34px;
+    height: 19px;
+    border-radius: var(--radius-pill);
+    border: 1px solid var(--border-hover);
+    background: var(--surface-hover);
+    padding: 0;
+    flex-shrink: 0;
+    transition: background 150ms ease, border-color 150ms ease;
+  }
+
+  .mini-switch.on {
+    background: var(--warning);
+    border-color: var(--warning);
+  }
+
+  .mini-thumb {
+    position: absolute;
+    top: 2px;
+    left: 2px;
+    width: 13px;
+    height: 13px;
+    border-radius: 50%;
+    background: #fff;
+    transition: transform 150ms ease;
+  }
+
+  .mini-switch.on .mini-thumb {
+    transform: translateX(15px);
+  }
+
+  .item.item-urgent {
+    border-color: rgba(245, 158, 11, 0.35);
+  }
+
+  .urgent-chip {
+    display: inline-flex;
+    align-items: center;
+    padding: 1px 5px;
+    border-radius: var(--radius-pill);
+    background: var(--warning-tint);
+    color: var(--warning-text);
+    font-size: 10px;
+    font-weight: 700;
+    white-space: nowrap;
   }
 </style>

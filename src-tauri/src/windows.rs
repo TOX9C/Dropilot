@@ -7,12 +7,127 @@ use tracing::warn;
 use crate::settings::{ThemeMode, WindowBounds};
 use crate::state::AppState;
 
+/// Ultra-light Chromium flags for DropPilot's local Svelte UI window (`main`).
+/// Disables the separate GPU & out-of-process audio processes, caps disk/media caches
+/// and V8 heap, and disables unused Chromium background features while preserving WRY's defaults.
+pub const UI_WEBVIEW_BROWSER_ARGS: &str = concat!(
+    "--disable-gpu ",
+    "--disable-gpu-compositing ",
+    "--disable-gpu-shader-disk-cache ",
+    "--renderer-process-limit=1 ",
+    "--disable-extensions ",
+    "--disable-background-networking ",
+    "--disable-sync ",
+    "--disable-component-update ",
+    "--disable-default-apps ",
+    "--disable-domain-reliability ",
+    "--no-first-run ",
+    "--disk-cache-size=4194304 ",
+    "--media-cache-size=1048576 ",
+    "--js-flags=--max-old-space-size=48 ",
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,BackForwardCache,MediaRouter,OptimizationHints,InterestFeedContentSuggestions,AutofillServerCommunication,HeavyAdIntervention,AudioServiceOutOfProcess"
+);
+
+/// Lean Chromium flags shared across ALL platform windows using `webview_data_dir()`
+/// (login, inventory, and rare fallback bridges). Keeps GPU intact for official login/security checks.
+pub const PLATFORM_WEBVIEW_BROWSER_ARGS: &str = concat!(
+    "--disable-extensions ",
+    "--disable-background-networking ",
+    "--disable-sync ",
+    "--disable-component-update ",
+    "--disable-default-apps ",
+    "--no-first-run ",
+    "--disk-cache-size=16777216 ",
+    "--media-cache-size=2097152 ",
+    "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,Translate,BackForwardCache,MediaRouter,OptimizationHints,InterestFeedContentSuggestions"
+);
+
+/// Isolated WebView2 user-data directory solely for DropPilot's local Svelte UI (`main`).
+/// Separate from `webview_data_dir()` so `main` can use stricter low-RAM flags (`--disable-gpu`)
+/// and never accumulates Twitch/Kick site caches or service workers.
+pub fn ui_webview_data_dir() -> PathBuf {
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("DropPilot")
+        .join("WebView2-UI")
+}
+
+/// Isolated WebView2 user-data directory for official Twitch/Kick login & inventory sessions.
 pub fn webview_data_dir() -> PathBuf {
     dirs::data_local_dir()
         .unwrap_or_else(|| PathBuf::from("."))
         .join("DropPilot")
         .join("WebView2")
 }
+
+#[cfg(windows)]
+pub fn apply_low_memory_mode(win: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+    };
+    use windows::core::Interface;
+
+    let _ = win.with_webview(|wv| unsafe {
+        if let Ok(core) = wv.controller().CoreWebView2() {
+            if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
+                let _ = core19
+                    .SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn apply_low_memory_mode(_win: &tauri::WebviewWindow) {}
+
+/// Suspends the WebView2 renderer when minimized to taskbar (0% CPU, aggressively trimmed RAM).
+#[cfg(windows)]
+pub fn suspend_webview(win: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, ICoreWebView2_3, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+    };
+    use webview2_com::TrySuspendCompletedHandler;
+    use windows::core::Interface;
+
+    let _ = win.with_webview(|wv| unsafe {
+        let controller = wv.controller();
+        let _ = controller.SetIsVisible(false);
+        if let Ok(core) = controller.CoreWebView2() {
+            if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
+                let _ = core19
+                    .SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
+            }
+            if let Ok(core3) = core.cast::<ICoreWebView2_3>() {
+                let handler =
+                    TrySuspendCompletedHandler::create(Box::new(|_hr, _succeeded| Ok(())));
+                let _ = core3.TrySuspend(&handler);
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn suspend_webview(_win: &tauri::WebviewWindow) {}
+
+/// Resumes a suspended WebView2 renderer instantaneously when restored or focused.
+#[cfg(windows)]
+pub fn resume_webview(win: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
+    use windows::core::Interface;
+
+    let _ = win.with_webview(|wv| unsafe {
+        let controller = wv.controller();
+        let _ = controller.SetIsVisible(true);
+        if let Ok(core) = controller.CoreWebView2() {
+            if let Ok(core3) = core.cast::<ICoreWebView2_3>() {
+                let _ = core3.Resume();
+            }
+        }
+    });
+}
+
+#[cfg(not(windows))]
+pub fn resume_webview(_win: &tauri::WebviewWindow) {}
 
 pub fn resolve_tauri_theme(mode: ThemeMode) -> Option<Theme> {
     match mode {
@@ -27,6 +142,7 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         let _ = existing.unminimize();
         let _ = existing.show();
         let _ = existing.set_focus();
+        resume_webview(&existing);
         return Ok(());
     }
 
@@ -46,7 +162,8 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         .min_inner_size(840.0, 560.0)
         .resizable(true)
         .theme(resolve_tauri_theme(theme))
-        .data_directory(webview_data_dir());
+        .data_directory(ui_webview_data_dir())
+        .additional_browser_args(UI_WEBVIEW_BROWSER_ARGS);
 
     builder = if let Some(b) = bounds {
         builder.position(b.x as f64, b.y as f64)
@@ -54,9 +171,11 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         builder.center()
     };
 
-    builder
+    let win = builder
         .build()
         .map_err(|e| format!("Failed creating main window: {e}"))?;
+
+    apply_low_memory_mode(&win);
 
     state.events.reset_cache().await;
     Ok(())

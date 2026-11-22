@@ -12,10 +12,15 @@ pub const KICK_USER_URL: &str = "https://kick.com/api/v1/user";
 pub const KICK_CAMPAIGNS_URL: &str = "https://web.kick.com/api/v1/drops/campaigns";
 pub const KICK_PROGRESS_URL: &str = "https://web.kick.com/api/v1/drops/progress";
 pub const KICK_CLAIM_URL: &str = "https://web.kick.com/api/v1/drops/claim";
+pub const KICK_GAMIFICATION_CHALLENGES_URL: &str =
+    "https://web.kick.com/api/v1/gamification/challenges";
 pub const KICK_LIVESTREAMS_BASE: &str = "https://kick.com/stream/livestreams/en";
 pub const KICK_CHANNEL_V2_BASE: &str = "https://kick.com/api/v2/channels";
 pub const KICK_VIEWER_TOKEN_URL: &str = "https://websockets.kick.com/viewer/v1/token";
 pub const KICK_VIEWER_WS_URL: &str = "wss://websockets.kick.com/viewer/v1/connect";
+/// Kick's official public web client token used by kick.com's own player for viewer WebSocket auth.
+pub const KICK_PUBLIC_CLIENT_TOKEN: &str =
+    "e1393935a959b4020a4491574f6490129f678acdaa92760471263db43487f823";
 
 pub struct KickRequest<'a> {
     pub op_name: &'a str,
@@ -23,6 +28,7 @@ pub struct KickRequest<'a> {
     pub url: &'a str,
     pub json_body: Option<&'a Value>,
     pub not_found_is_resource: bool,
+    pub allow_bridge: bool,
 }
 
 pub fn normalize_kick_bearer_token(raw: &str) -> String {
@@ -39,6 +45,9 @@ pub fn build_kick_headers(token: &str) -> Result<HeaderMap, AppError> {
 
     let (ref_k, ref_v) = parse_header_name_value("Referer", "https://kick.com/")?;
     headers.insert(ref_k, ref_v);
+
+    let (plat_k, plat_v) = parse_header_name_value("x-app-platform", "web")?;
+    headers.insert(plat_k, plat_v);
 
     // Kick's web session cookie is accepted as Bearer or session_token cookie depending on endpoint.
     let bearer = normalize_kick_bearer_token(token);
@@ -75,8 +84,13 @@ pub async fn kick_request_json(
         url,
         json_body,
         not_found_is_resource,
+        allow_bridge,
     } = req;
-    let headers = build_kick_headers(token)?;
+    let mut headers = build_kick_headers(token)?;
+    if url.starts_with("https://websockets.kick.com/") {
+        let (ct_k, ct_v) = parse_header_name_value("x-client-token", KICK_PUBLIC_CLIENT_TOKEN)?;
+        headers.insert(ct_k, ct_v);
+    }
     let resp = http
         .request_platform(PlatformId::Kick, op_name, method.clone(), url, headers, json_body)
         .await?;
@@ -85,7 +99,7 @@ pub async fn kick_request_json(
         return Err(AppError::Auth("Kick session expired or unauthorized (401)".to_string()));
     }
 
-    if should_fallback_to_kick_bridge(resp.status, &resp.headers, &resp.body) {
+    if allow_bridge && should_fallback_to_kick_bridge(resp.status, &resp.headers, &resp.body) {
         // Fallback: execute the same request from inside DropPilot's hidden kick.com WebView2 page.
         if let Some(app_handle) = app {
             let method_str = if method == Method::POST { "POST" } else { "GET" };
@@ -197,6 +211,11 @@ mod tests {
             ""
         ));
 
+        assert!(should_fallback_to_kick_bridge(
+            StatusCode::FORBIDDEN,
+            &empty,
+            r#"{"data":{"type":"Forbidden"}}"#
+        ));
         assert!(!should_fallback_to_kick_bridge(
             StatusCode::OK,
             &empty,

@@ -67,11 +67,11 @@ export function campaignRemainingMinutes(camp: Campaign): number {
 }
 
 export function isCampaignConnected(camp: Campaign): boolean {
-  return !camp.requiresLink || (Boolean(camp.linkVerified) && camp.linked);
+  return !camp.requiresLink || camp.linked;
 }
 
 export function isCampaignUnlinked(camp: Campaign): boolean {
-  return camp.requiresLink && camp.linkVerified !== false && !camp.linked;
+  return camp.requiresLink && !camp.linked;
 }
 
 export function computeCampaignCounts(
@@ -354,4 +354,115 @@ export function computeEndingSoon(
   }
 
   return items.sort((a, b) => a.msRemaining - b.msRemaining).slice(0, 6);
+}
+
+export interface LiveSkinMilestone {
+  id: string;
+  skinName: string;
+  imageUrl: string | null;
+  requiredMinutes: number;
+  liveMinutes: number;
+  remainingSeconds: number;
+  claimed: boolean;
+  claimable: boolean;
+}
+
+export interface LiveCampaignProgress {
+  isLiveTicking: boolean;
+  isMultiDrop: boolean;
+  totalDrops: number;
+  completedDrops: number;
+  nextSkin: LiveSkinMilestone | null;
+  wholeRequiredMinutes: number;
+  wholeLiveMinutes: number;
+  wholeRemainingSeconds: number;
+  milestones: LiveSkinMilestone[];
+}
+
+export function getCampaignTotalMinutes(campaign: Campaign): number {
+  if (campaign.drops.length === 0) return 0;
+  return Math.max(...campaign.drops.map((d) => d.requiredMinutes));
+}
+
+export function computeLiveCampaignProgress(
+  campaign: Campaign | null,
+  activeDropId: string | null,
+  isMining: boolean,
+  watchingSinceIso: string | null | undefined,
+  progressSyncedAtIso: string | null | undefined,
+  nowMs: number,
+): LiveCampaignProgress | null {
+  if (!campaign || campaign.drops.length === 0) return null;
+
+  let liveDeltaMins = 0;
+  if (isMining) {
+    const syncTs = progressSyncedAtIso ? new Date(progressSyncedAtIso).getTime() : NaN;
+    const watchTs = watchingSinceIso ? new Date(watchingSinceIso).getTime() : NaN;
+    const anchorTs =
+      !Number.isNaN(syncTs) && !Number.isNaN(watchTs)
+        ? Math.max(syncTs, watchTs)
+        : !Number.isNaN(syncTs)
+          ? syncTs
+          : !Number.isNaN(watchTs)
+            ? watchTs
+            : NaN;
+    if (!Number.isNaN(anchorTs) && nowMs > anchorTs) {
+      // Smooth live interpolation across 5m-10m server progress polls so the timer never stalls.
+      liveDeltaMins = Math.min(10.5, (nowMs - anchorTs) / 60_000);
+    }
+  }
+
+  const milestones: LiveSkinMilestone[] = [...campaign.drops]
+    .sort((a, b) => a.requiredMinutes - b.requiredMinutes)
+    .map((d) => {
+      const req = Math.max(1, d.requiredMinutes);
+      const baseCur = d.claimed ? req : d.currentMinutes;
+      const liveMinutes = d.claimed || d.claimable ? req : Math.min(req, baseCur + liveDeltaMins);
+      const remainingSeconds = d.claimed || d.claimable ? 0 : Math.max(0, (req - liveMinutes) * 60);
+      const skinName = d.rewards[0]?.name || d.name;
+      const imageUrl = d.rewards[0]?.imageUrl ?? null;
+      return {
+        id: d.id,
+        skinName,
+        imageUrl,
+        requiredMinutes: req,
+        liveMinutes,
+        remainingSeconds,
+        claimed: d.claimed,
+        claimable: d.claimable || (!d.claimed && liveMinutes >= req),
+      };
+    });
+
+  const unclaimed = milestones.filter((m) => !m.claimed);
+  const completedDrops = milestones.length - unclaimed.length;
+
+  let nextSkin: LiveSkinMilestone | null = null;
+  if (unclaimed.length > 0) {
+    const sortedBySoonest = [...unclaimed].sort(
+      (a, b) =>
+        a.remainingSeconds - b.remainingSeconds ||
+        (a.id === activeDropId ? -1 : b.id === activeDropId ? 1 : 0),
+    );
+    nextSkin = sortedBySoonest[0] ?? null;
+  } else {
+    nextSkin = milestones[milestones.length - 1] ?? null;
+  }
+
+  // Concurrent time-based tiers (Twitch & Kick) accumulate watch time simultaneously up to the max milestone.
+  const wholeRequiredMinutes = Math.max(...milestones.map((m) => m.requiredMinutes));
+  const wholeRemainingSeconds =
+    unclaimed.length > 0 ? Math.max(...unclaimed.map((m) => m.remainingSeconds)) : 0;
+  const wholeLiveMinutes = Math.max(0, wholeRequiredMinutes - wholeRemainingSeconds / 60);
+
+  return {
+    isLiveTicking: isMining && unclaimed.length > 0,
+    isMultiDrop: milestones.length > 1,
+    totalDrops: milestones.length,
+    completedDrops,
+    nextSkin,
+    wholeRequiredMinutes,
+    wholeLiveMinutes,
+    wholeRemainingSeconds,
+    milestones,
+  };
 }

@@ -12,7 +12,9 @@ use crate::net::allowlist::{validate_url, AllowlistKind};
 use crate::platforms::{AppError, PlatformId};
 use crate::secrets::SecretStore;
 use crate::state::{AppState, BridgeWaiters, MinerControl};
-use crate::windows::{resolve_tauri_theme, webview_data_dir};
+use crate::windows::{
+    apply_low_memory_mode, resolve_tauri_theme, webview_data_dir, PLATFORM_WEBVIEW_BROWSER_ARGS,
+};
 
 const KICK_BRIDGE_SCRIPT: &str = r##"
 (function () {
@@ -97,6 +99,9 @@ const KICK_BRIDGE_SCRIPT: &str = r##"
 
         const method = String(msg.method || "GET").toUpperCase() === "POST" ? "POST" : "GET";
         const headers = { Accept: "application/json" };
+        if (parsed.hostname === "web.kick.com") {
+          headers["x-app-platform"] = "web";
+        }
         if (msg.bearer) {
           headers["Authorization"] = "Bearer " + msg.bearer;
         }
@@ -169,20 +174,98 @@ const KICK_BRIDGE_SCRIPT: &str = r##"
 })();
 "##;
 
-const COMPAT_WATCH_SCRIPT: &str = r#"
+const COMPAT_WATCH_SCRIPT: &str = r##"
 (function () {
-  function enforceLowestAndMuted() {
+  if (window.__dpCompatWatchInstalled) return;
+  window.__dpCompatWatchInstalled = true;
+
+  // Prefer lowest video quality & unmuted player state inside the DOM.
+  // Audio is muted natively at the WebView2 tab level (ICoreWebView2_8::SetIsMuted(true))
+  // so the user hears zero sound while Twitch/Kick still credit drop watch time.
+  try {
+    const host = (window.location.hostname || "").toLowerCase();
+    if (host.endsWith("twitch.tv")) {
+      window.localStorage.setItem("video-quality", JSON.stringify({ default: "160p30" }));
+      window.localStorage.setItem("video-muted", JSON.stringify({ default: false }));
+      window.localStorage.setItem("volume", "0.5");
+      window.localStorage.setItem("mature", "true");
+    }
+  } catch (_) {}
+
+  function clickGates() {
     try {
-      document.querySelectorAll("video, audio").forEach(function (el) {
-        el.muted = true;
-        el.volume = 0;
+      const selectors = [
+        '[data-a-target="content-classification-gate-overlay-start-watching-button"]',
+        '[data-a-target="player-overlay-mature-accept"]',
+        '[data-a-target="player-overlay-click-handler"] button[aria-label*="Play" i]',
+        'button[data-testid="mature-content-accept"]',
+        'button[data-testid="accept-cookies"]'
+      ];
+      for (let i = 0; i < selectors.length; i++) {
+        const btn = document.querySelector(selectors[i]);
+        if (btn instanceof HTMLElement) {
+          btn.click();
+        }
+      }
+      // Kick & generic mature/start-watching overlays.
+      const buttons = document.querySelectorAll("button");
+      for (let i = 0; i < buttons.length; i++) {
+        const b = buttons[i];
+        const txt = (b.textContent || "").trim().toLowerCase();
+        if (
+          txt === "start watching" ||
+          txt === "accept & continue" ||
+          txt === "i am 18+" ||
+          txt === "i'm 18+"
+        ) {
+          b.click();
+        }
+      }
+    } catch (_) {}
+  }
+
+  function keepPlaybackAlive() {
+    clickGates();
+    try {
+      const videos = document.querySelectorAll("video");
+      videos.forEach(function (video) {
+        if (video.paused && !video.ended) {
+          video.volume = 0.5;
+          video.muted = false;
+          const p = video.play();
+          if (p && typeof p.catch === "function") {
+            p.catch(function () {
+              // If autoplay policy demands a muted start, start muted then unmute once playing
+              // (the WebView2 tab itself remains muted at the OS/Chromium level).
+              video.muted = true;
+              const p2 = video.play();
+              if (p2 && typeof p2.then === "function") {
+                p2.then(function () {
+                  setTimeout(function () {
+                    try {
+                      video.muted = false;
+                      video.volume = 0.5;
+                    } catch (_) {}
+                  }, 1200);
+                }).catch(function () {});
+              }
+            });
+          }
+        } else if (!video.paused) {
+          if (video.muted || video.volume === 0) {
+            video.muted = false;
+            video.volume = 0.5;
+          }
+        }
       });
     } catch (_) {}
   }
-  setInterval(enforceLowestAndMuted, 2500);
-  document.addEventListener("DOMContentLoaded", enforceLowestAndMuted);
+
+  setInterval(keepPlaybackAlive, 3000);
+  document.addEventListener("DOMContentLoaded", keepPlaybackAlive);
+  setTimeout(keepPlaybackAlive, 1500);
 })();
-"#;
+"##;
 
 const TWITCH_OPEN_LOGIN_MODAL_SCRIPT: &str = r##"
 (function () {
@@ -280,6 +363,7 @@ pub async fn open_login_window(
         .resizable(true)
         .theme(resolve_tauri_theme(theme))
         .data_directory(webview_data_dir())
+        .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation));
 
     if platform == PlatformId::Twitch {
@@ -386,6 +470,7 @@ pub async fn open_drops_inventory_window(
         .center()
         .theme(resolve_tauri_theme(theme))
         .data_directory(webview_data_dir())
+        .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation))
         .build()
         .map_err(|e| AppError::Internal(format!("Failed opening drops inventory window: {e}")))?;
@@ -394,16 +479,32 @@ pub async fn open_drops_inventory_window(
 }
 
 pub async fn clear_webview_browsing_data(app: &AppHandle) -> Result<(), AppError> {
+    // Clear UI cache if main window is open (separate lightweight UI WebView2 profile).
     if let Some(main) = app.get_webview_window("main") {
-        main.clear_all_browsing_data()
-            .map_err(|e| AppError::Internal(format!("Failed clearing WebView2 browsing data: {e}")))?;
-        return Ok(());
+        let _ = main.clear_all_browsing_data();
     }
 
-    // Create a temporary hidden window on our isolated profile only if main is absent, clear, and close.
+    // Clear platform session cookies (Twitch/Kick) in `webview_data_dir()`.
+    for label in [
+        "login-twitch",
+        "login-kick",
+        "inventory-twitch",
+        "inventory-kick",
+        "kick-bridge",
+        "twitch-bridge",
+    ] {
+        if let Some(existing) = app.get_webview_window(label) {
+            return existing.clear_all_browsing_data().map_err(|e| {
+                AppError::Internal(format!("Failed clearing WebView2 browsing data: {e}"))
+            });
+        }
+    }
+
+    // Create a temporary hidden window on our isolated platform profile only if none is open, clear, and close.
     let tmp = WebviewWindowBuilder::new(app, "clear-data-tmp", WebviewUrl::default())
         .visible(false)
         .data_directory(webview_data_dir())
+        .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .build()
         .map_err(|e| AppError::Internal(format!("Failed opening cleanup helper: {e}")))?;
 
@@ -412,6 +513,26 @@ pub async fn clear_webview_browsing_data(app: &AppHandle) -> Result<(), AppError
         .map_err(|e| AppError::Internal(format!("Failed clearing WebView2 browsing data: {e}")));
     let _ = tmp.close();
     res
+}
+
+#[cfg(windows)]
+fn configure_hidden_muted_webview(win: &tauri::WebviewWindow) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
+    use windows::core::Interface;
+
+    let _ = win.with_webview(|wv| unsafe {
+        let controller = wv.controller();
+        let _ = controller.SetIsVisible(true);
+        if let Ok(core) = controller.CoreWebView2() {
+            if let Ok(core8) = core.cast::<ICoreWebView2_8>() {
+                let _ = core8.SetIsMuted(true);
+            }
+        }
+    });
+}
+
+fn normalized_watch_path(url: &Url) -> String {
+    url.path().trim_matches('/').to_ascii_lowercase()
 }
 
 pub fn ensure_compat_watch_window(
@@ -429,32 +550,45 @@ pub fn ensure_compat_watch_window(
     validate_url(&parsed, AllowlistKind::Platform)?;
 
     if let Some(existing) = app.get_webview_window(label) {
-        let current = existing.url().ok();
-        if current.as_ref().map(|u| u.as_str()) != Some(parsed.as_str()) {
+        #[cfg(windows)]
+        configure_hidden_muted_webview(&existing);
+
+        let same_channel = existing
+            .url()
+            .ok()
+            .map(|u| {
+                u.host_str() == parsed.host_str()
+                    && normalized_watch_path(&u) == normalized_watch_path(&parsed)
+            })
+            .unwrap_or(false);
+        if !same_channel {
             let _ = existing.navigate(parsed);
+            info!(
+                platform = platform.as_str(),
+                channel = %channel_login,
+                "Switched hidden muted watch window"
+            );
         }
         return Ok(());
     }
 
     let win = WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
         .title("DropPilot Compatibility Player")
-        .inner_size(420.0, 260.0)
+        .inner_size(960.0, 540.0)
         .center()
         .visible(false)
         .focused(false)
         .skip_taskbar(true)
         .data_directory(webview_data_dir())
+        .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .initialization_script(COMPAT_WATCH_SCRIPT)
         .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::Platform))
         .build()
         .map_err(|e| AppError::Internal(format!("Failed starting compatibility watch window: {e}")))?;
 
+    apply_low_memory_mode(&win);
     #[cfg(windows)]
-    let _ = win.with_webview(|wv| unsafe {
-        let _ = wv.controller().SetIsVisible(true);
-    });
-    #[cfg(not(windows))]
-    let _ = win;
+    configure_hidden_muted_webview(&win);
 
     info!(
         platform = platform.as_str(),
@@ -472,6 +606,21 @@ pub fn close_compat_watch_window(app: &AppHandle, platform: PlatformId) {
 
 #[cfg(windows)]
 static KICK_BRIDGE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+#[cfg(windows)]
+static KICK_BRIDGE_IDLE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+#[cfg(windows)]
+fn schedule_kick_bridge_idle_close(app: &AppHandle) {
+    use std::sync::atomic::Ordering;
+    let gen = KICK_BRIDGE_IDLE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let app_clone = app.clone();
+    tauri::async_runtime::spawn(async move {
+        sleep(Duration::from_secs(2)).await;
+        if KICK_BRIDGE_IDLE_GEN.load(Ordering::SeqCst) == gen {
+            close_kick_bridge_window(&app_clone);
+        }
+    });
+}
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum KickBridgeMessage {
@@ -573,6 +722,7 @@ pub async fn kick_webview_fetch_with_waiters(
             .skip_taskbar(true)
             .focused(false)
             .data_directory(webview_data_dir())
+            .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
             .initialization_script(KICK_BRIDGE_SCRIPT)
             .on_navigation(|url| {
                 url.as_str() == "about:blank"
@@ -580,6 +730,8 @@ pub async fn kick_webview_fetch_with_waiters(
             })
             .build()
             .map_err(|e| AppError::Internal(format!("Failed creating Kick bridge window: {e}")))?;
+
+            apply_low_memory_mode(&created);
 
             let (ready_tx, ready_rx) = oneshot::channel::<()>();
             let ready_tx_slot = Arc::new(StdMutex::new(Some(ready_tx)));
@@ -796,6 +948,7 @@ pub async fn kick_webview_fetch_with_waiters(
                             .to_string(),
                     ));
                 }
+                schedule_kick_bridge_idle_close(app);
                 Ok(parsed)
             }
             Ok(Ok(Err(err_msg))) => Err(AppError::Network(format!("Kick bridge error: {err_msg}"))),
@@ -1166,6 +1319,7 @@ async fn run_twitch_bridge(
         .skip_taskbar(true)
         .focused(false)
         .data_directory(webview_data_dir())
+        .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .on_navigation(|url| {
             url.as_str() == "about:blank"
                 || validate_url(url, AllowlistKind::LoginNavigation).is_ok()
@@ -1178,6 +1332,8 @@ async fn run_twitch_bridge(
     let win = builder
         .build()
         .map_err(|e| AppError::Internal(format!("Failed creating Twitch bridge window: {e}")))?;
+
+    apply_low_memory_mode(&win);
 
     let (result_tx, result_rx) = oneshot::channel::<Result<serde_json::Value, String>>();
     let result_tx_slot = Arc::new(StdMutex::new(Some(result_tx)));

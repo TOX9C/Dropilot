@@ -1,10 +1,110 @@
+use std::collections::HashSet;
+
 use chrono::{DateTime, Utc};
 
+use crate::platforms::kick::models::is_kick_any_stream_campaign;
 use crate::platforms::{Campaign, CampaignStatus, Channel};
 use crate::settings::{IdleBehavior, PlatformSettings, PriorityItem, Settings};
 
 pub const STALL_SWITCH_SECS: i64 = 15 * 60;
 pub const VOLUNTARY_SWITCH_HYSTERESIS_SECS: i64 = 120;
+pub const ENDING_SOON_WINDOW_MINS: i64 = 24 * 60;
+pub const ENDING_SOON_SLACK_MINS: i64 = 12 * 60;
+
+fn time_left_mins(campaign: &Campaign, now: DateTime<Utc>) -> i64 {
+    (campaign.ends_at - now).num_minutes().max(0)
+}
+
+fn campaign_remaining_mins(campaign: &Campaign) -> i64 {
+    if campaign.drops.is_empty() {
+        return 60;
+    }
+    campaign
+        .drops
+        .iter()
+        .filter(|d| !d.claimed && !d.needs_manual_claim)
+        .map(|d| d.required_minutes.saturating_sub(d.current_minutes) as i64)
+        .max()
+        .unwrap_or(0)
+}
+
+fn next_drop_remaining_mins(campaign: &Campaign) -> i64 {
+    if campaign.drops.is_empty() {
+        return 15;
+    }
+    campaign
+        .drops
+        .iter()
+        .filter(|d| !d.claimed && !d.needs_manual_claim)
+        .map(|d| d.required_minutes.saturating_sub(d.current_minutes) as i64)
+        .filter(|&m| m > 0)
+        .min()
+        .unwrap_or(0)
+}
+
+fn is_ending_soon_boostable(campaign: &Campaign, now: DateTime<Utc>) -> bool {
+    let tl = time_left_mins(campaign, now);
+    if tl <= 0 {
+        return false;
+    }
+    let next_m = next_drop_remaining_mins(campaign);
+    if next_m > tl {
+        return false;
+    }
+    let rem = campaign_remaining_mins(campaign);
+    tl <= ENDING_SOON_WINDOW_MINS || (tl - rem) <= ENDING_SOON_SLACK_MINS
+}
+
+/// Optional deadline-aware priority boost: promotes lower-ranked priority campaigns
+/// that are ending soon ahead of higher-priority campaigns when the higher-priority
+/// campaigns still have enough time to finish afterward.
+fn apply_ending_soon_boost(
+    mut remaining: Vec<&Campaign>,
+    now: DateTime<Utc>,
+) -> Vec<&Campaign> {
+    if remaining.len() <= 1 {
+        return remaining;
+    }
+
+    let mut result = Vec::with_capacity(remaining.len());
+    let mut elapsed_planned_mins: i64 = 0;
+
+    while !remaining.is_empty() {
+        let mut best_jump: Option<(usize, DateTime<Utc>)> = None;
+
+        for (idx, u) in remaining.iter().enumerate() {
+            if idx == 0 || !is_ending_soon_boostable(u, now) {
+                continue;
+            }
+            let u_tl = time_left_mins(u, now);
+            let u_dur = campaign_remaining_mins(u).min(u_tl);
+
+            let can_jump_all = remaining[..idx].iter().all(|h| {
+                let h_tl = time_left_mins(h, now);
+                let h_rem = campaign_remaining_mins(h);
+                u.ends_at < h.ends_at && h_tl >= elapsed_planned_mins + u_dur + h_rem
+            });
+
+            if can_jump_all {
+                let replace = match best_jump {
+                    None => true,
+                    Some((_, best_end)) => u.ends_at < best_end,
+                };
+                if replace {
+                    best_jump = Some((idx, u.ends_at));
+                }
+            }
+        }
+
+        let pick_idx = best_jump.map(|(i, _)| i).unwrap_or(0);
+        let picked = remaining.remove(pick_idx);
+        let picked_dur = campaign_remaining_mins(picked).min(time_left_mins(picked, now));
+        elapsed_planned_mins += picked_dur;
+        result.push(picked);
+    }
+
+    result
+}
 
 fn normalize_game_alnum(name: &str) -> String {
     name.chars()
@@ -74,37 +174,53 @@ pub fn is_campaign_eligible(
     true
 }
 
-pub fn select_target_campaign<'a>(
+/// Returns all eligible active campaigns in strict priority order:
+/// 1. User-ordered priority list (each item may match one or more active campaigns, sorted by `ends_at`).
+/// 2. Explicitly selected `farm_campaigns` not already in the priority list (sorted by `ends_at`).
+/// 3. Fallback `IdleBehavior::FarmAny` eligible campaigns (sorted by `ends_at`).
+///
+/// Deduplicated by campaign ID while preserving first-seen priority order.
+pub fn ordered_target_campaigns<'a>(
     campaigns: &'a [Campaign],
     settings: &Settings,
     platform_settings: &PlatformSettings,
     now: DateTime<Utc>,
-) -> Option<&'a Campaign> {
+) -> Vec<&'a Campaign> {
     let active_pool: Vec<&Campaign> = campaigns
         .iter()
         .filter(|c| is_campaign_active_window(c, settings, platform_settings, now))
         .collect();
 
     if active_pool.is_empty() {
-        return None;
+        return Vec::new();
     }
 
-    // 1. Check user-ordered priority list first.
+    let mut ordered: Vec<&'a Campaign> = Vec::new();
+    let mut seen: HashSet<&'a str> = HashSet::new();
+
+    let push_unique = |list: &mut Vec<&'a Campaign>, seen: &mut HashSet<&'a str>, c: &'a Campaign| {
+        if seen.insert(c.id.as_str()) {
+            list.push(c);
+        }
+    };
+
+    // 1. User-ordered priority list first.
     // On Twitch, if the user explicitly prioritized a campaign or game, allow it even when
     // Twitch GQL reports placeholder isAccountConnected=false for publisher-linked games.
+    let mut priority_ordered: Vec<&'a Campaign> = Vec::new();
     for item in &platform_settings.priority {
         match item {
             PriorityItem::Campaign { campaign_id, .. } => {
-                if let Some(found) = active_pool
-                    .iter()
-                    .copied()
-                    .find(|c| &c.id == campaign_id && (c.platform == crate::platforms::PlatformId::Twitch || is_campaign_eligible(c, settings, platform_settings, now)))
-                {
-                    return Some(found);
+                if let Some(found) = active_pool.iter().copied().find(|c| {
+                    &c.id == campaign_id
+                        && (c.platform == crate::platforms::PlatformId::Twitch
+                            || is_campaign_eligible(c, settings, platform_settings, now))
+                }) {
+                    push_unique(&mut priority_ordered, &mut seen, found);
                 }
             }
             PriorityItem::Game { game_id, game_name } => {
-                if let Some(found) = active_pool
+                let mut matching: Vec<&'a Campaign> = active_pool
                     .iter()
                     .copied()
                     .filter(|c| {
@@ -115,16 +231,22 @@ pub fn select_target_campaign<'a>(
                             && (c.platform == crate::platforms::PlatformId::Twitch
                                 || is_campaign_eligible(c, settings, platform_settings, now))
                     })
-                    .min_by_key(|c| c.ends_at)
-                {
-                    return Some(found);
+                    .collect();
+                matching.sort_by_key(|c| c.ends_at);
+                for c in matching {
+                    push_unique(&mut priority_ordered, &mut seen, c);
                 }
             }
         }
     }
 
-    // 2. Check explicitly selected campaigns not yet placed in priority list.
-    if let Some(found) = active_pool
+    if platform_settings.prioritize_ending_soon {
+        priority_ordered = apply_ending_soon_boost(priority_ordered, now);
+    }
+    ordered.extend(priority_ordered);
+
+    // 2. Explicitly selected campaigns not yet placed in priority list.
+    let mut farmed: Vec<&'a Campaign> = active_pool
         .iter()
         .copied()
         .filter(|c| {
@@ -132,20 +254,36 @@ pub fn select_target_campaign<'a>(
                 && (c.platform == crate::platforms::PlatformId::Twitch
                     || is_campaign_eligible(c, settings, platform_settings, now))
         })
-        .min_by_key(|c| c.ends_at)
-    {
-        return Some(found);
+        .collect();
+    farmed.sort_by_key(|c| c.ends_at);
+    for c in farmed {
+        push_unique(&mut ordered, &mut seen, c);
     }
 
     // 3. Fallback according to idle behavior (strictly requires linked or farm_unlinked).
     if settings.idle_behavior == IdleBehavior::FarmAny {
-        return active_pool
+        let mut rest: Vec<&'a Campaign> = active_pool
             .into_iter()
             .filter(|c| is_campaign_eligible(c, settings, platform_settings, now))
-            .min_by_key(|c| c.ends_at);
+            .collect();
+        rest.sort_by_key(|c| c.ends_at);
+        for c in rest {
+            push_unique(&mut ordered, &mut seen, c);
+        }
     }
 
-    None
+    ordered
+}
+
+pub fn select_target_campaign<'a>(
+    campaigns: &'a [Campaign],
+    settings: &Settings,
+    platform_settings: &PlatformSettings,
+    now: DateTime<Utc>,
+) -> Option<&'a Campaign> {
+    ordered_target_campaigns(campaigns, settings, platform_settings, now)
+        .into_iter()
+        .next()
 }
 
 pub fn select_best_channel<'a>(
@@ -153,6 +291,7 @@ pub fn select_best_channel<'a>(
     candidates: &'a [Channel],
     pinned_login: Option<&str>,
 ) -> Option<&'a Channel> {
+    let any_stream = is_kick_any_stream_campaign(campaign);
     let allowed_list = campaign
         .allowed_channels
         .as_ref()
@@ -161,7 +300,7 @@ pub fn select_best_channel<'a>(
     let eligible: Vec<&Channel> = candidates
         .iter()
         .filter(|ch| ch.is_live && ch.drops_enabled)
-        .filter(|ch| game_names_match(&ch.game_name, &campaign.game.name))
+        .filter(|ch| any_stream || game_names_match(&ch.game_name, &campaign.game.name))
         .filter(|ch| match allowed_list {
             Some(list) => list
                 .iter()
@@ -214,7 +353,9 @@ pub fn evaluate_switch(ctx: SwitchContext<'_>) -> SwitchDecision {
         return SwitchDecision::SwitchImmediate("Drops disabled on channel".to_string());
     }
 
-    if !game_names_match(&ctx.current_channel.game_name, &ctx.current_campaign.game.name) {
+    if !is_kick_any_stream_campaign(ctx.current_campaign)
+        && !game_names_match(&ctx.current_channel.game_name, &ctx.current_campaign.game.name)
+    {
         return SwitchDecision::SwitchImmediate(format!(
             "Channel switched game to {}",
             ctx.current_channel.game_name
@@ -324,6 +465,7 @@ mod tests {
             is_live: live,
             drops_enabled: true,
             is_followed: followed,
+            stream_id: None,
         }
     }
 
@@ -495,5 +637,122 @@ mod tests {
         assert_eq!(picked.map(|c| c.id.as_str()), Some("eft-1"));
         assert!(game_names_match("Overwatch 2", "Overwatch"));
         assert!(!game_names_match("Grand Theft Auto VI (GTA)", "Call of Duty: Modern Warfare 4"));
+    }
+
+    #[test]
+    fn ordered_target_campaigns_lists_all_priority_items_for_fallback() {
+        let now = Utc::now();
+        let eft = mk_campaign("eft-1", "491931", "Escape from Tarkov", true, 4);
+        let ow_a = mk_campaign("ow-1", "515025", "Overwatch", true, 2);
+        let ow_b = mk_campaign("ow-2", "515025", "Overwatch", true, 10);
+        let rust = mk_campaign("rust-1", "263490", "Rust", true, 6);
+        let campaigns = vec![rust, ow_b, eft, ow_a];
+
+        let mut settings = Settings {
+            disclaimer_accepted_version: 1,
+            idle_behavior: IdleBehavior::StayIdle,
+            ..Default::default()
+        };
+        settings.twitch.priority = vec![
+            PriorityItem::Game {
+                game_id: "491931".to_string(),
+                game_name: "Escape from Tarkov".to_string(),
+            },
+            PriorityItem::Game {
+                game_id: "515025".to_string(),
+                game_name: "Overwatch".to_string(),
+            },
+        ];
+        settings.twitch.farm_campaigns = vec!["rust-1".to_string()];
+
+        let ordered: Vec<&str> = ordered_target_campaigns(&campaigns, &settings, &settings.twitch, now)
+            .into_iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(ordered, vec!["eft-1", "ow-1", "ow-2", "rust-1"]);
+    }
+
+    #[test]
+    fn ending_soon_boost_promotes_urgent_fifth_game_when_higher_games_have_time() {
+        let now = Utc::now();
+        let g1 = mk_campaign("g1", "1", "Overwatch", true, 120);
+        let g2 = mk_campaign("g2", "2", "Rust", true, 96);
+        let g3 = mk_campaign("g3", "3", "VALORANT", true, 72);
+        let g4 = mk_campaign("g4", "4", "Fortnite", true, 48);
+        let g5 = mk_campaign("g5", "5", "Escape from Tarkov", true, 4);
+        let campaigns = vec![g1, g2, g3, g4, g5];
+
+        let mut settings = Settings {
+            disclaimer_accepted_version: 1,
+            idle_behavior: IdleBehavior::StayIdle,
+            ..Default::default()
+        };
+        settings.twitch.priority = vec![
+            PriorityItem::Game { game_id: "1".into(), game_name: "Overwatch".into() },
+            PriorityItem::Game { game_id: "2".into(), game_name: "Rust".into() },
+            PriorityItem::Game { game_id: "3".into(), game_name: "VALORANT".into() },
+            PriorityItem::Game { game_id: "4".into(), game_name: "Fortnite".into() },
+            PriorityItem::Game { game_id: "5".into(), game_name: "Escape from Tarkov".into() },
+        ];
+
+        // Default OFF -> strict 1..5 priority order
+        settings.twitch.prioritize_ending_soon = false;
+        let strict: Vec<&str> = ordered_target_campaigns(&campaigns, &settings, &settings.twitch, now)
+            .into_iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(strict, vec!["g1", "g2", "g3", "g4", "g5"]);
+
+        // Enabled -> #5 (ends in 4h) jumps ahead while #1..#4 have 2–5 days
+        settings.twitch.prioritize_ending_soon = true;
+        let boosted: Vec<&str> = ordered_target_campaigns(&campaigns, &settings, &settings.twitch, now)
+            .into_iter()
+            .map(|c| c.id.as_str())
+            .collect();
+        assert_eq!(boosted, vec!["g5", "g1", "g2", "g3", "g4"]);
+    }
+
+    #[test]
+    fn ending_soon_boost_protects_tight_higher_priority_and_skips_unwinnable() {
+        let now = Utc::now();
+        // #1 ends in 3h, needs 150m (only 30m spare — cannot wait for #2!)
+        let mut tight_top = mk_campaign("top", "1", "Overwatch", true, 3);
+        tight_top.drops[0].required_minutes = 150;
+        tight_top.drops[0].current_minutes = 0;
+
+        // #2 ends in 2h, needs 90m
+        let mut urgent_low = mk_campaign("low", "2", "Escape from Tarkov", true, 2);
+        urgent_low.drops[0].required_minutes = 90;
+        urgent_low.drops[0].current_minutes = 0;
+
+        let mut settings = Settings {
+            disclaimer_accepted_version: 1,
+            idle_behavior: IdleBehavior::StayIdle,
+            ..Default::default()
+        };
+        settings.twitch.prioritize_ending_soon = true;
+        settings.twitch.priority = vec![
+            PriorityItem::Game { game_id: "1".into(), game_name: "Overwatch".into() },
+            PriorityItem::Game { game_id: "2".into(), game_name: "Escape from Tarkov".into() },
+        ];
+
+        // Top priority is tight (180m < 90m + 150m) -> top stays first
+        let case1 = [tight_top.clone(), urgent_low.clone()];
+        let order = ordered_target_campaigns(&case1, &settings, &settings.twitch, now);
+        assert_eq!(order[0].id, "top");
+
+        // If top has 10h left (600m >= 90m + 150m), low runs first so both finish
+        let mut roomy_top = tight_top;
+        roomy_top.ends_at = now + Duration::hours(10);
+        let case2 = [roomy_top.clone(), urgent_low.clone()];
+        let order2 = ordered_target_campaigns(&case2, &settings, &settings.twitch, now);
+        assert_eq!(order2[0].id, "low");
+
+        // If low ends in 15m but needs 90m (unwinnable), do not boost it
+        let mut unwinnable = urgent_low;
+        unwinnable.ends_at = now + Duration::minutes(15);
+        let case3 = [roomy_top, unwinnable];
+        let order3 = ordered_target_campaigns(&case3, &settings, &settings.twitch, now);
+        assert_eq!(order3[0].id, "top");
     }
 }

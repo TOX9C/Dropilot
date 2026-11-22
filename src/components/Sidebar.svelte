@@ -3,6 +3,7 @@
   import Clock from 'lucide-svelte/icons/clock';
   import Gift from 'lucide-svelte/icons/gift';
   import LayoutDashboard from 'lucide-svelte/icons/layout-dashboard';
+  import Minimize2 from 'lucide-svelte/icons/minimize-2';
   import Pause from 'lucide-svelte/icons/pause';
   import Play from 'lucide-svelte/icons/play';
   import SettingsIcon from 'lucide-svelte/icons/settings';
@@ -64,7 +65,7 @@
     if (!snap) return 'dot-neutral';
     switch (snap.state) {
       case 'Mining':
-        return 'dot-success dot-pulse';
+        return 'dot-success';
       case 'Claiming':
       case 'Selecting':
         return 'dot-info';
@@ -89,6 +90,14 @@
       notifyUi(String(err), 'error');
     }
   }
+
+  async function handleHideToTray() {
+    try {
+      await api.hideToTray();
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
 </script>
 
 <aside class="sidebar" class:collapsed={$sidebarCollapsed} aria-label="Main navigation">
@@ -97,19 +106,19 @@
       <svg class="mark" viewBox="0 0 32 32" width="30" height="30" aria-hidden="true">
         <defs>
           <linearGradient id="dp-mark-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#38bdf8" />
-            <stop offset="50%" stop-color="#8b5cf6" />
-            <stop offset="100%" stop-color="#ec4899" />
+            <stop offset="0%" stop-color="#22d3ee" />
+            <stop offset="52%" stop-color="#0ea5e9" />
+            <stop offset="100%" stop-color="#14b8a6" />
           </linearGradient>
         </defs>
         <rect x="2" y="2" width="28" height="28" rx="9" fill="url(#dp-mark-grad)" />
         <path
           d="M16 7.5C16 7.5 22 14.5 22 18.5C22 21.8137 19.3137 24.5 16 24.5C12.6863 24.5 10 21.8137 10 18.5C10 14.5 16 7.5 16 7.5Z"
-          fill="#ffffff"
+          fill="#07131a"
         />
         <path
           d="M13 19.5L16 16.5L19 19.5"
-          stroke="#6e7bff"
+          stroke="#67e8f9"
           stroke-width="2"
           stroke-linecap="round"
           stroke-linejoin="round"
@@ -313,21 +322,34 @@
       </div>
     {/if}
 
-    <button
-      type="button"
-      class="pause-all-btn"
-      class:is-paused={allPaused}
-      onclick={togglePauseAll}
-      title={allPaused ? 'Resume all miners (Ctrl+P)' : 'Pause all miners (Ctrl+P)'}
-    >
-      {#if allPaused}
-        <Play size={13} />
-        {#if !$sidebarCollapsed}<span>Resume all</span>{/if}
-      {:else}
-        <Pause size={13} />
-        {#if !$sidebarCollapsed}<span>Pause all</span>{/if}
-      {/if}
-    </button>
+    <div class="foot-actions" class:collapsed={$sidebarCollapsed}>
+      <button
+        type="button"
+        class="pause-all-btn"
+        class:is-paused={allPaused}
+        onclick={togglePauseAll}
+        title={allPaused ? 'Resume all miners (Ctrl+P)' : 'Pause all miners (Ctrl+P)'}
+      >
+        {#if allPaused}
+          <Play size={13} />
+          {#if !$sidebarCollapsed}<span>Resume</span>{/if}
+        {:else}
+          <Pause size={13} />
+          {#if !$sidebarCollapsed}<span>Pause</span>{/if}
+        {/if}
+      </button>
+
+      <button
+        type="button"
+        class="tray-btn"
+        onclick={handleHideToTray}
+        aria-label="Hide to tray (ultra-light ~11 MB RAM)"
+        title="Hide UI to system tray — closes WebView2 and keeps farming at ~11 MB RAM"
+      >
+        <Minimize2 size={13} />
+        {#if !$sidebarCollapsed}<span>Tray</span>{/if}
+      </button>
+    </div>
 
     {#if !$sidebarCollapsed}
       <div class="meta-foot tabular">
@@ -551,7 +573,7 @@
   .nav-item.active {
     color: var(--text);
     background: var(--accent-tint);
-    border-color: rgba(129, 140, 248, 0.22);
+    border-color: var(--border-hover);
   }
 
   .nav-item.active .nav-ico {
@@ -559,33 +581,33 @@
   }
 
   .nav-item.nav-dashboard.active {
-    background: linear-gradient(90deg, rgba(56, 189, 248, 0.16) 0%, rgba(129, 140, 248, 0.05) 100%);
-    border-color: rgba(56, 189, 248, 0.28);
+    background: linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%);
+    border-color: var(--border-hover);
   }
 
   .nav-item.nav-drops.active {
-    background: linear-gradient(90deg, rgba(236, 72, 153, 0.17) 0%, rgba(168, 85, 247, 0.05) 100%);
-    border-color: rgba(236, 72, 153, 0.28);
+    background: linear-gradient(90deg, var(--pink-tint) 0%, transparent 100%);
+    border-color: rgba(245, 158, 11, 0.30);
   }
 
   .nav-item.nav-twitch.active {
-    background: linear-gradient(90deg, rgba(168, 85, 247, 0.19) 0%, rgba(168, 85, 247, 0.05) 100%);
+    background: linear-gradient(90deg, rgba(168, 85, 247, 0.17) 0%, transparent 100%);
     border-color: rgba(168, 85, 247, 0.30);
   }
 
   .nav-item.nav-kick.active {
-    background: linear-gradient(90deg, rgba(83, 252, 24, 0.14) 0%, rgba(16, 185, 129, 0.05) 100%);
+    background: linear-gradient(90deg, rgba(83, 252, 24, 0.13) 0%, transparent 100%);
     border-color: rgba(83, 252, 24, 0.28);
   }
 
   .nav-item.nav-logs.active {
-    background: linear-gradient(90deg, rgba(56, 189, 248, 0.15) 0%, transparent 100%);
-    border-color: rgba(56, 189, 248, 0.26);
+    background: linear-gradient(90deg, var(--info-tint) 0%, transparent 100%);
+    border-color: rgba(56, 189, 248, 0.28);
   }
 
   .nav-item.nav-settings.active {
-    background: linear-gradient(90deg, rgba(251, 191, 36, 0.15) 0%, transparent 100%);
-    border-color: rgba(251, 191, 36, 0.26);
+    background: linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%);
+    border-color: var(--border-hover);
   }
 
   .nav-item.active::before {
@@ -750,13 +772,24 @@
     border-color: var(--border);
   }
 
-  .pause-all-btn {
+  .foot-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    width: 100%;
+  }
+
+  .foot-actions.collapsed {
+    flex-direction: column;
+  }
+
+  .pause-all-btn,
+  .tray-btn {
     display: flex;
     align-items: center;
     justify-content: center;
     gap: 6px;
     height: 32px;
-    width: 100%;
     border-radius: 10px;
     border: 1px solid var(--border);
     background: rgba(255, 255, 255, 0.04);
@@ -765,13 +798,33 @@
     font-weight: 600;
   }
 
-  :global(:root[data-theme="light"]) .pause-all-btn {
+  .pause-all-btn {
+    flex: 1;
+    min-width: 0;
+  }
+
+  .tray-btn {
+    padding: 0 10px;
+    color: var(--text-muted);
+    flex-shrink: 0;
+  }
+
+  .foot-actions.collapsed .pause-all-btn,
+  .foot-actions.collapsed .tray-btn {
+    width: 100%;
+    padding: 0;
+  }
+
+  :global(:root[data-theme="light"]) .pause-all-btn,
+  :global(:root[data-theme="light"]) .tray-btn {
     background: var(--surface-2);
   }
 
-  .pause-all-btn:hover {
+  .pause-all-btn:hover,
+  .tray-btn:hover {
     background: var(--surface-hover);
     border-color: var(--border-hover);
+    color: var(--text);
   }
 
   .pause-all-btn.is-paused {
@@ -792,25 +845,12 @@
   @media (prefers-reduced-motion: no-preference) {
     .nav-item,
     .pause-all-btn,
+    .tray-btn,
     .dock-row {
       transition:
         background-color var(--duration-fast) var(--ease-out),
         color var(--duration-fast) var(--ease-out),
         border-color var(--duration-fast) var(--ease-out);
-    }
-
-    .dot-pulse {
-      animation: sb-pulse 2s ease-in-out infinite;
-    }
-
-    @keyframes sb-pulse {
-      0%,
-      100% {
-        opacity: 1;
-      }
-      50% {
-        opacity: 0.4;
-      }
     }
   }
 </style>

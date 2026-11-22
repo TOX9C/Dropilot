@@ -32,6 +32,7 @@ function createPreviewData(): {
       lastError: null,
       campaigns: [],
       candidateChannels: [],
+      pinnedChannel: null,
     });
     const emptyPS = () => ({
       enabled: true,
@@ -39,6 +40,7 @@ function createPreviewData(): {
       farmCampaigns: [],
       excludedCampaigns: [],
       pinnedChannel: null,
+      prioritizeEndingSoon: false,
     });
     return {
       settings: {
@@ -95,6 +97,7 @@ function createPreviewData(): {
         farmCampaigns: ['tw-rust-1'],
         excludedCampaigns: [],
         pinnedChannel: null,
+        prioritizeEndingSoon: false,
       },
       kick: {
         enabled: true,
@@ -102,6 +105,7 @@ function createPreviewData(): {
         farmCampaigns: ['kk-rust-1'],
         excludedCampaigns: [],
         pinnedChannel: null,
+        prioritizeEndingSoon: false,
       },
     },
     snapshot: {
@@ -401,6 +405,11 @@ export const api = {
       previewSettings[platform].priority = items;
       return cloneSettings();
     }),
+  setPrioritizeEndingSoon: (platform: PlatformId, enabled: boolean) =>
+    call<Settings>('set_prioritize_ending_soon', { platform, enabled }, () => {
+      previewSettings[platform].prioritizeEndingSoon = enabled;
+      return cloneSettings();
+    }),
   pause: (platform: PlatformId) =>
     call<void>('pause', { platform }, () => {
       previewSnapshot[platform].state = 'Paused';
@@ -410,10 +419,15 @@ export const api = {
     call<void>('resume', { platform }, () => {
       previewSnapshot[platform].state = 'Mining';
     }),
-  switchChannel: (platform: PlatformId) => call<void>('switch_channel', { platform }),
+  switchChannel: (platform: PlatformId) =>
+    call<void>('switch_channel', { platform }, () => {
+      previewSettings[platform].pinnedChannel = null;
+      previewSnapshot[platform].pinnedChannel = null;
+    }),
   pinChannel: (platform: PlatformId, channelLogin: string | null) =>
     call<Settings>('pin_channel', { platform, channelLogin }, () => {
       previewSettings[platform].pinnedChannel = channelLogin;
+      previewSnapshot[platform].pinnedChannel = channelLogin;
       return cloneSettings();
     }),
   retryPlatform: (platform: PlatformId) => call<void>('retry_platform', { platform }),
@@ -448,4 +462,5 @@ export const api = {
     })),
   isMockAvailable: () => call<boolean>('is_mock_available', undefined, () => true),
   reportUserAgent: (userAgent: string) => call<void>('report_user_agent', { userAgent }),
+  hideToTray: () => call<void>('hide_to_tray'),
 };

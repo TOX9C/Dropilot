@@ -8,6 +8,7 @@
   import Button from './components/Button.svelte';
   import { api } from './lib/api';
   import {
+    accentPreset,
     activeRoute,
     appLogs,
     appSettings,
@@ -17,7 +18,7 @@
     notifyUi,
     shortcutsOpen,
   } from './lib/stores';
-  import type { NavRoute, ThemeMode } from './lib/types';
+  import type { AccentPreset, NavRoute, ThemeMode } from './lib/types';
   import Dashboard from './views/Dashboard.svelte';
   import Drops from './views/Drops.svelte';
   import Logs from './views/Logs.svelte';
@@ -28,18 +29,23 @@
 
   const routes: NavRoute[] = ['dashboard', 'drops', 'twitch', 'kick', 'logs', 'settings'];
 
-  function applyDomTheme(mode: ThemeMode, sysDark: boolean) {
+  function applyDomTheme(mode: ThemeMode, sysDark: boolean, accent: AccentPreset) {
     const resolved = mode === 'system' ? (sysDark ? 'dark' : 'light') : mode;
     if (resolved === 'light') {
       document.documentElement.dataset.theme = 'light';
     } else {
       delete document.documentElement.dataset.theme;
     }
+    if (accent === 'cyan') {
+      delete document.documentElement.dataset.accent;
+    } else {
+      document.documentElement.dataset.accent = accent;
+    }
   }
 
   $effect(() => {
     const mode = $appSettings?.theme ?? 'dark';
-    applyDomTheme(mode, systemDark);
+    applyDomTheme(mode, systemDark, $accentPreset);
   });
 
   onMount(() => {

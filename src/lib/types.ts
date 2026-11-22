@@ -13,6 +13,8 @@ export type CampaignStatus = 'active' | 'upcoming' | 'expired';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
 
+export type AccentPreset = 'cyan' | 'emerald' | 'amber' | 'crimson' | 'violet';
+
 export type IdleBehavior = 'stay_idle' | 'farm_any';
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
@@ -92,10 +94,13 @@ export interface PlatformSnapshot {
   watching: Channel | null;
   currentCampaignId: string | null;
   currentDropId: string | null;
+  watchingSince?: string | null;
+  progressSyncedAt?: string | null;
   nextActionAt: string | null;
   lastError: string | null;
   campaigns: Campaign[];
   candidateChannels: Channel[];
+  pinnedChannel?: string | null;
 }
 
 export interface RecentClaim {
@@ -125,6 +130,7 @@ export interface PlatformSettings {
   farmCampaigns: string[];
   excludedCampaigns: string[];
   pinnedChannel: string | null;
+  prioritizeEndingSoon: boolean;
 }
 
 export interface WindowBounds {

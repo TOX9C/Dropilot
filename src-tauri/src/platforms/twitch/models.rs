@@ -6,6 +6,9 @@ use crate::platforms::{
     Reward,
 };
 
+pub const GAME_LINKED_ID_PREFIX: &str = "__game_linked_id__:";
+pub const GAME_LINKED_NAME_PREFIX: &str = "__game_linked_name__:";
+
 pub fn parse_campaigns_dashboard(payload: &Value) -> Result<Vec<Campaign>, AppError> {
     let campaigns_val = payload
         .pointer("/data/currentUser/dropCampaigns")
@@ -107,20 +110,15 @@ fn parse_single_campaign(v: &Value, is_dashboard_summary: bool) -> Option<Campai
         .map(str::to_string);
     let requires_link = link_url.is_some();
 
-    let has_drops = !drops.is_empty();
+    let _ = is_dashboard_summary;
     let has_active_progress = drops.iter().any(|d| d.current_minutes > 0 || d.claimed);
-    let (linked, link_verified) = if is_dashboard_summary && !has_drops {
-        // Twitch's bulk ViewerDropsDashboard returns placeholder self.isAccountConnected=false
-        // on summary rows without resolving per-game links; real link state is resolved by
-        // DropCampaignDetails and Inventory (dropCampaignsInProgress).
-        (true, !requires_link)
-    } else if has_active_progress {
+    let (linked, link_verified) = if !requires_link || has_active_progress {
         (true, true)
     } else {
         let explicit = v
             .pointer("/self/isAccountConnected")
             .and_then(|b| b.as_bool());
-        (explicit.unwrap_or(true), !requires_link || explicit.is_some())
+        (explicit.unwrap_or(false), true)
     };
 
     let allowed_channels = v
@@ -221,76 +219,168 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
             AppError::PlatformChanged("Missing /data/currentUser/inventory".to_string())
         })?;
 
-    let Some(in_progress) = inventory
+    let mut progress = Vec::new();
+    if let Some(in_progress) = inventory
         .get("dropCampaignsInProgress")
         .and_then(|v| v.as_array())
-    else {
-        return Ok(Vec::new());
-    };
-
-    let mut progress = Vec::new();
-    for camp in in_progress {
-        let Some(camp_id) = camp.get("id").and_then(|s| s.as_str()) else {
-            continue;
-        };
-        let raw_linked = camp
-            .pointer("/self/isAccountConnected")
-            .and_then(|b| b.as_bool());
-        let Some(drops) = camp.get("timeBasedDrops").and_then(|a| a.as_array()) else {
-            continue;
-        };
-        let has_progress = drops.iter().any(|d| {
-            d.pointer("/self/currentMinutesWatched")
-                .and_then(|n| n.as_u64())
-                .unwrap_or(0)
-                > 0
-                || d.pointer("/self/isClaimed")
-                    .and_then(|b| b.as_bool())
-                    .unwrap_or(false)
-        });
-        // Twitch's Inventory persisted query often returns placeholder isAccountConnected=false
-        // even for linked publisher accounts (e.g. Battle.net / Tarkov) while actively recording
-        // watch minutes. Only propagate positive confirmation from Inventory.
-        let camp_linked = if raw_linked == Some(true) || has_progress {
-            Some(true)
-        } else {
-            None
-        };
-        for drop in drops {
-            let Some(drop_id) = drop.get("id").and_then(|s| s.as_str()) else {
+    {
+        for camp in in_progress {
+            let Some(camp_id) = camp.get("id").and_then(|s| s.as_str()) else {
                 continue;
             };
-            let required = drop
-                .get("requiredMinutesWatched")
-                .and_then(|n| n.as_u64())
-                .unwrap_or(0) as u32;
-            let current = drop
-                .pointer("/self/currentMinutesWatched")
-                .and_then(|n| n.as_u64())
-                .unwrap_or(0) as u32;
-            let claimed = drop
-                .pointer("/self/isClaimed")
-                .and_then(|b| b.as_bool())
-                .unwrap_or(false);
-            let instance_id = drop
-                .pointer("/self/dropInstanceID")
-                .and_then(|s| s.as_str())
-                .map(str::to_string);
-            let claimable = !claimed && required > 0 && current >= required && instance_id.is_some();
-
-            progress.push(DropProgress {
-                campaign_id: camp_id.to_string(),
-                drop_id: drop_id.to_string(),
-                instance_id,
-                current_minutes: current,
-                claimable,
-                claimed,
-                linked: camp_linked,
-                drop: parse_drop(drop),
+            let raw_linked = camp
+                .pointer("/self/isAccountConnected")
+                .and_then(|b| b.as_bool());
+            let Some(drops) = camp.get("timeBasedDrops").and_then(|a| a.as_array()) else {
+                continue;
+            };
+            let has_progress = drops.iter().any(|d| {
+                d.pointer("/self/currentMinutesWatched")
+                    .and_then(|n| n.as_u64())
+                    .unwrap_or(0)
+                    > 0
+                    || d.pointer("/self/isClaimed")
+                        .and_then(|b| b.as_bool())
+                        .unwrap_or(false)
             });
+            // Twitch's Inventory persisted query often returns placeholder isAccountConnected=false
+            // even for linked publisher accounts (e.g. Battle.net / Tarkov) while actively recording
+            // watch minutes. Only propagate positive confirmation from Inventory.
+            let camp_linked = if raw_linked == Some(true) || has_progress {
+                Some(true)
+            } else {
+                None
+            };
+            for drop in drops {
+                let Some(drop_id) = drop.get("id").and_then(|s| s.as_str()) else {
+                    continue;
+                };
+                let required = drop
+                    .get("requiredMinutesWatched")
+                    .and_then(|n| n.as_u64())
+                    .unwrap_or(0) as u32;
+                let current = drop
+                    .pointer("/self/currentMinutesWatched")
+                    .and_then(|n| n.as_u64())
+                    .unwrap_or(0) as u32;
+                let claimed = drop
+                    .pointer("/self/isClaimed")
+                    .and_then(|b| b.as_bool())
+                    .unwrap_or(false);
+                let instance_id = drop
+                    .pointer("/self/dropInstanceID")
+                    .and_then(|s| s.as_str())
+                    .map(str::to_string);
+                let claimable =
+                    !claimed && required > 0 && current >= required && instance_id.is_some();
+
+                progress.push(DropProgress {
+                    campaign_id: camp_id.to_string(),
+                    drop_id: drop_id.to_string(),
+                    instance_id,
+                    current_minutes: current,
+                    progress_bps: None,
+                    claimable,
+                    claimed,
+                    linked: camp_linked,
+                    drop: parse_drop(drop),
+                });
+            }
         }
     }
+
+    // Also inspect `gameEventDrops` (every drop previously claimed on this Twitch account):
+    // any game with claimed history in Inventory is confirmed linked to the user's account.
+    if let Some(claimed_history) = inventory.get("gameEventDrops").and_then(|v| v.as_array()) {
+        let mut seen_keys = std::collections::HashSet::new();
+        for ev in claimed_history {
+            let Some(game) = ev.get("game").filter(|g| g.is_object()) else {
+                continue;
+            };
+            if let Some(gid) = game
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let key = format!("{GAME_LINKED_ID_PREFIX}{gid}");
+                if seen_keys.insert(key.clone()) {
+                    progress.push(DropProgress {
+                        campaign_id: key,
+                        drop_id: String::new(),
+                        instance_id: None,
+                        current_minutes: 0,
+                        progress_bps: None,
+                        claimable: false,
+                        claimed: false,
+                        linked: Some(true),
+                        drop: None,
+                    });
+                }
+            }
+            if let Some(gname) = game
+                .get("displayName")
+                .or_else(|| game.get("name"))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                let key = format!("{GAME_LINKED_NAME_PREFIX}{}", gname.to_ascii_lowercase());
+                if seen_keys.insert(key.clone()) {
+                    progress.push(DropProgress {
+                        campaign_id: key,
+                        drop_id: String::new(),
+                        instance_id: None,
+                        current_minutes: 0,
+                        progress_bps: None,
+                        claimable: false,
+                        claimed: false,
+                        linked: Some(true),
+                        drop: None,
+                    });
+                }
+            }
+        }
+    }
+
     Ok(progress)
+}
+
+/// Parses Twitch's lightweight `DropCurrentSessionContext` GQL response.
+/// Returns `(progress, completed_needs_claim)` so DropPilot can sync active watch progress
+/// over pure-Rust HTTP (0 MB WebView2) and only invoke full Inventory when a drop completes.
+pub fn parse_drop_current_session_progress(payload: &Value) -> Option<(DropProgress, bool)> {
+    let session = payload
+        .pointer("/data/currentUser/dropCurrentSession")
+        .filter(|v| v.is_object())?;
+    let drop_id = session
+        .get("dropID")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())?
+        .to_string();
+    let current = session
+        .get("currentMinutesWatched")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let required = session
+        .get("requiredMinutesWatched")
+        .and_then(|v| v.as_u64())
+        .unwrap_or(0) as u32;
+    let completed = required > 0 && current >= required;
+    Some((
+        DropProgress {
+            campaign_id: String::new(),
+            drop_id,
+            instance_id: None,
+            current_minutes: current,
+            progress_bps: None,
+            claimable: false,
+            claimed: false,
+            linked: if current > 0 { Some(true) } else { None },
+            drop: None,
+        },
+        completed,
+    ))
 }
 
 pub fn parse_directory_channels(payload: &Value, expected_game: &str) -> Result<Vec<Channel>, AppError> {
@@ -357,6 +447,12 @@ pub fn parse_directory_channels(payload: &Value, expected_game: &str) -> Result<
             .map(|f| !f.is_null())
             .unwrap_or(false);
 
+        let stream_id = node
+            .get("id")
+            .and_then(|s| s.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+
         channels.push(Channel {
             id: id.to_string(),
             login: login.to_string(),
@@ -367,6 +463,7 @@ pub fn parse_directory_channels(payload: &Value, expected_game: &str) -> Result<
             is_live: true,
             drops_enabled: true,
             is_followed,
+            stream_id,
         });
     }
 
@@ -492,7 +589,7 @@ mod tests {
     }
 
     #[test]
-    fn dashboard_summary_does_not_falsely_mark_unlinked() {
+    fn dashboard_summary_reads_immediate_connection_state() {
         let now = Utc::now();
         let future = (now + Duration::hours(12)).to_rfc3339();
         let past = (now - Duration::hours(2)).to_rfc3339();
@@ -509,6 +606,16 @@ mod tests {
                             "accountLinkURL": "https://www.escapefromtarkov.com/profile",
                             "self": { "isAccountConnected": false },
                             "game": { "id": "491931", "displayName": "Escape from Tarkov" }
+                        },
+                        {
+                            "id": "ow-1",
+                            "name": "Overwatch Drops",
+                            "status": "ACTIVE",
+                            "startAt": past,
+                            "endAt": future,
+                            "accountLinkURL": "https://account.battle.net/connections",
+                            "self": { "isAccountConnected": true },
+                            "game": { "id": "515025", "displayName": "Overwatch" }
                         }
                     ]
                 }
@@ -516,10 +623,13 @@ mod tests {
         });
 
         let parsed = parse_campaigns_dashboard(&payload).expect("campaigns");
-        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed.len(), 2);
         assert!(parsed[0].requires_link);
-        assert!(parsed[0].linked);
-        assert!(!parsed[0].link_verified);
+        assert!(!parsed[0].linked);
+        assert!(parsed[0].link_verified);
+        assert!(parsed[1].requires_link);
+        assert!(parsed[1].linked);
+        assert!(parsed[1].link_verified);
         assert_eq!(
             parsed[0].link_url.as_deref(),
             Some("https://www.escapefromtarkov.com/profile")
@@ -671,5 +781,41 @@ mod tests {
         assert_eq!(channels[0].viewer_count, 4200);
         assert_eq!(channels[1].id, "lvndmark");
         assert_eq!(channels[1].login, "lvndmark");
+    }
+
+    #[test]
+    fn parses_drop_current_session_context_progress() {
+        let payload = json!({
+            "data": {
+                "currentUser": {
+                    "dropCurrentSession": {
+                        "dropID": "drop-42",
+                        "currentMinutesWatched": 18,
+                        "requiredMinutesWatched": 60
+                    }
+                }
+            }
+        });
+        let (prog, completed) =
+            parse_drop_current_session_progress(&payload).expect("session progress");
+        assert_eq!(prog.drop_id, "drop-42");
+        assert_eq!(prog.current_minutes, 18);
+        assert_eq!(prog.linked, Some(true));
+        assert!(!completed);
+
+        let done_payload = json!({
+            "data": {
+                "currentUser": {
+                    "dropCurrentSession": {
+                        "dropID": "drop-42",
+                        "currentMinutesWatched": 60,
+                        "requiredMinutesWatched": 60
+                    }
+                }
+            }
+        });
+        let (_, done) =
+            parse_drop_current_session_progress(&done_payload).expect("completed session");
+        assert!(done);
     }
 }

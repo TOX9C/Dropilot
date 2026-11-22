@@ -12,7 +12,7 @@
   import Star from 'lucide-svelte/icons/star';
   import Unlink from 'lucide-svelte/icons/unlink';
   import X from 'lucide-svelte/icons/x';
-  import { nowMs } from '../lib/clock';
+  import { slowNowMs } from '../lib/clock';
   import {
     formatEndCountdown,
     formatExactDateTime,
@@ -20,6 +20,7 @@
     formatStartsIn,
     progressPercent,
   } from '../lib/format';
+  import { getCampaignTotalMinutes } from '../lib/selectors';
   import type { Campaign } from '../lib/types';
   import Badge from './Badge.svelte';
   import Monogram from './Monogram.svelte';
@@ -61,20 +62,40 @@
   let detailsError = $state<string | null>(null);
   let brokenImages = $state<Record<string, boolean>>({});
 
-  const linkState = $derived.by<'no_link' | 'connected' | 'unlinked' | 'unverified'>(() => {
+  const linkState = $derived.by<'no_link' | 'connected' | 'unlinked'>(() => {
     if (!campaign.requiresLink) return 'no_link';
-    if (campaign.linkVerified && campaign.linked) return 'connected';
-    if (campaign.linkVerified !== false && !campaign.linked) return 'unlinked';
-    return 'unverified';
+    if (campaign.linked) return 'connected';
+    return 'unlinked';
   });
+
+  const connectTargetUrl = $derived(
+    campaign.linkUrl ||
+      (campaign.platform === 'twitch'
+        ? 'https://www.twitch.tv/settings/connections'
+        : 'https://kick.com/drops/inventory'),
+  );
 
   const allClaimed = $derived(
     campaign.drops.length > 0 && campaign.drops.every((d) => d.claimed),
   );
-  const totalMinutes = $derived(campaign.drops.reduce((s, d) => s + d.requiredMinutes, 0));
-  const endInfo = $derived(formatEndCountdown(campaign.endsAt, $nowMs));
+  const totalMinutes = $derived(getCampaignTotalMinutes(campaign));
+  const nextUnclaimedDrop = $derived.by(() => {
+    const unclaimed = campaign.drops.filter((d) => !d.claimed);
+    if (unclaimed.length === 0) return null;
+    return [...unclaimed].sort(
+      (a, b) =>
+        Math.max(0, a.requiredMinutes - a.currentMinutes) -
+        Math.max(0, b.requiredMinutes - b.currentMinutes),
+    )[0];
+  });
+  const wholeRemainingMinutes = $derived.by(() => {
+    const unclaimed = campaign.drops.filter((d) => !d.claimed);
+    if (unclaimed.length === 0) return 0;
+    return Math.max(...unclaimed.map((d) => Math.max(0, d.requiredMinutes - d.currentMinutes)));
+  });
+  const endInfo = $derived(formatEndCountdown(campaign.endsAt, $slowNowMs));
   const exactEnd = $derived(formatExactDateTime(campaign.endsAt));
-  const upcomingLabel = $derived(formatStartsIn(campaign.startsAt, $nowMs));
+  const upcomingLabel = $derived(formatStartsIn(campaign.startsAt, $slowNowMs));
   const activeFarming = $derived(isFarmSelected && !isExcluded);
   const visibleDrops = $derived(expandedDrops ? campaign.drops : campaign.drops.slice(0, 2));
 
@@ -110,13 +131,9 @@
   });
 
   const overallPct = $derived.by(() => {
-    if (campaign.drops.length === 0) return null;
-    const req = campaign.drops.reduce((s, d) => s + d.requiredMinutes, 0);
-    const cur = campaign.drops.reduce(
-      (s, d) => s + (d.claimed ? d.requiredMinutes : d.currentMinutes),
-      0,
-    );
-    return progressPercent(cur, req);
+    if (campaign.drops.length === 0 || totalMinutes <= 0) return null;
+    const watched = Math.max(0, totalMinutes - wholeRemainingMinutes);
+    return progressPercent(watched, totalMinutes);
   });
 
   async function ensureDetailsLoaded() {
@@ -141,14 +158,6 @@
       await ensureDetailsLoaded();
     }
   }
-
-  async function handleCheckLink() {
-    if (onFetchDetails) {
-      await ensureDetailsLoaded();
-    } else if (campaign.linkUrl) {
-      onOpenUrl(campaign.linkUrl);
-    }
-  }
 </script>
 
 {#snippet connectionBadge()}
@@ -162,38 +171,16 @@
       <Link2 size={11} />
       <span>Connected</span>
     </span>
-  {:else if linkState === 'unlinked'}
-    {#if campaign.linkUrl}
-      <button
-        type="button"
-        class="conn-pill conn-unlinked conn-clickable"
-        title="Game account not connected — click to open link page"
-        onclick={() => onOpenUrl(campaign.linkUrl!)}
-      >
-        <Unlink size={11} />
-        <span>Not connected</span>
-      </button>
-    {:else}
-      <span class="conn-pill conn-unlinked" title="Game account not connected">
-        <Unlink size={11} />
-        <span>Not connected</span>
-      </span>
-    {/if}
   {:else}
     <button
       type="button"
-      class="conn-pill conn-unverified conn-clickable"
-      disabled={loadingDetails}
-      title="Click to verify whether this game account is connected & load skins"
-      onclick={handleCheckLink}
+      class="conn-pill conn-unlinked conn-clickable"
+      title="Game account not connected — click to open the connect page"
+      onclick={() => onOpenUrl(connectTargetUrl)}
     >
-      {#if loadingDetails}
-        <span class="spin-wrap"><LoaderCircle size={11} /></span>
-        <span>Checking...</span>
-      {:else}
-        <Link2 size={11} />
-        <span>Check link</span>
-      {/if}
+      <Unlink size={11} />
+      <span>Not connected</span>
+      <ExternalLink size={9} />
     </button>
   {/if}
 {/snippet}
@@ -521,19 +508,37 @@
       {@render skinsDrawer()}
     {:else if campaign.drops.length > 0}
       <div class="body">
+        {#if campaign.drops.length > 1 && !allClaimed}
+          <div class="multi-eta-bar tabular">
+            {#if nextUnclaimedDrop}
+              {@const nextRem = Math.max(0, nextUnclaimedDrop.requiredMinutes - nextUnclaimedDrop.currentMinutes)}
+              <span class="eta-pair">
+                <span class="eta-k">Next skin:</span>
+                <strong>{nextRem === 0 ? 'Ready' : `${formatMinutes(nextRem)} left`}</strong>
+              </span>
+            {/if}
+            <span class="eta-pair">
+              <span class="eta-k">Whole drop ({overallPct ?? 0}%):</span>
+              <strong>{wholeRemainingMinutes === 0 ? 'Done' : `${formatMinutes(wholeRemainingMinutes)} left`}</strong>
+            </span>
+          </div>
+        {/if}
+
         <div class="drops-list">
           {#each visibleDrops as drop (drop.id)}
             {@const pct = drop.claimed ? 100 : progressPercent(drop.currentMinutes, drop.requiredMinutes)}
+            {@const rem = Math.max(0, drop.requiredMinutes - drop.currentMinutes)}
+            {@const displayName = drop.rewards[0]?.name || drop.name}
             <div class="drop-row">
               <Monogram
                 src={drop.rewards[0]?.imageUrl}
-                name={drop.name}
+                name={displayName}
                 width={24}
                 height={24}
               />
               <div class="drop-info">
                 <div class="drop-title-row">
-                  <span class="drop-name" title={drop.name}>{drop.name}</span>
+                  <span class="drop-name" title={displayName}>{displayName}</span>
                   <span class="drop-stat tabular">
                     {#if drop.claimed}
                       <Badge tone="success"><Check size={10} /> Claimed</Badge>
@@ -544,7 +549,7 @@
                     {:else if drop.claimable}
                       <Badge tone="info">Ready</Badge>
                     {:else}
-                      <span>{pct}% · {drop.currentMinutes}/{drop.requiredMinutes}m</span>
+                      <span>{pct}% · {formatMinutes(rem)} left</span>
                     {/if}
                   </span>
                 </div>
@@ -552,7 +557,7 @@
                   value={drop.claimed ? drop.requiredMinutes : drop.currentMinutes}
                   max={drop.requiredMinutes}
                   platform={campaign.platform}
-                  label={drop.name}
+                  label={displayName}
                 />
               </div>
             </div>
@@ -572,7 +577,7 @@
     {:else}
       <button type="button" class="unhydrated-stage" onclick={toggleSkins}>
         <span class="unhydrated-ico"><Gift size={13} /></span>
-        <span class="unhydrated-txt">Click to preview reward skins &amp; verify link</span>
+        <span class="unhydrated-txt">Click to preview reward skins</span>
         <span class="unhydrated-cta">Preview ▾</span>
       </button>
     {/if}
@@ -789,12 +794,6 @@
     background: rgba(248, 113, 113, 0.16);
     border-color: rgba(248, 113, 113, 0.45);
     color: var(--error-text);
-  }
-
-  .conn-unverified {
-    background: rgba(251, 191, 36, 0.13);
-    border-color: rgba(251, 191, 36, 0.36);
-    color: var(--warning-text);
   }
 
   .conn-clickable:hover:not(:disabled) {
@@ -1126,6 +1125,31 @@
 
   .expand-btn:hover {
     text-decoration: underline;
+  }
+
+  .multi-eta-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding: 5px 8px;
+    margin-bottom: 8px;
+    border-radius: 8px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 11px;
+  }
+
+  .eta-pair {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    color: var(--text);
+  }
+
+  .eta-k {
+    color: var(--text-faint);
   }
 
   .badge-manual {

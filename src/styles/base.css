@@ -148,7 +148,7 @@ a:focus-visible,
 
 .page-icon-pink {
   background: var(--pink-tint);
-  border-color: rgba(236, 72, 153, 0.35);
+  border-color: rgba(245, 158, 11, 0.35);
   color: var(--pink-text);
 }
 

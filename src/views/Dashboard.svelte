@@ -21,19 +21,22 @@
   import StatTile from '../components/StatTile.svelte';
   import StatusPill from '../components/StatusPill.svelte';
   import { api } from '../lib/api';
-  import { nowMs } from '../lib/clock';
+  import { nowMs, slowNowMs } from '../lib/clock';
   import {
     formatEndCountdown,
-    formatEta,
+    formatEtaClock,
     formatExactDateTime,
+    formatLiveDuration,
+    formatLivePercent,
+    formatLiveRemaining,
     formatMinutes,
     formatRelativeTime,
     formatViewerCount,
-    progressPercent,
   } from '../lib/format';
   import {
     computeDashboardStats,
     computeEndingSoon,
+    computeLiveCampaignProgress,
     computeUpNextQueue,
   } from '../lib/selectors';
   import { activeRoute, notifyUi, sessionHistory, sessionMinutes } from '../lib/stores';
@@ -55,9 +58,9 @@
 
   let { snapshot, settings, logs }: Props = $props();
 
-  const stats = $derived(computeDashboardStats(snapshot, $sessionMinutes, $nowMs));
-  const upNext = $derived(computeUpNextQueue(snapshot, settings, $nowMs, 4));
-  const endingSoon = $derived(computeEndingSoon(snapshot, $nowMs));
+  const stats = $derived(computeDashboardStats(snapshot, $sessionMinutes, $slowNowMs));
+  const upNext = $derived(computeUpNextQueue(snapshot, settings, $slowNowMs, 4));
+  const endingSoon = $derived(computeEndingSoon(snapshot, $slowNowMs));
   const cards = $derived([snapshot.twitch, snapshot.kick]);
   const allPaused = $derived(
     snapshot.twitch.state === 'Paused' && snapshot.kick.state === 'Paused',
@@ -194,8 +197,17 @@
         </div>
 
         {#if platSnap.watching}
-          {@const pct = drop ? progressPercent(drop.currentMinutes, drop.requiredMinutes) : 0}
-          {@const campEnd = camp ? formatEndCountdown(camp.endsAt, $nowMs) : null}
+          {@const campEnd = camp ? formatEndCountdown(camp.endsAt, $slowNowMs) : null}
+          {@const isMining = platSnap.state === 'Mining'}
+          {@const liveProg = computeLiveCampaignProgress(
+            camp,
+            drop?.id ?? null,
+            isMining,
+            platSnap.watchingSince,
+            platSnap.progressSyncedAt,
+            $nowMs,
+          )}
+          {@const primarySkin = liveProg?.nextSkin ?? null}
           <div class="hero-watching">
             <div class="watch-row">
               <Monogram
@@ -211,6 +223,9 @@
                   <span class="viewers tabular">
                     {formatViewerCount(platSnap.watching.viewerCount)} viewers
                   </span>
+                  {#if isMining}
+                    <span class="dash-live-pill">LIVE</span>
+                  {/if}
                 </div>
                 <div class="watch-sub-row">
                   <span class="watch-sub">
@@ -226,21 +241,52 @@
                   {/if}
                 </div>
               </div>
-              <span class="big-pct tabular">{pct}%</span>
+              <span class="big-pct tabular">
+                {primarySkin ? formatLivePercent(primarySkin.liveMinutes, primarySkin.requiredMinutes) : 'LIVE'}
+              </span>
             </div>
 
-            {#if drop}
+            {#if liveProg && primarySkin}
               <div class="drop-meta tabular">
-                <span>{drop.name}</span>
-                <span>{drop.currentMinutes}/{drop.requiredMinutes} min · {formatEta(drop.currentMinutes, drop.requiredMinutes)}</span>
+                <span class="drop-label-strong">
+                  {liveProg.isMultiDrop ? `Next skin: ${primarySkin.skinName}` : primarySkin.skinName}
+                </span>
+                <span>
+                  {formatLiveDuration(primarySkin.liveMinutes)} / {formatMinutes(primarySkin.requiredMinutes)}
+                  · {formatLiveRemaining(primarySkin.remainingSeconds)}
+                  {#if primarySkin.remainingSeconds > 0}
+                    ({formatEtaClock(primarySkin.remainingSeconds, $nowMs)})
+                  {/if}
+                </span>
               </div>
               <ProgressBar
-                value={drop.currentMinutes}
-                max={drop.requiredMinutes}
+                value={primarySkin.liveMinutes}
+                max={primarySkin.requiredMinutes}
                 platform={platSnap.platform}
                 tall
-                label={drop.name}
+                label={primarySkin.skinName}
               />
+
+              {#if liveProg.isMultiDrop}
+                <div class="whole-drop-box tabular">
+                  <div class="drop-meta">
+                    <span class="whole-label">
+                      Whole drop ({liveProg.completedDrops}/{liveProg.totalDrops} skins)
+                    </span>
+                    <span class="whole-stat">
+                      <strong>{formatLivePercent(liveProg.wholeLiveMinutes, liveProg.wholeRequiredMinutes)}</strong>
+                      · {formatLiveDuration(liveProg.wholeLiveMinutes)} / {formatMinutes(liveProg.wholeRequiredMinutes)}
+                      · {formatLiveRemaining(liveProg.wholeRemainingSeconds)}
+                    </span>
+                  </div>
+                  <ProgressBar
+                    value={liveProg.wholeLiveMinutes}
+                    max={liveProg.wholeRequiredMinutes}
+                    platform="accent"
+                    label="Whole drop campaign"
+                  />
+                </div>
+              {/if}
             {:else}
               <div class="drop-meta tabular">
                 <span>Earning drop progress</span>
@@ -269,7 +315,7 @@
         {:else}
           <div class="hero-idle">
             {#if queuedTarget && platSnap.state !== 'LoggedOut'}
-              {@const qEnd = formatEndCountdown(queuedTarget.campaign.endsAt, $nowMs)}
+              {@const qEnd = formatEndCountdown(queuedTarget.campaign.endsAt, $slowNowMs)}
               <div class="idle-target-card">
                 <Monogram
                   src={queuedTarget.campaign.game.boxArtUrl}
@@ -386,7 +432,7 @@
         {:else}
           <div class="list-stack">
             {#each endingSoon as item (item.campaign.id)}
-              {@const endInfo = formatEndCountdown(item.campaign.endsAt, $nowMs)}
+              {@const endInfo = formatEndCountdown(item.campaign.endsAt, $slowNowMs)}
               <button
                 type="button"
                 class="ending-row"
@@ -433,7 +479,7 @@
                   <span class="mini-sub">{claim.gameName} · {claim.campaignName}</span>
                 </div>
                 <Badge tone={claim.platform}>{claim.platform}</Badge>
-                <span class="claim-ts tabular">{formatRelativeTime(claim.claimedAt, $nowMs)}</span>
+                <span class="claim-ts tabular">{formatRelativeTime(claim.claimedAt, $slowNowMs)}</span>
               </div>
             {/each}
           </div>
@@ -583,6 +629,46 @@
     gap: var(--space-2);
     font-size: var(--text-xs);
     color: var(--text-muted);
+  }
+
+  .drop-label-strong {
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .dash-live-pill {
+    font-size: 9px;
+    font-weight: 800;
+    letter-spacing: 0.06em;
+    padding: 1px 6px;
+    border-radius: var(--radius-pill);
+    background: var(--success-tint);
+    border: 1px solid rgba(16, 185, 129, 0.34);
+    color: var(--success-text);
+  }
+
+  .whole-drop-box {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    margin-top: 4px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    background: rgba(8, 10, 15, 0.36);
+    border: 1px solid var(--border);
+  }
+
+  :global(:root[data-theme="light"]) .whole-drop-box {
+    background: var(--surface-2);
+  }
+
+  .whole-label {
+    color: var(--accent-text);
+    font-weight: 700;
+  }
+
+  .whole-stat strong {
+    color: var(--text);
   }
 
   .hero-idle {

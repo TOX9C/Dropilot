@@ -19,6 +19,7 @@ use std::sync::Arc;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tracing::{info, warn};
 
+use crate::auth::login_window::{close_kick_bridge_window, close_twitch_bridge_window};
 use crate::events::EventHub;
 use crate::logging::{init_logging, LogBuffer};
 use crate::miner::engine::{spawn_miner_supervisor, PlatformBackend};
@@ -28,14 +29,22 @@ use crate::platforms::kick::KickPlatform;
 use crate::platforms::mock::MockPlatform;
 use crate::platforms::twitch::TwitchPlatform;
 use crate::platforms::PlatformId;
-use crate::settings::load_settings;
+use crate::settings::{load_settings, save_settings};
 use crate::state::{AppState, MinerControl};
 use crate::tray::setup_tray;
-use crate::windows::{capture_bounds_sync, ensure_main_window};
+use crate::windows::{
+    capture_bounds_sync, ensure_main_window, resume_webview, suspend_webview,
+};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    let settings = load_settings();
+    let mut settings = load_settings();
+    // Always start on Auto channel by default instead of carrying over stale pins from prior sessions.
+    if settings.twitch.pinned_channel.is_some() || settings.kick.pinned_channel.is_some() {
+        settings.twitch.pinned_channel = None;
+        settings.kick.pinned_channel = None;
+        let _ = save_settings(&settings);
+    }
     let log_buffer = LogBuffer::new();
     let log_handle = init_logging(settings.log_level, log_buffer.clone()).ok();
 
@@ -84,6 +93,7 @@ pub fn run() {
             commands::set_campaign_farm,
             commands::set_game_farm,
             commands::set_priority,
+            commands::set_prioritize_ending_soon,
             commands::pause,
             commands::resume,
             commands::switch_channel,
@@ -102,6 +112,7 @@ pub fn run() {
             commands::check_update,
             commands::is_mock_available,
             commands::report_user_agent,
+            commands::hide_to_tray,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -184,30 +195,49 @@ pub fn run() {
             if window.label() != "main" {
                 return;
             }
-            if let WindowEvent::CloseRequested { .. } = event {
-                let bounds = capture_bounds_sync(window);
-                let st = state_for_window.clone();
-                let app_c = window.app_handle().clone();
-
-                tauri::async_runtime::spawn(async move {
-                    let close_to_tray = {
-                        let mut guard = st.settings.write().await;
-                        if let Some(b) = bounds {
-                            guard.window_bounds = Some(b);
+            match event {
+                WindowEvent::Resized(_) => {
+                    if let Some(wv) = window.app_handle().get_webview_window("main") {
+                        if window.is_minimized().unwrap_or(false) {
+                            suspend_webview(&wv);
+                        } else {
+                            resume_webview(&wv);
                         }
-                        guard.close_to_tray
-                    };
-                    let _ = st.persist_settings().await;
-                    st.events.reset_cache().await;
-
-                    if !close_to_tray {
-                        st.allow_exit.store(true, Ordering::SeqCst);
-                        st.send_all_miners(MinerControl::Shutdown).await;
-                        app_c.exit(0);
-                    } else {
-                        info!("Main window closed to tray; WebView2 destroyed to save RAM");
                     }
-                });
+                }
+                WindowEvent::Focused(true) => {
+                    if let Some(wv) = window.app_handle().get_webview_window("main") {
+                        resume_webview(&wv);
+                    }
+                }
+                WindowEvent::CloseRequested { .. } => {
+                    let bounds = capture_bounds_sync(window);
+                    let st = state_for_window.clone();
+                    let app_c = window.app_handle().clone();
+
+                    tauri::async_runtime::spawn(async move {
+                        let close_to_tray = {
+                            let mut guard = st.settings.write().await;
+                            if let Some(b) = bounds {
+                                guard.window_bounds = Some(b);
+                            }
+                            guard.close_to_tray
+                        };
+                        let _ = st.persist_settings().await;
+                        st.events.reset_cache().await;
+
+                        if !close_to_tray {
+                            st.allow_exit.store(true, Ordering::SeqCst);
+                            st.send_all_miners(MinerControl::Shutdown).await;
+                            app_c.exit(0);
+                        } else {
+                            close_kick_bridge_window(&app_c);
+                            close_twitch_bridge_window(&app_c);
+                            info!("Main window closed to tray; WebView2 destroyed to save RAM");
+                        }
+                    });
+                }
+                _ => {}
             }
         })
         .build(tauri::generate_context!());

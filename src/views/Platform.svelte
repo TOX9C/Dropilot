@@ -16,7 +16,7 @@
   import SectionHeader from '../components/SectionHeader.svelte';
   import StatusPill from '../components/StatusPill.svelte';
   import { api } from '../lib/api';
-  import { nowMs } from '../lib/clock';
+  import { slowNowMs } from '../lib/clock';
   import { formatRelativeTime, formatViewerCount } from '../lib/format';
   import {
     computeCampaignCounts,
@@ -66,6 +66,10 @@
 
   const platSettings = $derived(settings[platform]);
   const platName = $derived(platform === 'twitch' ? 'Twitch' : 'Kick');
+  const activePinnedChannel = $derived(snapshot.pinnedChannel ?? null);
+  const participatingChannels = $derived(
+    snapshot.candidateChannels.filter((c) => c.isLive && c.dropsEnabled),
+  );
 
   const currentCampaign = $derived(
     snapshot.currentCampaignId
@@ -86,10 +90,10 @@
     snapshot.campaigns.some((c) => c.drops.some((d) => d.needsManualClaim)),
   );
 
-  const counts = $derived(computeCampaignCounts(snapshot.campaigns, settings, $nowMs));
+  const counts = $derived(computeCampaignCounts(snapshot.campaigns, settings, $slowNowMs));
   const games = $derived(extractGameOptions(snapshot.campaigns));
   const filteredCampaigns = $derived(
-    filterAndSortCampaigns(snapshot.campaigns, settings, filter, sort, search, selectedGame, $nowMs),
+    filterAndSortCampaigns(snapshot.campaigns, settings, filter, sort, search, selectedGame, $slowNowMs),
   );
 
   async function handleLogin() {
@@ -141,6 +145,15 @@
   async function handleReorderPriority(items: PriorityItem[]) {
     try {
       const updated = await api.setPriority(platform, items);
+      appSettings.set(updated);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
+
+  async function handleToggleEndingSoon(enabled: boolean) {
+    try {
+      const updated = await api.setPrioritizeEndingSoon(platform, enabled);
       appSettings.set(updated);
     } catch (err) {
       notifyUi(String(err), 'error');
@@ -277,11 +290,13 @@
         stateReason={snapshot.stateReason}
         lastError={snapshot.lastError}
         nextActionAt={snapshot.nextActionAt}
+        watchingSince={snapshot.watchingSince}
+        progressSyncedAt={snapshot.progressSyncedAt}
         channel={snapshot.watching}
         campaign={currentCampaign}
         drop={currentDrop}
-        candidates={snapshot.candidateChannels}
-        pinnedChannel={platSettings.pinnedChannel}
+        candidates={participatingChannels}
+        pinnedChannel={activePinnedChannel}
         onPauseResume={handlePauseResume}
         onSwitchChannel={handleSwitchChannel}
         onPinChannel={handlePinChannel}
@@ -312,7 +327,7 @@
           <div class="card empty-campaigns">
             {#if snapshot.campaigns.length === 0}
               <p class="empty-msg">
-                No campaigns right now. Last checked {formatRelativeTime($lastSnapshotAt, $nowMs)}.
+                No campaigns right now. Last checked {formatRelativeTime($lastSnapshotAt, $slowNowMs)}.
                 {#if snapshot.nextActionAt}
                   Next check in <Countdown targetIso={snapshot.nextActionAt} />.
                 {/if}
@@ -354,25 +369,27 @@
           items={platSettings.priority}
           campaigns={snapshot.campaigns}
           {platform}
+          prioritizeEndingSoon={platSettings.prioritizeEndingSoon}
           onReorder={handleReorderPriority}
           onAddGame={handleAddWatchedGame}
+          onToggleEndingSoon={handleToggleEndingSoon}
         />
 
         <section class="card candidates-card">
-          <SectionHeader title="Candidate channels" count={snapshot.candidateChannels.length} uppercase />
+          <SectionHeader title="Participating channels" count={participatingChannels.length} uppercase />
 
-          {#if snapshot.candidateChannels.length === 0}
-            <p class="cand-empty">Live candidate streams for the active campaign will appear here.</p>
+          {#if participatingChannels.length === 0}
+            <p class="cand-empty">Live channels participating in the active drop will appear here.</p>
           {:else}
             <div class="cand-list">
-              {#each snapshot.candidateChannels.slice(0, 8) as ch (ch.id + ch.login)}
-                {@const pinned = platSettings.pinnedChannel?.toLowerCase() === ch.login.toLowerCase()}
+              {#each participatingChannels.slice(0, 8) as ch (ch.id + ch.login)}
+                {@const pinned = activePinnedChannel?.toLowerCase() === ch.login.toLowerCase()}
                 <div class="cand-row">
                   <Monogram src={ch.avatarUrl} name={ch.displayName} width={28} height={28} rounded />
                   <div class="cand-meta">
                     <span class="cand-name">{ch.displayName}</span>
                     <span class="cand-sub tabular">
-                      {formatViewerCount(ch.viewerCount)} viewers{#if ch.dropsEnabled} · Drops{/if}
+                      {formatViewerCount(ch.viewerCount)} viewers · Drop active
                     </span>
                   </div>
                   <button

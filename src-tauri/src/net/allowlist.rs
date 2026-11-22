@@ -11,6 +11,10 @@ pub const TWITCH_EXACT_HOSTS: &[&str] = &[
     "gql.twitch.tv",
     "id.twitch.tv",
     "passport.twitch.tv",
+    "spade.twitch.tv",
+    "beacon.twitch.tv",
+    "assets.twitch.tv",
+    "static.twitchcdn.net",
     "usher.ttvnw.net",
     "static-cdn.jtvnw.net",
 ];

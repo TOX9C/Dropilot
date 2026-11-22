@@ -311,6 +311,7 @@ impl MockPlatform {
                     is_live: true,
                     drops_enabled: true,
                     is_followed: true,
+                    stream_id: Some("mock-stream-101".to_string()),
                 },
                 Channel {
                     id: "102".to_string(),
@@ -322,6 +323,7 @@ impl MockPlatform {
                     is_live: true,
                     drops_enabled: true,
                     is_followed: false,
+                    stream_id: Some("mock-stream-102".to_string()),
                 },
             ],
             (PlatformId::Twitch, _) => vec![Channel {
@@ -334,6 +336,7 @@ impl MockPlatform {
                 is_live: true,
                 drops_enabled: true,
                 is_followed: true,
+                stream_id: Some("mock-stream-103".to_string()),
             }],
             (PlatformId::Kick, _) => vec![
                 Channel {
@@ -346,6 +349,7 @@ impl MockPlatform {
                     is_live: true,
                     drops_enabled: true,
                     is_followed: false,
+                    stream_id: Some("900201".to_string()),
                 },
                 Channel {
                     id: "202".to_string(),
@@ -357,6 +361,7 @@ impl MockPlatform {
                     is_live: true,
                     drops_enabled: true,
                     is_followed: true,
+                    stream_id: Some("900202".to_string()),
                 },
             ],
         }
@@ -412,6 +417,7 @@ impl Platform for MockPlatform {
                     drop_id: d.id.clone(),
                     instance_id: d.instance_id.clone(),
                     current_minutes: d.current_minutes,
+                    progress_bps: None,
                     claimable: d.claimable,
                     claimed: d.claimed,
                     linked: Some(c.linked),
