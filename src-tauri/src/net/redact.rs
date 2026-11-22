@@ -28,7 +28,57 @@ pub fn redact(input: &str) -> String {
         out = scrub_after_key(&out, key);
     }
 
+    out = scrub_url_segment(&out, "/api/webhooks/");
+    out = scrub_telegram_bot(&out);
+
     out
+}
+
+fn scrub_url_segment(input: &str, marker_lower: &str) -> String {
+    let lower = input.to_ascii_lowercase();
+    let mut result = String::with_capacity(input.len());
+    let mut cursor = 0;
+
+    while let Some(rel_idx) = lower[cursor..].find(marker_lower) {
+        let match_start = cursor + rel_idx;
+        let val_start = match_start + marker_lower.len();
+        result.push_str(&input[cursor..val_start]);
+        result.push_str("[REDACTED]");
+
+        let rest = &input[val_start..];
+        let val_len = rest
+            .find(|c: char| c.is_whitespace() || matches!(c, '"' | '\'' | ';' | ',' | ')' | '}'))
+            .unwrap_or(rest.len());
+        cursor = val_start + val_len;
+    }
+
+    result.push_str(&input[cursor..]);
+    result
+}
+
+fn scrub_telegram_bot(input: &str) -> String {
+    let marker = "api.telegram.org/bot";
+    let lower = input.to_ascii_lowercase();
+    let mut result = String::with_capacity(input.len());
+    let mut cursor = 0;
+
+    while let Some(rel_idx) = lower[cursor..].find(marker) {
+        let match_start = cursor + rel_idx;
+        let val_start = match_start + marker.len();
+        result.push_str(&input[cursor..val_start]);
+        result.push_str("[REDACTED]");
+
+        let rest = &input[val_start..];
+        let val_len = rest
+            .find(|c: char| {
+                c == '/' || c.is_whitespace() || matches!(c, '"' | '\'' | ';' | ',' | ')' | '}')
+            })
+            .unwrap_or(rest.len());
+        cursor = val_start + val_len;
+    }
+
+    result.push_str(&input[cursor..]);
+    result
 }
 
 fn scrub_after_prefix(input: &str, prefix_lower: &str) -> String {
@@ -128,5 +178,18 @@ mod tests {
     fn preserves_normal_operational_logs() {
         let line = "GQL ViewerDropsDashboard status=200 elapsed_ms=142";
         assert_eq!(redact(line), line);
+    }
+
+    #[test]
+    fn redacts_discord_and_telegram_webhooks() {
+        let discord = "POST https://discord.com/api/webhooks/123456/super_secret_hook failed";
+        let scrubbed_d = redact(discord);
+        assert!(!scrubbed_d.contains("super_secret_hook"));
+        assert!(scrubbed_d.contains("/api/webhooks/[REDACTED]"));
+
+        let tg = "POST https://api.telegram.org/bot998877:AAHsecretToken/sendMessage failed";
+        let scrubbed_t = redact(tg);
+        assert!(!scrubbed_t.contains("AAHsecretToken"));
+        assert!(scrubbed_t.contains("api.telegram.org/bot[REDACTED]/sendMessage"));
     }
 }

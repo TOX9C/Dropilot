@@ -9,6 +9,7 @@ import type {
   LogEntry,
   NavRoute,
   PlatformId,
+  RemoteConfigStatus,
   Settings,
   ToastItem,
 } from './types';
@@ -43,6 +44,7 @@ function readRoute(): NavRoute {
   if (
     v === 'dashboard' ||
     v === 'drops' ||
+    v === 'history' ||
     v === 'twitch' ||
     v === 'kick' ||
     v === 'logs' ||
@@ -75,6 +77,7 @@ export const shortcutsOpen = writable<boolean>(false);
 export const appSnapshot = writable<AppSnapshot | null>(null);
 export const appSettings = writable<Settings | null>(null);
 export const appLogs = writable<LogEntry[]>([]);
+export const remoteConfigStatus = writable<RemoteConfigStatus | null>(null);
 export const mockFeatureAvailable = writable<boolean>(false);
 export const lastSnapshotAt = writable<number>(Date.now());
 export const sessionMinutes = writable<number>(0);
@@ -262,17 +265,19 @@ export async function initializeAppStores(): Promise<() => void> {
     void api.reportUserAgent(navigator.userAgent).catch(() => {});
   }
 
-  const [snap, settings, logs, hasMock] = await Promise.all([
+  const [snap, settings, logs, hasMock, rcStatus] = await Promise.all([
     api.getSnapshot(),
     api.getSettings(),
     api.getLogs(),
     api.isMockAvailable(),
+    api.getRemoteConfigStatus().catch(() => null),
   ]);
 
   trackSessionProgress(snap, true);
   appSnapshot.set(snap);
   appSettings.set(settings);
   appLogs.set(logs);
+  remoteConfigStatus.set(rcStatus);
   mockFeatureAvailable.set(hasMock);
   lastSnapshotAt.set(Date.now());
 

@@ -13,9 +13,12 @@ use tracing::{error, info, warn};
 use crate::auth::login_window::{
     close_compat_watch_window, close_kick_bridge_window, close_twitch_bridge_window,
 };
+use crate::history::{ClaimHistoryEntry, ClaimRecordStatus};
 use crate::miner::scheduler::{
-    jittered_duration, ERROR_RETRY_SECS, IDLE_RETRY_SECS, LIVE_CHECK_SECS,
-    MIN_CAMPAIGN_REFRESH_SECS, MOCK_WATCH_TICK_SECS, PROGRESS_POLL_SECS, WATCH_TICK_SECS,
+    duration_until_quiet_end, format_minutes_hhmm, is_in_quiet_hours_now, jittered_duration,
+    jittered_duration_with_mode, local_minutes_since_midnight, ERROR_RETRY_SECS, IDLE_RETRY_SECS,
+    LIVE_CHECK_SECS, MIN_CAMPAIGN_REFRESH_SECS, MOCK_WATCH_TICK_SECS, PROGRESS_POLL_SECS,
+    WATCH_TICK_SECS,
 };
 use crate::miner::selector::{
     evaluate_switch, ordered_target_campaigns, select_best_channel, SwitchContext, SwitchDecision,
@@ -31,6 +34,7 @@ use crate::platforms::{
 use crate::secrets::SecretStore;
 use crate::state::{AppState, MinerControl};
 use crate::tray::update_tray_from_state;
+use crate::webhooks::WebhookEvent;
 
 #[derive(Clone)]
 pub struct PlatformBackend {
@@ -119,6 +123,7 @@ struct RuntimeContext {
     last_progress_advance: DateTime<Utc>,
     last_voluntary_switch: Option<DateTime<Utc>>,
     last_seen_total_minutes: u32,
+    progress_baseline_initialized: bool,
     backoff: Backoff,
     retry_not_before: Option<Instant>,
     paused: bool,
@@ -151,6 +156,7 @@ impl RuntimeContext {
             last_progress_advance: Utc::now(),
             last_voluntary_switch: None,
             last_seen_total_minutes: 0,
+            progress_baseline_initialized: false,
             backoff: Backoff::new(),
             retry_not_before: None,
             paused: false,
@@ -182,6 +188,8 @@ impl RuntimeContext {
         self.last_watch_tick = None;
         self.retry_not_before = None;
         self.next_action_at = None;
+        self.last_seen_total_minutes = 0;
+        self.progress_baseline_initialized = false;
         self.backoff.reset();
     }
 
@@ -258,7 +266,8 @@ async fn run_miner_loop(
         }
 
         // Wait either for a MinerControl command or the next step tick.
-        let wait_dur = compute_next_wake_delay(&state, &ctx);
+        let humanized_jitter = state.settings.read().await.schedule.humanized_jitter;
+        let wait_dur = compute_next_wake_delay(&state, &ctx, humanized_jitter);
         tokio::select! {
             maybe_cmd = rx.recv() => {
                 let Some(cmd) = maybe_cmd else {
@@ -481,7 +490,11 @@ async fn handle_control(
     ControlOutcome::Continue
 }
 
-fn compute_next_wake_delay(state: &AppState, ctx: &RuntimeContext) -> Duration {
+fn compute_next_wake_delay(
+    state: &AppState,
+    ctx: &RuntimeContext,
+    humanized_jitter: bool,
+) -> Duration {
     if ctx.token.is_none() || ctx.paused {
         return Duration::from_secs(30);
     }
@@ -504,7 +517,7 @@ fn compute_next_wake_delay(state: &AppState, ctx: &RuntimeContext) -> Duration {
         } else {
             WATCH_TICK_SECS
         };
-        return jittered_duration(tick).min(Duration::from_secs(60));
+        return jittered_duration_with_mode(tick, humanized_jitter).min(Duration::from_secs(75));
     }
 
     Duration::from_secs(10)
@@ -539,6 +552,53 @@ async fn step_miner(
 
     if ctx.paused {
         ctx.state = MinerState::Paused;
+        return;
+    }
+
+    let remote_cfg = state.remote_config.current().await;
+    let platform_remotely_enabled = match platform_id {
+        PlatformId::Twitch => remote_cfg.twitch_enabled,
+        PlatformId::Kick => remote_cfg.kick_enabled,
+    };
+    if !platform_remotely_enabled && !state.mock_active.load(Ordering::Relaxed) {
+        if ctx.watching.is_some() {
+            backend.active(state).stop_watching().await;
+            close_compat_watch_window(app, platform_id);
+            ctx.watching = None;
+            ctx.watching_since = None;
+        }
+        ctx.state = MinerState::Paused;
+        ctx.state_reason = Some(
+            remote_cfg
+                .maintenance_banner
+                .unwrap_or_else(|| format!("{} temporarily paused for maintenance", platform_id.display_name())),
+        );
+        return;
+    }
+
+    if is_in_quiet_hours_now(&settings.schedule) {
+        if ctx.watching.is_some() {
+            backend.active(state).stop_watching().await;
+            close_compat_watch_window(app, platform_id);
+            if platform_id == PlatformId::Kick {
+                close_kick_bridge_window(app);
+            } else {
+                close_twitch_bridge_window(app);
+            }
+            ctx.watching = None;
+            ctx.watching_since = None;
+            ctx.current_campaign_id = None;
+            ctx.current_drop_id = None;
+        }
+        let until_end =
+            duration_until_quiet_end(&settings.schedule, local_minutes_since_midnight());
+        ctx.state = MinerState::Paused;
+        ctx.state_reason = Some(format!(
+            "Quiet hours until {}",
+            format_minutes_hhmm(settings.schedule.quiet_end_minutes)
+        ));
+        ctx.next_action_at =
+            Some(Utc::now() + ChronoDuration::from_std(until_end).unwrap_or_default());
         return;
     }
 
@@ -640,9 +700,17 @@ async fn step_miner(
                 ctx.backoff.reset();
 
                 let total_mins = total_watched_minutes(&ctx.campaigns);
-                if total_mins > ctx.last_seen_total_minutes {
+                if ctx.progress_baseline_initialized && total_mins > ctx.last_seen_total_minutes {
+                    let delta = total_mins - ctx.last_seen_total_minutes;
+                    state.record_watch_minutes(delta).await;
                     ctx.last_seen_total_minutes = total_mins;
                     ctx.last_progress_advance = Utc::now();
+                } else if !ctx.progress_baseline_initialized {
+                    ctx.last_seen_total_minutes = total_mins;
+                    ctx.progress_baseline_initialized = true;
+                } else if total_mins < ctx.last_seen_total_minutes {
+                    // Campaign expired/removed; reset high-water mark so future deltas still count.
+                    ctx.last_seen_total_minutes = total_mins;
                 }
             }
             Err(err) => {
@@ -1136,12 +1204,17 @@ async fn claim_ready_drops(
                     game = %game_name,
                     "Claimed drop"
                 );
+                let mut campaign_now_complete = false;
+                let mut campaign_drops_count = 0usize;
                 if let Some(camp) = ctx.campaigns.iter_mut().find(|c| c.id == camp_id) {
                     if let Some(d) = camp.drops.iter_mut().find(|d| d.id == drop.id) {
                         d.claimed = true;
                         d.claimable = false;
                         d.needs_manual_claim = false;
                     }
+                    campaign_drops_count = camp.drops.len();
+                    campaign_now_complete =
+                        !camp.drops.is_empty() && camp.drops.iter().all(|d| d.claimed);
                 }
                 let reward_img = drop.rewards.first().and_then(|r| r.image_url.clone());
                 state
@@ -1149,12 +1222,33 @@ async fn claim_ready_drops(
                         id: format!("{}-{}", camp_id, drop.id),
                         platform: platform_id,
                         game_name: game_name.clone(),
-                        campaign_name: camp_name,
+                        campaign_name: camp_name.clone(),
                         drop_name: display_drop_name.clone(),
-                        reward_image_url: reward_img,
+                        reward_image_url: reward_img.clone(),
                         claimed_at: Utc::now(),
                     })
                     .await;
+
+                state
+                    .dispatch_webhook(WebhookEvent::DropClaimed {
+                        platform: platform_id,
+                        game_name: game_name.clone(),
+                        campaign_name: camp_name.clone(),
+                        drop_name: display_drop_name.clone(),
+                        reward_image_url: reward_img,
+                    })
+                    .await;
+
+                if campaign_now_complete {
+                    state
+                        .dispatch_webhook(WebhookEvent::CampaignCompleted {
+                            platform: platform_id,
+                            game_name: game_name.clone(),
+                            campaign_name: camp_name.clone(),
+                            drops_count: campaign_drops_count,
+                        })
+                        .await;
+                }
 
                 if notify_enabled {
                     send_toast(
@@ -1176,6 +1270,32 @@ async fn claim_ready_drops(
                         d.needs_manual_claim = true;
                     }
                 }
+                let reward_img = drop.rewards.first().and_then(|r| r.image_url.clone());
+                state
+                    .record_manual_claim(ClaimHistoryEntry {
+                        id: format!("{}-{}", camp_id, drop.id),
+                        platform: platform_id,
+                        game_name: game_name.clone(),
+                        campaign_name: camp_name.clone(),
+                        drop_name: display_drop_name.clone(),
+                        reward_image_url: reward_img,
+                        claimed_at: Utc::now(),
+                        status: ClaimRecordStatus::ManualRequired,
+                    })
+                    .await;
+                state
+                    .dispatch_webhook(WebhookEvent::ActionRequired {
+                        platform: platform_id,
+                        category: format!("manual_claim:{}", drop.id),
+                        title: format!("Manual claim required for {}", display_drop_name),
+                        detail: format!(
+                            "{} requested manual verification on the {} drops inventory page ({}).",
+                            platform_id.display_name(),
+                            platform_id.display_name(),
+                            game_name
+                        ),
+                    })
+                    .await;
                 send_toast(
                     app,
                     "Claim needs you",
@@ -1214,6 +1334,14 @@ async fn handle_platform_error(
             }
             ctx.reset_session("Session expired; please log in again");
             ctx.last_error = Some(format!("Session expired ({msg})"));
+            state
+                .dispatch_webhook(WebhookEvent::ActionRequired {
+                    platform: platform_id,
+                    category: "session_expired".to_string(),
+                    title: format!("{} session expired", platform_id.display_name()),
+                    detail: "Open Dropilot and log in again to resume farming.".to_string(),
+                })
+                .await;
             send_toast(
                 app,
                 "Login required",
@@ -1229,6 +1357,14 @@ async fn handle_platform_error(
             let dur = Duration::from_secs(ERROR_RETRY_SECS);
             ctx.retry_not_before = Some(Instant::now() + dur);
             ctx.next_action_at = Some(Utc::now() + ChronoDuration::from_std(dur).unwrap_or_default());
+            state
+                .dispatch_webhook(WebhookEvent::ActionRequired {
+                    platform: platform_id,
+                    category: "security_check".to_string(),
+                    title: format!("{} security check required", platform_id.display_name()),
+                    detail: msg,
+                })
+                .await;
             send_toast(
                 app,
                 &format!("{} action required", platform_id.display_name()),
@@ -1237,6 +1373,13 @@ async fn handle_platform_error(
         }
         AppError::PlatformChanged(detail) => {
             error!(platform = platform_id.as_str(), detail = %detail, "Platform endpoint/schema changed");
+            if state.settings.read().await.remote_config_enabled {
+                let rc = state.remote_config.clone();
+                let http = state.http.clone();
+                tauri::async_runtime::spawn(async move {
+                    let _ = rc.refresh_now(&http).await;
+                });
+            }
             ctx.watching = None;
             ctx.state = MinerState::Error;
             ctx.state_reason = Some(format!(

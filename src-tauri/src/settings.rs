@@ -86,6 +86,72 @@ pub struct WindowBounds {
     pub height: u32,
 }
 
+fn default_true() -> bool {
+    true
+}
+
+fn default_quiet_start() -> u16 {
+    22 * 60
+}
+
+fn default_quiet_end() -> u16 {
+    8 * 60
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ScheduleSettings {
+    #[serde(default)]
+    pub quiet_hours_enabled: bool,
+    #[serde(default = "default_quiet_start")]
+    pub quiet_start_minutes: u16,
+    #[serde(default = "default_quiet_end")]
+    pub quiet_end_minutes: u16,
+    #[serde(default = "default_true")]
+    pub humanized_jitter: bool,
+}
+
+impl Default for ScheduleSettings {
+    fn default() -> Self {
+        Self {
+            quiet_hours_enabled: false,
+            quiet_start_minutes: default_quiet_start(),
+            quiet_end_minutes: default_quiet_end(),
+            humanized_jitter: true,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WebhookSettings {
+    #[serde(default)]
+    pub discord_enabled: bool,
+    #[serde(default)]
+    pub telegram_enabled: bool,
+    #[serde(default)]
+    pub telegram_chat_id: String,
+    #[serde(default = "default_true")]
+    pub on_drop_claimed: bool,
+    #[serde(default = "default_true")]
+    pub on_action_required: bool,
+    #[serde(default = "default_true")]
+    pub on_campaign_completed: bool,
+}
+
+impl Default for WebhookSettings {
+    fn default() -> Self {
+        Self {
+            discord_enabled: false,
+            telegram_enabled: false,
+            telegram_chat_id: String::new(),
+            on_drop_claimed: true,
+            on_action_required: true,
+            on_campaign_completed: true,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Settings {
@@ -101,6 +167,12 @@ pub struct Settings {
     pub farm_unlinked: bool,
     pub compat_watch_mode: bool,
     pub update_check: bool,
+    #[serde(default = "default_true")]
+    pub remote_config_enabled: bool,
+    #[serde(default)]
+    pub schedule: ScheduleSettings,
+    #[serde(default)]
+    pub webhooks: WebhookSettings,
     pub disclaimer_accepted_version: u32,
     pub log_level: LogLevelSetting,
     pub mock_mode: bool,
@@ -124,6 +196,9 @@ impl Default for Settings {
             farm_unlinked: false,
             compat_watch_mode: false,
             update_check: false,
+            remote_config_enabled: true,
+            schedule: ScheduleSettings::default(),
+            webhooks: WebhookSettings::default(),
             disclaimer_accepted_version: 0,
             log_level: LogLevelSetting::Info,
             mock_mode: cfg!(feature = "mock"),
@@ -140,6 +215,9 @@ impl Settings {
         self.refresh_minutes = self
             .refresh_minutes
             .clamp(MIN_REFRESH_MINUTES, MAX_REFRESH_MINUTES);
+        self.schedule.quiet_start_minutes %= 24 * 60;
+        self.schedule.quiet_end_minutes %= 24 * 60;
+        self.webhooks.telegram_chat_id = self.webhooks.telegram_chat_id.trim().to_string();
         if !cfg!(feature = "mock") {
             self.mock_mode = false;
         }

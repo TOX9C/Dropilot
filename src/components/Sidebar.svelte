@@ -1,4 +1,5 @@
 <script lang="ts">
+  import BarChart3 from 'lucide-svelte/icons/bar-chart-3';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Clock from 'lucide-svelte/icons/clock';
   import Gift from 'lucide-svelte/icons/gift';
@@ -197,6 +198,19 @@
       {/if}
     </button>
 
+    <button
+      type="button"
+      class="nav-item nav-history"
+      class:active={active === 'history'}
+      onclick={() => onnavigate('history')}
+      title="History & Stats (Ctrl+3)"
+    >
+      <span class="nav-ico ico-cyan" aria-hidden="true"><BarChart3 size={16} /></span>
+      {#if !$sidebarCollapsed}
+        <span class="nav-label">History</span>
+      {/if}
+    </button>
+
     {#if !$sidebarCollapsed}
       <div class="nav-group-label">Platforms</div>
     {:else}
@@ -208,7 +222,7 @@
       class="nav-item nav-twitch"
       class:active={active === 'twitch'}
       onclick={() => onnavigate('twitch')}
-      title="Twitch (Ctrl+3)"
+      title="Twitch (Ctrl+4)"
     >
       <span class="nav-ico" aria-hidden="true"><span class="plat-pip pip-twitch"></span></span>
       {#if !$sidebarCollapsed}
@@ -224,7 +238,7 @@
       class="nav-item nav-kick"
       class:active={active === 'kick'}
       onclick={() => onnavigate('kick')}
-      title="Kick (Ctrl+4)"
+      title="Kick (Ctrl+5)"
     >
       <span class="nav-ico" aria-hidden="true"><span class="plat-pip pip-kick"></span></span>
       {#if !$sidebarCollapsed}
@@ -246,7 +260,7 @@
       class="nav-item nav-logs"
       class:active={active === 'logs'}
       onclick={() => onnavigate('logs')}
-      title="Logs (Ctrl+5)"
+      title="Logs (Ctrl+6)"
     >
       <span class="nav-ico ico-info" aria-hidden="true"><Clock size={16} /></span>
       {#if !$sidebarCollapsed}
@@ -262,7 +276,7 @@
       class="nav-item nav-settings"
       class:active={active === 'settings'}
       onclick={() => onnavigate('settings')}
-      title="Settings (Ctrl+6)"
+      title="Settings (Ctrl+7)"
     >
       <span class="nav-ico ico-warn" aria-hidden="true"><SettingsIcon size={16} /></span>
       {#if !$sidebarCollapsed}

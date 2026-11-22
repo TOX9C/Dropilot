@@ -11,15 +11,18 @@ use crate::auth::login_window::{
     open_drops_inventory_window, open_login_window, twitch_bridge_fetch_campaign_details,
 };
 use crate::autostart::sync_autostart;
+use crate::history::{history_path, HistoryExportResult, HistoryStats, HistoryStore};
 use crate::logging::{log_dir, LogEntry, LogLevel};
 use crate::net::allowlist::{validate_url, AllowlistKind};
 use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::parse_campaign_details;
 use crate::platforms::{AppSnapshot, Campaign, PlatformId};
+use crate::remote_config::RemoteConfigStatus;
 use crate::secrets::SecretStore;
 use crate::settings::{appdata_dir, PriorityItem, Settings, CURRENT_DISCLAIMER_VERSION};
 use crate::state::{AppState, MinerControl};
 use crate::update_check::{check_for_updates, UpdateStatus};
+use crate::webhooks::{WebhookChannel, WebhookDispatcher, WebhookSecretsStatus};
 use crate::windows::apply_window_theme;
 
 #[tauri::command]
@@ -391,7 +394,7 @@ pub async fn update_settings(
     state: State<'_, Arc<AppState>>,
     mut new_settings: Settings,
 ) -> Result<Settings, String> {
-    let (prev_autostart, prev_bounds, prev_theme, prev_log_level, prev_mock) = {
+    let (prev_autostart, prev_bounds, prev_theme, prev_log_level, prev_mock, prev_remote_cfg) = {
         let cur = state.settings.read().await;
         (
             cur.autostart,
@@ -399,6 +402,7 @@ pub async fn update_settings(
             cur.theme,
             cur.log_level,
             cur.mock_mode,
+            cur.remote_config_enabled,
         )
     };
 
@@ -427,6 +431,18 @@ pub async fn update_settings(
         state
             .mock_active
             .store(new_settings.mock_mode, Ordering::Relaxed);
+    }
+
+    if new_settings.remote_config_enabled != prev_remote_cfg {
+        if !new_settings.remote_config_enabled {
+            state.remote_config.reset_to_bundled().await;
+        } else {
+            let rc = state.remote_config.clone();
+            let http = state.http.clone();
+            tauri::async_runtime::spawn(async move {
+                let _ = rc.refresh_now(&http).await;
+            });
+        }
     }
 
     {
@@ -466,6 +482,7 @@ pub async fn clear_app_data(
     state.send_all_miners(MinerControl::Logout).await;
     let _ = SecretStore::delete_token(PlatformId::Twitch);
     let _ = SecretStore::delete_token(PlatformId::Kick);
+    WebhookDispatcher::clear_all_secrets();
     let _ = clear_webview_browsing_data(&app).await;
 
     let disclaimer_accepted_version = state.settings.read().await.disclaimer_accepted_version;
@@ -477,6 +494,13 @@ pub async fn clear_app_data(
         let mut guard = state.settings.write().await;
         *guard = fresh;
     }
+    {
+        let mut hist = state.history.write().await;
+        *hist = HistoryStore::default();
+    }
+    state.recent_claims.write().await.clear();
+    state.remote_config.reset_to_bundled().await;
+    let _ = fs::remove_file(history_path());
     let _ = fs::remove_file(appdata_dir().join("settings.json"));
     state.persist_settings().await?;
     state.send_all_miners(MinerControl::SettingsUpdated).await;
@@ -582,5 +606,88 @@ pub async fn hide_to_tray(
     close_kick_bridge_window(&app);
     close_twitch_bridge_window(&app);
     info!("UI closed to system tray (ultra-light mode; WebView2 destroyed)");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_remote_config_status(
+    state: State<'_, Arc<AppState>>,
+) -> Result<RemoteConfigStatus, String> {
+    Ok(state.remote_config.status().await)
+}
+
+#[tauri::command]
+pub async fn refresh_remote_config(
+    state: State<'_, Arc<AppState>>,
+) -> Result<RemoteConfigStatus, String> {
+    let enabled = state.settings.read().await.remote_config_enabled;
+    if !enabled {
+        state.remote_config.reset_to_bundled().await;
+        return Ok(state.remote_config.status().await);
+    }
+    Ok(state.remote_config.refresh_now(&state.http).await)
+}
+
+#[tauri::command]
+pub async fn get_webhook_secrets_status() -> Result<WebhookSecretsStatus, String> {
+    Ok(WebhookDispatcher::secrets_status())
+}
+
+#[tauri::command]
+pub async fn save_webhook_secrets(
+    discord_url: Option<String>,
+    telegram_token: Option<String>,
+) -> Result<WebhookSecretsStatus, String> {
+    if let Some(url) = discord_url {
+        WebhookDispatcher::save_discord_url(&url)?;
+    }
+    if let Some(tok) = telegram_token {
+        WebhookDispatcher::save_telegram_token(&tok)?;
+    }
+    Ok(WebhookDispatcher::secrets_status())
+}
+
+#[tauri::command]
+pub async fn test_webhook(
+    state: State<'_, Arc<AppState>>,
+    channel: WebhookChannel,
+    telegram_chat_id: Option<String>,
+) -> Result<(), String> {
+    let chat_id = match telegram_chat_id {
+        Some(id) if !id.trim().is_empty() => id,
+        _ => state.settings.read().await.webhooks.telegram_chat_id.clone(),
+    };
+    WebhookDispatcher::send_test(&state.http, channel, &chat_id).await
+}
+
+#[tauri::command]
+pub async fn get_history_stats(
+    state: State<'_, Arc<AppState>>,
+) -> Result<HistoryStats, String> {
+    Ok(state.history.read().await.build_stats())
+}
+
+#[tauri::command]
+pub async fn export_history(
+    state: State<'_, Arc<AppState>>,
+    format: String,
+) -> Result<HistoryExportResult, String> {
+    let guard = state.history.read().await;
+    guard.export_to_disk(&format)
+}
+
+#[tauri::command]
+pub async fn clear_history(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<(), String> {
+    {
+        let mut hist = state.history.write().await;
+        *hist = HistoryStore::default();
+        let _ = hist.save();
+    }
+    state.recent_claims.write().await.clear();
+    state.publish_snapshot(&app, true).await;
+    info!("Cleared persistent drop claim history and stats");
     Ok(())
 }

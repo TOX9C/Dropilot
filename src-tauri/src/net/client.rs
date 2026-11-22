@@ -387,6 +387,89 @@ impl AllowlistedClient {
             .map_err(|e| AppError::PlatformChanged(format!("Unexpected GitHub release JSON: {e}")))
     }
 
+    pub async fn fetch_remote_config_json<T: DeserializeOwned>(
+        &self,
+        raw_url: &str,
+    ) -> Result<T, AppError> {
+        let parsed = Url::parse(raw_url)
+            .map_err(|e| AppError::Internal(format!("Invalid remote config URL: {e}")))?;
+        validate_url(&parsed, AllowlistKind::RemoteConfig)?;
+
+        let started = Instant::now();
+        let resp: Response = self
+            .http_update
+            .get(parsed)
+            .header(USER_AGENT, format!("Dropilot/{}", env!("CARGO_PKG_VERSION")))
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| map_reqwest_error("remote_config", e))?;
+
+        let status = resp.status();
+        debug!(
+            op = "remote_config",
+            status = status.as_u16(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Remote config fetch completed"
+        );
+
+        if !status.is_success() {
+            return Err(AppError::Network(format!(
+                "Remote config returned HTTP {}",
+                status.as_u16()
+            )));
+        }
+
+        resp.json::<T>()
+            .await
+            .map_err(|e| AppError::PlatformChanged(format!("Invalid remote config JSON: {e}")))
+    }
+
+    pub async fn post_webhook_json(
+        &self,
+        op_name: &str,
+        raw_url: &str,
+        payload: &serde_json::Value,
+    ) -> Result<StatusCode, AppError> {
+        let parsed = Url::parse(raw_url)
+            .map_err(|e| AppError::Internal(format!("Invalid webhook URL: {}", redact(&e.to_string()))))?;
+        validate_url(&parsed, AllowlistKind::Webhook)?;
+
+        let started = Instant::now();
+        let resp: Response = self
+            .http_update
+            .post(parsed)
+            .header(USER_AGENT, format!("Dropilot/{}", env!("CARGO_PKG_VERSION")))
+            .json(payload)
+            .send()
+            .await
+            .map_err(|e| map_reqwest_error(op_name, e))?;
+
+        let status = resp.status();
+        debug!(
+            op = op_name,
+            status = status.as_u16(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Webhook POST completed"
+        );
+
+        if status == StatusCode::TOO_MANY_REQUESTS {
+            return Err(AppError::RateLimited {
+                retry_after_secs: parse_retry_after(resp.headers()),
+                message: format!("{op_name} returned 429"),
+            });
+        }
+
+        if !status.is_success() {
+            return Err(AppError::Network(format!(
+                "{op_name} returned HTTP {}",
+                status.as_u16()
+            )));
+        }
+
+        Ok(status)
+    }
+
     pub async fn connect_ws(
         &self,
         platform: PlatformId,

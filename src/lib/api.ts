@@ -2,12 +2,17 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AppSnapshot,
   Campaign,
+  HistoryExportResult,
+  HistoryStats,
   LogEntry,
   LogLevel,
   PlatformId,
   PriorityItem,
+  RemoteConfigStatus,
   Settings,
   UpdateStatus,
+  WebhookChannel,
+  WebhookSecretsStatus,
 } from './types';
 
 function isTauriRuntime(): boolean {
@@ -56,6 +61,21 @@ function createPreviewData(): {
         farmUnlinked: false,
         compatWatchMode: false,
         updateCheck: false,
+        remoteConfigEnabled: true,
+        schedule: {
+          quietHoursEnabled: false,
+          quietStartMinutes: 22 * 60,
+          quietEndMinutes: 8 * 60,
+          humanizedJitter: true,
+        },
+        webhooks: {
+          discordEnabled: false,
+          telegramEnabled: false,
+          telegramChatId: '',
+          onDropClaimed: true,
+          onActionRequired: true,
+          onCampaignCompleted: true,
+        },
         disclaimerAcceptedVersion: 1,
         logLevel: 'info',
         mockMode: false,
@@ -87,6 +107,21 @@ function createPreviewData(): {
       farmUnlinked: false,
       compatWatchMode: false,
       updateCheck: false,
+      remoteConfigEnabled: true,
+      schedule: {
+        quietHoursEnabled: false,
+        quietStartMinutes: 22 * 60,
+        quietEndMinutes: 8 * 60,
+        humanizedJitter: true,
+      },
+      webhooks: {
+        discordEnabled: false,
+        telegramEnabled: false,
+        telegramChatId: '',
+        onDropClaimed: true,
+        onActionRequired: true,
+        onCampaignCompleted: true,
+      },
       disclaimerAcceptedVersion: 1,
       logLevel: 'info',
       mockMode: true,
@@ -463,4 +498,78 @@ export const api = {
   isMockAvailable: () => call<boolean>('is_mock_available', undefined, () => true),
   reportUserAgent: (userAgent: string) => call<void>('report_user_agent', { userAgent }),
   hideToTray: () => call<void>('hide_to_tray'),
+  getRemoteConfigStatus: () =>
+    call<RemoteConfigStatus>('get_remote_config_status', undefined, () => ({
+      source: 'bundled',
+      fetchedAt: null,
+      updatedAt: null,
+      overriddenHashes: 0,
+      maintenanceBanner: null,
+      twitchEnabled: true,
+      kickEnabled: true,
+      lastError: null,
+    })),
+  refreshRemoteConfig: () =>
+    call<RemoteConfigStatus>('refresh_remote_config', undefined, () => ({
+      source: 'remote',
+      fetchedAt: new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      overriddenHashes: 11,
+      maintenanceBanner: null,
+      twitchEnabled: true,
+      kickEnabled: true,
+      lastError: null,
+    })),
+  getWebhookSecretsStatus: () =>
+    call<WebhookSecretsStatus>('get_webhook_secrets_status', undefined, () => ({
+      hasDiscordUrl: false,
+      hasTelegramToken: false,
+    })),
+  saveWebhookSecrets: (discordUrl?: string | null, telegramToken?: string | null) =>
+    call<WebhookSecretsStatus>(
+      'save_webhook_secrets',
+      {
+        discordUrl: discordUrl ?? null,
+        telegramToken: telegramToken ?? null,
+      },
+      () => ({
+        hasDiscordUrl: Boolean(discordUrl),
+        hasTelegramToken: Boolean(telegramToken),
+      }),
+    ),
+  testWebhook: (channel: WebhookChannel, telegramChatId?: string) =>
+    call<void>('test_webhook', {
+      channel,
+      telegramChatId: telegramChatId ?? null,
+    }),
+  getHistoryStats: () =>
+    call<HistoryStats>('get_history_stats', undefined, () => ({
+      totalClaims: previewSnapshot.recentClaims.length,
+      twitchClaims: previewSnapshot.recentClaims.filter((c) => c.platform === 'twitch').length,
+      kickClaims: previewSnapshot.recentClaims.filter((c) => c.platform === 'kick').length,
+      totalWatchMinutes: 145,
+      currentStreakDays: 2,
+      bestStreakDays: 4,
+      topGame: previewSnapshot.recentClaims[0]?.gameName ?? null,
+      topGameClaims: previewSnapshot.recentClaims.length,
+      dailyActivity: Array.from({ length: 14 }, (_, idx) => {
+        const d = new Date(Date.now() - (13 - idx) * 86_400_000);
+        return {
+          date: d.toISOString().slice(0, 10),
+          minutes: idx >= 11 ? 30 + idx * 5 : 0,
+          claims: idx === 13 ? 1 : 0,
+        };
+      }),
+      claims: previewSnapshot.recentClaims.map((c) => ({
+        ...c,
+        status: 'claimed' as const,
+      })),
+    })),
+  exportHistory: (format: 'csv' | 'json') =>
+    call<HistoryExportResult>('export_history', { format }, () => ({
+      filename: `dropilot-history-preview.${format}`,
+      savedPath: `%APPDATA%\\Dropilot\\exports\\dropilot-history-preview.${format}`,
+      content: format === 'json' ? '[]' : 'claimed_at,platform,game,campaign,drop,status\n',
+    })),
+  clearHistory: () => call<void>('clear_history'),
 };

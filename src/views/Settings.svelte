@@ -1,13 +1,17 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import Bell from 'lucide-svelte/icons/bell';
   import Check from 'lucide-svelte/icons/check';
+  import Cloud from 'lucide-svelte/icons/cloud';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
   import Info from 'lucide-svelte/icons/info';
   import LogIn from 'lucide-svelte/icons/log-in';
   import LogOut from 'lucide-svelte/icons/log-out';
   import Monitor from 'lucide-svelte/icons/monitor';
+  import Moon from 'lucide-svelte/icons/moon';
   import Palette from 'lucide-svelte/icons/palette';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import Send from 'lucide-svelte/icons/send';
   import SettingsIcon from 'lucide-svelte/icons/settings';
   import Shield from 'lucide-svelte/icons/shield';
   import Sliders from 'lucide-svelte/icons/sliders';
@@ -21,13 +25,15 @@
   import StatusPill from '../components/StatusPill.svelte';
   import Toggle from '../components/Toggle.svelte';
   import { api } from '../lib/api';
-  import { accentPreset, appSettings, notifyUi } from '../lib/stores';
+  import { formatExactDateTime } from '../lib/format';
+  import { accentPreset, appSettings, notifyUi, remoteConfigStatus } from '../lib/stores';
   import type {
     AccentPreset,
     AppSnapshot,
     Settings,
     ThemeMode,
     UpdateStatus,
+    WebhookSecretsStatus,
   } from '../lib/types';
 
   interface Props {
@@ -43,7 +49,45 @@
   let activeTab = $state<SettingsTab>('appearance');
   let updateStatus = $state<UpdateStatus | null>(null);
   let checkingUpdate = $state(false);
+  let syncingRemote = $state(false);
   let clearModalOpen = $state(false);
+
+  let webhookSecrets = $state<WebhookSecretsStatus>({
+    hasDiscordUrl: false,
+    hasTelegramToken: false,
+  });
+  let discordUrlInput = $state('');
+  let telegramTokenInput = $state('');
+  let telegramChatIdInput = $state('');
+  let savingWebhook = $state(false);
+  let testingChannel = $state<'discord' | 'telegram' | null>(null);
+
+  const timeOptions: SelectOption[] = Array.from({ length: 48 }, (_, idx) => {
+    const mins = idx * 30;
+    const h = String(Math.floor(mins / 60)).padStart(2, '0');
+    const m = String(mins % 60).padStart(2, '0');
+    return {
+      value: String(mins),
+      label: `${h}:${m}`,
+    };
+  });
+
+  onMount(() => {
+    telegramChatIdInput = settings.webhooks?.telegramChatId ?? '';
+    void api
+      .getWebhookSecretsStatus()
+      .then((st) => {
+        webhookSecrets = st;
+      })
+      .catch(() => {});
+  });
+
+  $effect(() => {
+    const cur = settings.webhooks?.telegramChatId ?? '';
+    if (cur && !telegramChatIdInput) {
+      telegramChatIdInput = cur;
+    }
+  });
 
   const tabs: { id: SettingsTab; label: string; desc: string }[] = [
     { id: 'appearance', label: 'Appearance', desc: 'Theme & colors' },
@@ -167,11 +211,104 @@
       await api.clearAppData();
       const fresh = await api.getSettings();
       appSettings.set(fresh);
+      webhookSecrets = { hasDiscordUrl: false, hasTelegramToken: false };
+      discordUrlInput = '';
+      telegramTokenInput = '';
+      telegramChatIdInput = '';
       clearModalOpen = false;
       notifyUi('Cleared Dropilot accounts and local WebView2 data');
     } catch (err) {
       notifyUi(String(err), 'error');
     }
+  }
+
+  async function handleRefreshRemoteConfig() {
+    syncingRemote = true;
+    try {
+      const next = await api.refreshRemoteConfig();
+      remoteConfigStatus.set(next);
+      if (next.lastError) {
+        notifyUi(`Remote config sync issue: ${next.lastError}`, 'error');
+      } else {
+        notifyUi(`Remote config synced (${next.overriddenHashes} active GQL hashes)`);
+      }
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    } finally {
+      syncingRemote = false;
+    }
+  }
+
+  async function handleSaveDiscordUrl(clear = false) {
+    savingWebhook = true;
+    try {
+      const val = clear ? '' : discordUrlInput.trim();
+      webhookSecrets = await api.saveWebhookSecrets(val, null);
+      discordUrlInput = '';
+      if (clear) {
+        await savePatch((d) => (d.webhooks.discordEnabled = false));
+        notifyUi('Discord webhook removed from Credential Manager');
+      } else {
+        await savePatch((d) => (d.webhooks.discordEnabled = true));
+        notifyUi('Discord webhook saved securely in Credential Manager');
+      }
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    } finally {
+      savingWebhook = false;
+    }
+  }
+
+  async function handleSaveTelegram(clear = false) {
+    savingWebhook = true;
+    try {
+      if (clear) {
+        webhookSecrets = await api.saveWebhookSecrets(null, '');
+        telegramTokenInput = '';
+        telegramChatIdInput = '';
+        await savePatch((d) => {
+          d.webhooks.telegramEnabled = false;
+          d.webhooks.telegramChatId = '';
+        });
+        notifyUi('Telegram credentials removed from Credential Manager');
+      } else {
+        if (telegramTokenInput.trim()) {
+          webhookSecrets = await api.saveWebhookSecrets(null, telegramTokenInput.trim());
+          telegramTokenInput = '';
+        }
+        await savePatch((d) => {
+          d.webhooks.telegramChatId = telegramChatIdInput.trim();
+          if (webhookSecrets.hasTelegramToken && telegramChatIdInput.trim()) {
+            d.webhooks.telegramEnabled = true;
+          }
+        });
+        notifyUi('Telegram alert settings saved');
+      }
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    } finally {
+      savingWebhook = false;
+    }
+  }
+
+  async function handleTestWebhook(channel: 'discord' | 'telegram') {
+    testingChannel = channel;
+    try {
+      await api.testWebhook(
+        channel,
+        channel === 'telegram' ? telegramChatIdInput.trim() : undefined,
+      );
+      notifyUi(`Test ${channel === 'discord' ? 'Discord' : 'Telegram'} notification sent!`);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    } finally {
+      testingChannel = null;
+    }
+  }
+
+  function snapToHalfHour(mins: number): string {
+    const snapped = Math.floor((mins % 1440) / 30) * 30;
+    return String(snapped);
   }
 </script>
 
@@ -427,6 +564,71 @@
           />
         </div>
       </div>
+
+      <div class="card pref-card pref-wide">
+        <div class="pref-wide-row">
+          <div class="pref-wide-text">
+            <div class="title-with-badge">
+              <span class="pref-ico ico-info"><Moon size={15} /></span>
+              <div>
+                <h3>Quiet hours schedule</h3>
+                <p>Automatically pause drop farming during local hours (e.g. while gaming or working) and resume when the window ends.</p>
+              </div>
+            </div>
+          </div>
+          <Toggle
+            checked={settings.schedule.quietHoursEnabled}
+            ariaLabel="Enable quiet hours schedule"
+            onchange={(v) => savePatch((d) => (d.schedule.quietHoursEnabled = v))}
+          />
+        </div>
+
+        {#if settings.schedule.quietHoursEnabled}
+          <div class="schedule-row">
+            <div class="sched-field">
+              <span class="sched-label">Pause at</span>
+              <CustomSelect
+                options={timeOptions}
+                value={snapToHalfHour(settings.schedule.quietStartMinutes)}
+                onchange={(val) =>
+                  savePatch((d) => (d.schedule.quietStartMinutes = Number(val)))}
+                ariaLabel="Quiet hours start time"
+                size="sm"
+              />
+            </div>
+            <div class="sched-field">
+              <span class="sched-label">Resume at</span>
+              <CustomSelect
+                options={timeOptions}
+                value={snapToHalfHour(settings.schedule.quietEndMinutes)}
+                onchange={(val) =>
+                  savePatch((d) => (d.schedule.quietEndMinutes = Number(val)))}
+                ariaLabel="Quiet hours end time"
+                size="sm"
+              />
+            </div>
+            {#if settings.schedule.quietStartMinutes > settings.schedule.quietEndMinutes}
+              <Badge tone="accent">Overnight window</Badge>
+            {:else if settings.schedule.quietStartMinutes === settings.schedule.quietEndMinutes}
+              <Badge tone="warning">Start &amp; end match (inactive)</Badge>
+            {/if}
+          </div>
+        {/if}
+
+        <div class="sub-divider"></div>
+
+        <div class="pref-wide-row">
+          <div class="pref-wide-text">
+            <h3>Humanized polling jitter (±25%)</h3>
+            <p>Randomizes watch ticks and background sync intervals instead of rigid 60-second pulses for safer, natural network patterns.</p>
+          </div>
+          <Toggle
+            checked={settings.schedule.humanizedJitter}
+            ariaLabel="Humanized polling jitter"
+            onchange={(v) => savePatch((d) => (d.schedule.humanizedJitter = v))}
+          />
+        </div>
+      </div>
     </div>
   {:else if activeTab === 'system'}
     <div class="pref-grid">
@@ -513,6 +715,164 @@
         </div>
       </div>
 
+      <div class="card pref-card pref-wide webhook-card">
+        <div class="studio-head">
+          <div>
+            <h3>Discord &amp; Telegram Webhook Alerts</h3>
+            <p>Get pinged instantly on your phone when drops are claimed or when Twitch requests manual verification. Secrets stay encrypted in Windows Credential Manager.</p>
+          </div>
+          <Badge tone="accent">Encrypted</Badge>
+        </div>
+
+        <div class="webhook-grid">
+          <div class="webhook-box">
+            <div class="webhook-box-head">
+              <div class="webhook-title-row">
+                <strong>Discord Webhook</strong>
+                {#if webhookSecrets.hasDiscordUrl}
+                  <Badge tone="success">Saved</Badge>
+                {:else}
+                  <Badge tone="neutral">Not set</Badge>
+                {/if}
+              </div>
+              <Toggle
+                checked={settings.webhooks.discordEnabled}
+                ariaLabel="Enable Discord webhook alerts"
+                onchange={(v) => savePatch((d) => (d.webhooks.discordEnabled = v))}
+              />
+            </div>
+            <div class="webhook-input-row">
+              <input
+                type="password"
+                class="secret-input"
+                bind:value={discordUrlInput}
+                placeholder={webhookSecrets.hasDiscordUrl
+                  ? 'Webhook URL stored securely (paste new URL to replace)'
+                  : 'https://discord.com/api/webhooks/...'}
+                aria-label="Discord webhook URL"
+              />
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={savingWebhook || !discordUrlInput.trim()}
+                onclick={() => handleSaveDiscordUrl(false)}
+              >
+                Save
+              </Button>
+              {#if webhookSecrets.hasDiscordUrl}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={testingChannel === 'discord'}
+                  onclick={() => handleTestWebhook('discord')}
+                >
+                  <Send size={12} />
+                  <span>{testingChannel === 'discord' ? 'Sending...' : 'Test'}</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={savingWebhook}
+                  onclick={() => handleSaveDiscordUrl(true)}
+                >
+                  Remove
+                </Button>
+              {/if}
+            </div>
+          </div>
+
+          <div class="webhook-box">
+            <div class="webhook-box-head">
+              <div class="webhook-title-row">
+                <strong>Telegram Bot</strong>
+                {#if webhookSecrets.hasTelegramToken}
+                  <Badge tone="success">Token saved</Badge>
+                {:else}
+                  <Badge tone="neutral">Not set</Badge>
+                {/if}
+              </div>
+              <Toggle
+                checked={settings.webhooks.telegramEnabled}
+                ariaLabel="Enable Telegram bot alerts"
+                onchange={(v) => savePatch((d) => (d.webhooks.telegramEnabled = v))}
+              />
+            </div>
+            <div class="webhook-input-row">
+              <input
+                type="password"
+                class="secret-input"
+                bind:value={telegramTokenInput}
+                placeholder={webhookSecrets.hasTelegramToken
+                  ? 'Bot token stored securely (paste to replace)'
+                  : 'Bot token from @BotFather (123456:ABC...)'}
+                aria-label="Telegram bot token"
+              />
+              <input
+                type="text"
+                class="secret-input chat-id-input"
+                bind:value={telegramChatIdInput}
+                placeholder="Chat ID"
+                aria-label="Telegram chat ID"
+              />
+              <Button
+                variant="primary"
+                size="sm"
+                disabled={savingWebhook || (!telegramTokenInput.trim() && !telegramChatIdInput.trim())}
+                onclick={() => handleSaveTelegram(false)}
+              >
+                Save
+              </Button>
+              {#if webhookSecrets.hasTelegramToken}
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={testingChannel === 'telegram'}
+                  onclick={() => handleTestWebhook('telegram')}
+                >
+                  <Send size={12} />
+                  <span>{testingChannel === 'telegram' ? 'Sending...' : 'Test'}</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  disabled={savingWebhook}
+                  onclick={() => handleSaveTelegram(true)}
+                >
+                  Remove
+                </Button>
+              {/if}
+            </div>
+          </div>
+        </div>
+
+        <div class="event-toggles">
+          <label class="ev-chip">
+            <span>Drop Claimed</span>
+            <Toggle
+              checked={settings.webhooks.onDropClaimed}
+              ariaLabel="Notify on drop claimed"
+              onchange={(v) => savePatch((d) => (d.webhooks.onDropClaimed = v))}
+            />
+          </label>
+          <label class="ev-chip">
+            <span>Action Required / Session Expired</span>
+            <Toggle
+              checked={settings.webhooks.onActionRequired}
+              ariaLabel="Notify on action required"
+              onchange={(v) => savePatch((d) => (d.webhooks.onActionRequired = v))}
+            />
+          </label>
+          <label class="ev-chip">
+            <span>Campaign Completed</span>
+            <Toggle
+              checked={settings.webhooks.onCampaignCompleted}
+              ariaLabel="Notify on campaign completed"
+              onchange={(v) => savePatch((d) => (d.webhooks.onCampaignCompleted = v))}
+            />
+          </label>
+        </div>
+      </div>
+
       {#if mockAvailable}
         <div class="card pref-card pref-wide">
           <div class="pref-wide-row">
@@ -569,6 +929,55 @@
           </div>
           <h3>GitHub update checks</h3>
           <p>Optional check against GitHub Releases. Only opens the release page — never auto-downloads binaries.</p>
+        </div>
+
+        <div class="card pref-card pref-wide">
+          <div class="pref-wide-row">
+            <div class="pref-wide-text">
+              <div class="title-with-badge">
+                <span class="pref-ico ico-success"><Cloud size={15} /></span>
+                <div>
+                  <div class="webhook-title-row">
+                    <h3>Remote hotfix config</h3>
+                    <Badge
+                      tone={$remoteConfigStatus?.source === 'remote'
+                        ? 'success'
+                        : $remoteConfigStatus?.source === 'cache'
+                          ? 'accent'
+                          : 'neutral'}
+                    >
+                      {$remoteConfigStatus?.source ?? 'bundled'}
+                    </Badge>
+                    {#if $remoteConfigStatus && $remoteConfigStatus.overriddenHashes > 0}
+                      <Badge tone="accent">{$remoteConfigStatus.overriddenHashes} GQL hashes</Badge>
+                    {/if}
+                  </div>
+                  <p>
+                    Syncs verified Twitch GQL query hashes so Dropilot recovers from platform rotations without waiting for a new installer.
+                    {#if $remoteConfigStatus?.fetchedAt}
+                      Last synced {formatExactDateTime($remoteConfigStatus.fetchedAt)}.
+                    {/if}
+                  </p>
+                </div>
+              </div>
+            </div>
+            <div class="inline-actions">
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={syncingRemote || !settings.remoteConfigEnabled}
+                onclick={handleRefreshRemoteConfig}
+              >
+                <RefreshCw size={13} />
+                <span>{syncingRemote ? 'Syncing...' : 'Sync now'}</span>
+              </Button>
+              <Toggle
+                checked={settings.remoteConfigEnabled}
+                ariaLabel="Enable remote hotfix config"
+                onchange={(v) => savePatch((d) => (d.remoteConfigEnabled = v))}
+              />
+            </div>
+          </div>
         </div>
       </div>
 
@@ -1135,5 +1544,125 @@
     font-size: 12px;
     color: var(--text-muted);
     margin-top: 2px;
+  }
+
+  .title-with-badge {
+    display: flex;
+    align-items: flex-start;
+    gap: 10px;
+  }
+
+  .schedule-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 14px;
+    margin-top: 12px;
+    padding: 12px;
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+
+  .sched-field {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .sched-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text-muted);
+  }
+
+  .sub-divider {
+    height: 1px;
+    background: var(--border);
+    margin: 14px 0;
+  }
+
+  .webhook-card {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+
+  .webhook-grid {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .webhook-box {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+
+  .webhook-box-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .webhook-title-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .webhook-input-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  .secret-input {
+    flex: 1;
+    min-width: 210px;
+    height: 34px;
+    padding: 0 11px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    color: var(--text);
+    font-size: 12px;
+    outline: none;
+  }
+
+  .secret-input:focus {
+    border-color: var(--border-hover);
+  }
+
+  .chat-id-input {
+    flex: 0 0 140px;
+    min-width: 120px;
+  }
+
+  .event-toggles {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+  }
+
+  .ev-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 10px;
+    padding: 7px 12px;
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
   }
 </style>

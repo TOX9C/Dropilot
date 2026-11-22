@@ -28,6 +28,14 @@ pub const KICK_SUFFIX_HOSTS: &[&str] = &[".kick.com", ".live-video.net"];
 pub const UPDATE_CHECK_HOST: &str = "api.github.com";
 pub const UPDATE_CHECK_PATH: &str = "/repos/theflash1211/dropilot/releases/latest";
 
+pub const REMOTE_CONFIG_HOST: &str = "raw.githubusercontent.com";
+pub const REMOTE_CONFIG_PATH: &str = "/theflash1211/dropilot/main/remote-config.json";
+pub const REMOTE_CONFIG_URL: &str =
+    "https://raw.githubusercontent.com/theflash1211/dropilot/main/remote-config.json";
+
+pub const DISCORD_WEBHOOK_HOSTS: &[&str] = &["discord.com", "discordapp.com"];
+pub const TELEGRAM_API_HOST: &str = "api.telegram.org";
+
 pub const LOGIN_IDP_EXACT_HOSTS: &[&str] = &[
     "accounts.google.com",
     "appleid.apple.com",
@@ -60,8 +68,26 @@ pub const EXTERNAL_LINK_SUFFIX_HOSTS: &[&str] = &[".twitch.tv", ".kick.com"];
 pub enum AllowlistKind {
     Platform,
     UpdateCheck,
+    RemoteConfig,
+    Webhook,
     LoginNavigation,
     ExternalOpen,
+}
+
+fn is_valid_webhook_url(host: &str, path: &str) -> bool {
+    if DISCORD_WEBHOOK_HOSTS.contains(&host) {
+        let Some(rest) = path.strip_prefix("/api/webhooks/") else {
+            return false;
+        };
+        let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+        return parts.len() >= 2 && parts[0].chars().all(|c| c.is_ascii_digit());
+    }
+    if host == TELEGRAM_API_HOST {
+        return path.starts_with("/bot")
+            && path.ends_with("/sendMessage")
+            && path.len() > "/bot/sendMessage".len();
+    }
+    false
 }
 
 fn matches_host(host: &str, exact: &[&str], suffixes: &[&str]) -> bool {
@@ -108,6 +134,8 @@ pub fn validate_url(url: &Url, kind: AllowlistKind) -> Result<(), AppError> {
     let allowed_scheme = match kind {
         AllowlistKind::Platform => scheme == "https" || scheme == "wss",
         AllowlistKind::UpdateCheck
+        | AllowlistKind::RemoteConfig
+        | AllowlistKind::Webhook
         | AllowlistKind::LoginNavigation
         | AllowlistKind::ExternalOpen => scheme == "https",
     };
@@ -135,6 +163,10 @@ pub fn validate_url(url: &Url, kind: AllowlistKind) -> Result<(), AppError> {
         AllowlistKind::UpdateCheck => {
             host == UPDATE_CHECK_HOST && url.path() == UPDATE_CHECK_PATH
         }
+        AllowlistKind::RemoteConfig => {
+            host == REMOTE_CONFIG_HOST && url.path() == REMOTE_CONFIG_PATH
+        }
+        AllowlistKind::Webhook => is_valid_webhook_url(&host, url.path()),
         AllowlistKind::LoginNavigation => {
             matches_host(&host, TWITCH_EXACT_HOSTS, TWITCH_SUFFIX_HOSTS)
                 || matches_host(&host, KICK_EXACT_HOSTS, KICK_SUFFIX_HOSTS)
@@ -197,6 +229,50 @@ mod tests {
         assert!(validate_url(
             &parse("https://api.github.com/repos/theflash1211/dropilot/releases/latest"),
             AllowlistKind::Platform
+        ).is_err());
+    }
+
+    #[test]
+    fn remote_config_requires_exact_repo_path() {
+        assert!(validate_url(
+            &parse(REMOTE_CONFIG_URL),
+            AllowlistKind::RemoteConfig
+        ).is_ok());
+        assert!(validate_url(
+            &parse("https://raw.githubusercontent.com/evil/repo/main/remote-config.json"),
+            AllowlistKind::RemoteConfig
+        ).is_err());
+        assert!(validate_url(
+            &parse("http://raw.githubusercontent.com/theflash1211/dropilot/main/remote-config.json"),
+            AllowlistKind::RemoteConfig
+        ).is_err());
+    }
+
+    #[test]
+    fn webhook_allows_only_discord_and_telegram_endpoints() {
+        assert!(validate_url(
+            &parse("https://discord.com/api/webhooks/123456789012345678/abcDEF_token-123"),
+            AllowlistKind::Webhook
+        ).is_ok());
+        assert!(validate_url(
+            &parse("https://discordapp.com/api/webhooks/123456789012345678/abcDEF_token-123"),
+            AllowlistKind::Webhook
+        ).is_ok());
+        assert!(validate_url(
+            &parse("https://api.telegram.org/bot123456:ABC-DEF1234/sendMessage"),
+            AllowlistKind::Webhook
+        ).is_ok());
+        assert!(validate_url(
+            &parse("https://discord.com/api/v10/users/@me"),
+            AllowlistKind::Webhook
+        ).is_err());
+        assert!(validate_url(
+            &parse("https://api.telegram.org/bot123456:ABC/getUpdates"),
+            AllowlistKind::Webhook
+        ).is_err());
+        assert!(validate_url(
+            &parse("https://evil.example/api/webhooks/12345/token"),
+            AllowlistKind::Webhook
         ).is_err());
     }
 }

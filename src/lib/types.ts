@@ -140,6 +140,78 @@ export interface WindowBounds {
   height: number;
 }
 
+export interface ScheduleSettings {
+  quietHoursEnabled: boolean;
+  quietStartMinutes: number;
+  quietEndMinutes: number;
+  humanizedJitter: boolean;
+}
+
+export interface WebhookSettings {
+  discordEnabled: boolean;
+  telegramEnabled: boolean;
+  telegramChatId: string;
+  onDropClaimed: boolean;
+  onActionRequired: boolean;
+  onCampaignCompleted: boolean;
+}
+
+export interface WebhookSecretsStatus {
+  hasDiscordUrl: boolean;
+  hasTelegramToken: boolean;
+}
+
+export type WebhookChannel = 'discord' | 'telegram';
+
+export interface RemoteConfigStatus {
+  source: 'remote' | 'cache' | 'bundled';
+  fetchedAt: string | null;
+  updatedAt: string | null;
+  overriddenHashes: number;
+  maintenanceBanner: string | null;
+  twitchEnabled: boolean;
+  kickEnabled: boolean;
+  lastError: string | null;
+}
+
+export type ClaimRecordStatus = 'claimed' | 'manual_required';
+
+export interface ClaimHistoryEntry {
+  id: string;
+  platform: PlatformId;
+  gameName: string;
+  campaignName: string;
+  dropName: string;
+  rewardImageUrl: string | null;
+  claimedAt: string;
+  status: ClaimRecordStatus;
+}
+
+export interface DailyActivityPoint {
+  date: string;
+  minutes: number;
+  claims: number;
+}
+
+export interface HistoryStats {
+  totalClaims: number;
+  twitchClaims: number;
+  kickClaims: number;
+  totalWatchMinutes: number;
+  currentStreakDays: number;
+  bestStreakDays: number;
+  topGame: string | null;
+  topGameClaims: number;
+  dailyActivity: DailyActivityPoint[];
+  claims: ClaimHistoryEntry[];
+}
+
+export interface HistoryExportResult {
+  filename: string;
+  savedPath: string;
+  content: string;
+}
+
 export interface Settings {
   schemaVersion: number;
   theme: ThemeMode;
@@ -153,6 +225,9 @@ export interface Settings {
   farmUnlinked: boolean;
   compatWatchMode: boolean;
   updateCheck: boolean;
+  remoteConfigEnabled: boolean;
+  schedule: ScheduleSettings;
+  webhooks: WebhookSettings;
   disclaimerAcceptedVersion: number;
   logLevel: LogLevelSetting;
   mockMode: boolean;
@@ -177,7 +252,14 @@ export interface UpdateStatus {
   publishedAt: string | null;
 }
 
-export type NavRoute = 'dashboard' | 'drops' | 'twitch' | 'kick' | 'logs' | 'settings';
+export type NavRoute =
+  | 'dashboard'
+  | 'drops'
+  | 'history'
+  | 'twitch'
+  | 'kick'
+  | 'logs'
+  | 'settings';
 
 export type PlatformFilter = 'all' | 'twitch' | 'kick';
 

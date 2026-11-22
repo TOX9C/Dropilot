@@ -83,6 +83,40 @@ impl SecretStore {
             ))),
         }
     }
+
+    fn named_entry(key: &str) -> Result<Entry, AppError> {
+        let target = format!("{SERVICE_NAME}/{key}");
+        Entry::new_with_target(&target, SERVICE_NAME, key)
+            .map_err(|e| AppError::Internal(format!("Credential Manager entry error: {e}")))
+    }
+
+    pub fn save_named_secret(key: &str, value: &str) -> Result<(), AppError> {
+        let entry = Self::named_entry(key)?;
+        entry
+            .set_password(value)
+            .map_err(|e| AppError::Internal(format!("Failed saving secret to Credential Manager: {e}")))
+    }
+
+    pub fn load_named_secret(key: &str) -> Result<Option<SecretToken>, AppError> {
+        let entry = Self::named_entry(key)?;
+        match entry.get_password() {
+            Ok(val) if !val.trim().is_empty() => Ok(Some(SecretToken::new(val))),
+            Ok(_) | Err(keyring::Error::NoEntry) => Ok(None),
+            Err(e) => Err(AppError::Internal(format!(
+                "Failed reading secret from Credential Manager: {e}"
+            ))),
+        }
+    }
+
+    pub fn delete_named_secret(key: &str) -> Result<(), AppError> {
+        let entry = Self::named_entry(key)?;
+        match entry.delete_credential() {
+            Ok(()) | Err(keyring::Error::NoEntry) => Ok(()),
+            Err(e) => Err(AppError::Internal(format!(
+                "Failed deleting secret from Credential Manager: {e}"
+            ))),
+        }
+    }
 }
 
 #[cfg(test)]

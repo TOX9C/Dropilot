@@ -6,6 +6,7 @@ use serde_json::{json, Value};
 
 use crate::net::client::{parse_header_name_value, AllowlistedClient};
 use crate::platforms::{AppError, PlatformId};
+use crate::remote_config::{resolve_gql_hash, resolve_twitch_client_id};
 
 /// Official public Twitch web client ID observed on https://www.twitch.tv.
 /// Dropilot never impersonates mobile, TV, or console clients.
@@ -86,7 +87,8 @@ pub mod ops {
 
 pub fn build_twitch_headers(token: Option<&str>) -> Result<HeaderMap, AppError> {
     let mut headers = HeaderMap::new();
-    let (cid_name, cid_val) = parse_header_name_value("Client-ID", TWITCH_WEB_CLIENT_ID)?;
+    let client_id = resolve_twitch_client_id(TWITCH_WEB_CLIENT_ID);
+    let (cid_name, cid_val) = parse_header_name_value("Client-ID", &client_id)?;
     headers.insert(cid_name, cid_val);
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
 
@@ -139,13 +141,14 @@ pub async fn validate_oauth_token(
 }
 
 fn build_persisted_query_body(op: PersistedOp, variables: &Value) -> Value {
+    let hash = resolve_gql_hash(op.operation_name, op.sha256_hash);
     json!({
         "operationName": op.operation_name,
         "variables": variables,
         "extensions": {
             "persistedQuery": {
                 "version": 1,
-                "sha256Hash": op.sha256_hash
+                "sha256Hash": hash
             }
         }
     })

@@ -2,15 +2,18 @@ pub mod auth;
 pub mod autostart;
 pub mod commands;
 pub mod events;
+pub mod history;
 pub mod logging;
 pub mod miner;
 pub mod net;
 pub mod platforms;
+pub mod remote_config;
 pub mod secrets;
 pub mod settings;
 pub mod state;
 pub mod tray;
 pub mod update_check;
+pub mod webhooks;
 pub mod windows;
 
 use std::sync::atomic::Ordering;
@@ -115,6 +118,14 @@ pub fn run() {
             commands::is_mock_available,
             commands::report_user_agent,
             commands::hide_to_tray,
+            commands::get_remote_config_status,
+            commands::refresh_remote_config,
+            commands::get_webhook_secrets_status,
+            commands::save_webhook_secrets,
+            commands::test_webhook,
+            commands::get_history_stats,
+            commands::export_history,
+            commands::clear_history,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -132,9 +143,15 @@ pub fn run() {
             let os_autostart = crate::autostart::is_autostart_enabled(&app_handle);
             let sync_state = state_for_setup.clone();
             tauri::async_runtime::spawn(async move {
-                let mut guard = sync_state.settings.write().await;
-                if guard.autostart != os_autostart {
-                    guard.autostart = os_autostart;
+                let remote_enabled = {
+                    let mut guard = sync_state.settings.write().await;
+                    if guard.autostart != os_autostart {
+                        guard.autostart = os_autostart;
+                    }
+                    guard.remote_config_enabled
+                };
+                if remote_enabled {
+                    let _ = sync_state.remote_config.refresh_if_stale(&sync_state.http).await;
                 }
             });
 

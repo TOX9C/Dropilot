@@ -16,18 +16,29 @@
     initializeAppStores,
     mockFeatureAvailable,
     notifyUi,
+    remoteConfigStatus,
     shortcutsOpen,
   } from './lib/stores';
   import type { AccentPreset, NavRoute, ThemeMode } from './lib/types';
   import Dashboard from './views/Dashboard.svelte';
   import Drops from './views/Drops.svelte';
+  import History from './views/History.svelte';
   import Logs from './views/Logs.svelte';
   import Platform from './views/Platform.svelte';
   import Settings from './views/Settings.svelte';
 
   let systemDark = $state(true);
+  let dismissedBanner = $state<string | null>(null);
 
-  const routes: NavRoute[] = ['dashboard', 'drops', 'twitch', 'kick', 'logs', 'settings'];
+  const routes: NavRoute[] = [
+    'dashboard',
+    'drops',
+    'history',
+    'twitch',
+    'kick',
+    'logs',
+    'settings',
+  ];
 
   function applyDomTheme(mode: ThemeMode, sysDark: boolean, accent: AccentPreset) {
     const resolved = mode === 'system' ? (sysDark ? 'dark' : 'light') : mode;
@@ -89,7 +100,7 @@
     if (!ev.ctrlKey) return;
 
     const num = Number(ev.key);
-    if (num >= 1 && num <= 6) {
+    if (num >= 1 && num <= routes.length) {
       ev.preventDefault();
       activeRoute.set(routes[num - 1]);
       return;
@@ -128,6 +139,20 @@
   />
 
   <main class="main-area">
+    {#if $remoteConfigStatus?.maintenanceBanner && $remoteConfigStatus.maintenanceBanner !== dismissedBanner}
+      <div class="maint-banner" role="status">
+        <span>{$remoteConfigStatus.maintenanceBanner}</span>
+        <button
+          type="button"
+          class="maint-dismiss"
+          onclick={() => (dismissedBanner = $remoteConfigStatus?.maintenanceBanner ?? null)}
+          aria-label="Dismiss notice"
+        >
+          ✕
+        </button>
+      </div>
+    {/if}
+
     {#if $appSnapshot && $appSettings}
       {#key $activeRoute}
         <div class="content-wrap page-enter">
@@ -135,6 +160,8 @@
             <Dashboard snapshot={$appSnapshot} settings={$appSettings} logs={$appLogs} />
           {:else if $activeRoute === 'drops'}
             <Drops snapshot={$appSnapshot} settings={$appSettings} />
+          {:else if $activeRoute === 'history'}
+            <History />
           {:else if $activeRoute === 'twitch'}
             <Platform
               platform="twitch"
@@ -173,7 +200,7 @@
 
 <Modal open={$shortcutsOpen} title="Keyboard Shortcuts" onclose={() => shortcutsOpen.set(false)}>
   <div class="sc-list">
-    <div class="sc-row"><kbd class="mono">Ctrl + 1…6</kbd><span>Switch pages</span></div>
+    <div class="sc-row"><kbd class="mono">Ctrl + 1…7</kbd><span>Switch pages</span></div>
     <div class="sc-row"><kbd class="mono">Ctrl + R</kbd><span>Refresh active platform</span></div>
     <div class="sc-row"><kbd class="mono">Ctrl + P</kbd><span>Pause / Resume all</span></div>
     <div class="sc-row"><kbd class="mono">Alt + Up/Down</kbd><span>Reorder priority item</span></div>
@@ -207,6 +234,35 @@
   .content-wrap {
     max-width: var(--content-max);
     margin: 0 auto;
+  }
+
+  .maint-banner {
+    max-width: var(--content-max);
+    margin: 0 auto 12px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding: 10px 14px;
+    border-radius: var(--radius-md);
+    background: var(--warning-tint);
+    border: 1px solid rgba(245, 158, 11, 0.35);
+    color: var(--warning-text);
+    font-size: var(--text-sm);
+  }
+
+  .maint-dismiss {
+    border: none;
+    background: transparent;
+    color: inherit;
+    cursor: pointer;
+    font-size: 13px;
+    padding: 2px 6px;
+    border-radius: 6px;
+  }
+
+  .maint-dismiss:hover {
+    background: rgba(245, 158, 11, 0.2);
   }
 
   .sc-list { display: flex; flex-direction: column; gap: 6px; }
