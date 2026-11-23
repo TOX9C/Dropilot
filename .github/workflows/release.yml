@@ -12,7 +12,7 @@ on:
         type: string
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
   build-and-publish:
@@ -57,16 +57,16 @@ jobs:
       - name: Build signed NSIS installer & updater artifacts
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           owner: theflash1211
-          repo: dropilot-releases
+          repo: dropilot
           tagName: ${{ steps.meta.outputs.tag }}
           releaseName: 'Dropilot ${{ steps.meta.outputs.tag }}'
           releaseBody: 'Signed Windows installer and automatic update manifest for Dropilot ${{ steps.meta.outputs.tag }}.'
-          releaseDraft: true
+          releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true

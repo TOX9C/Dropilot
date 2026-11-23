@@ -13,7 +13,7 @@ use crate::net::client::AllowlistedClient;
 use crate::platforms::AppError;
 use crate::state::{AppState, MinerControl};
 
-pub const RELEASES_PAGE_URL: &str = "https://github.com/theflash1211/dropilot-releases/releases";
+pub const RELEASES_PAGE_URL: &str = "https://github.com/theflash1211/dropilot/releases";
 pub const UPDATE_PROGRESS_EVENT: &str = "dropilot://update-progress";
 
 #[derive(Debug, Deserialize)]
@@ -194,7 +194,7 @@ pub async fn check_for_updates(http: &AllowlistedClient) -> Result<UpdateStatus,
 
     let safe_url = if release
         .html_url
-        .starts_with("https://github.com/theflash1211/dropilot-releases/")
+        .starts_with("https://github.com/theflash1211/dropilot/")
     {
         release.html_url
     } else {

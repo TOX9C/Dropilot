@@ -492,7 +492,7 @@ export const api = {
       available: false,
       currentVersion: '0.1.0',
       latestVersion: '0.1.0',
-      releaseUrl: 'https://github.com/theflash1211/dropilot-releases/releases',
+      releaseUrl: 'https://github.com/theflash1211/dropilot/releases',
       publishedAt: null,
       notes: null,
       signedUpdateReady: true,
