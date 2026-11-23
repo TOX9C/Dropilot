@@ -1192,6 +1192,7 @@
 
   /* Compact / Console table-row layout */
   .compact-wrap {
+    container-type: inline-size;
     display: flex;
     flex-direction: column;
     padding: 0;
@@ -1204,6 +1205,7 @@
     align-items: center;
     gap: 10px;
     padding: 8px 12px;
+    min-width: 0;
   }
 
   .design-console .compact-row {
@@ -1212,7 +1214,7 @@
   }
 
   .compact-info {
-    flex: 1;
+    flex: 1 1 0;
     min-width: 0;
     display: flex;
     flex-direction: column;
@@ -1227,26 +1229,35 @@
   }
 
   .compact-top {
+    flex: 1 1 0;
     display: flex;
     align-items: center;
     gap: 6px;
     min-width: 0;
+    overflow: hidden;
   }
 
   .compact-game {
+    flex: 0 1 auto;
+    min-width: 0;
     font-size: var(--text-xs);
     font-weight: 600;
     color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
     white-space: nowrap;
   }
 
   .compact-sep {
+    flex-shrink: 0;
     color: var(--text-faint);
     font-size: var(--text-xs);
   }
 
   .compact-title-btn {
+    flex: 1 1 auto;
     min-width: 0;
+    overflow: hidden;
     border: none;
     background: transparent;
     padding: 0;
@@ -1271,6 +1282,7 @@
     font-size: 11px;
     color: var(--text-muted);
     flex-shrink: 0;
+    max-width: 100%;
   }
 
   .compact-pct {
@@ -1289,5 +1301,37 @@
     height: 24px;
     padding: 0 9px;
     font-size: 11px;
+  }
+
+  @container (max-width: 780px) {
+    .design-console .compact-info {
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 4px;
+    }
+
+    .compact-top {
+      flex: 0 0 auto;
+      width: 100%;
+    }
+  }
+
+  @container (max-width: 580px) {
+    .compact-row {
+      flex-wrap: wrap;
+      row-gap: 6px;
+    }
+
+    .compact-info {
+      flex: 1 1 100%;
+    }
+
+    .compact-right {
+      width: 100%;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      padding-top: 5px;
+      border-top: 1px solid var(--border);
+    }
   }
 </style>
