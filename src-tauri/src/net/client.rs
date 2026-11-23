@@ -439,13 +439,21 @@ impl AllowlistedClient {
         let resp: Response = self
             .http_update
             .post(parsed)
-            .header(USER_AGENT, format!("Dropilot/{}", env!("CARGO_PKG_VERSION")))
+            .header(
+                USER_AGENT,
+                format!(
+                    "DiscordBot (https://github.com/theflash1211/dropilot, {})",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            )
+            .header("Accept", "application/json")
             .json(payload)
             .send()
             .await
             .map_err(|e| map_reqwest_error(op_name, e))?;
 
         let status = resp.status();
+        let headers = resp.headers().clone();
         debug!(
             op = op_name,
             status = status.as_u16(),
@@ -455,16 +463,25 @@ impl AllowlistedClient {
 
         if status == StatusCode::TOO_MANY_REQUESTS {
             return Err(AppError::RateLimited {
-                retry_after_secs: parse_retry_after(resp.headers()),
+                retry_after_secs: parse_retry_after(&headers),
                 message: format!("{op_name} returned 429"),
             });
         }
 
         if !status.is_success() {
-            return Err(AppError::Network(format!(
-                "{op_name} returned HTTP {}",
-                status.as_u16()
-            )));
+            let body_snippet = resp
+                .text()
+                .await
+                .ok()
+                .map(|b| redact(b.trim()))
+                .filter(|b| !b.is_empty())
+                .map(|b| b.chars().take(200).collect::<String>());
+            let detail = match body_snippet {
+                Some(snippet) => format!("{op_name} returned HTTP {}: {snippet}", status.as_u16()),
+                None => format!("{op_name} returned HTTP {}", status.as_u16()),
+            };
+            warn!(op = op_name, status = status.as_u16(), detail = %detail, "Webhook request failed");
+            return Err(AppError::Network(detail));
         }
 
         Ok(status)

@@ -65,6 +65,7 @@
   let telegramChatIdInput = $state('');
   let savingWebhook = $state(false);
   let testingChannel = $state<'discord' | 'telegram' | null>(null);
+  let webhookFeedback = $state<{ channel: 'discord' | 'telegram'; ok: boolean; text: string } | null>(null);
 
   const timeOptions: SelectOption[] = Array.from({ length: 48 }, (_, idx) => {
     const mins = idx * 30;
@@ -218,14 +219,24 @@
 
   async function handleTestWebhook(channel: 'discord' | 'telegram') {
     testingChannel = channel;
+    webhookFeedback = null;
     try {
+      if (channel === 'discord' && discordUrlInput.trim()) {
+        webhookSecrets = await api.saveWebhookSecrets(discordUrlInput.trim(), null);
+        discordUrlInput = '';
+        await savePatch((d) => (d.webhooks.discordEnabled = true));
+      }
       await api.testWebhook(
         channel,
         channel === 'telegram' ? telegramChatIdInput.trim() : undefined,
       );
-      notifyUi(`Test ${channel === 'discord' ? 'Discord' : 'Telegram'} notification sent`);
+      const okMsg = `Test ${channel === 'discord' ? 'Discord' : 'Telegram'} notification sent`;
+      webhookFeedback = { channel, ok: true, text: okMsg };
+      notifyUi(okMsg);
     } catch (err) {
-      notifyUi(String(err), 'error');
+      const errMsg = String(err);
+      webhookFeedback = { channel, ok: false, text: errMsg };
+      notifyUi(errMsg, 'error');
     } finally {
       testingChannel = null;
     }
@@ -635,16 +646,18 @@
               >
                 Save
               </Button>
-              {#if webhookSecrets.hasDiscordUrl}
+              {#if webhookSecrets.hasDiscordUrl || discordUrlInput.trim()}
                 <Button
                   variant="secondary"
                   size="sm"
-                  disabled={testingChannel === 'discord'}
+                  disabled={testingChannel === 'discord' || savingWebhook}
                   onclick={() => handleTestWebhook('discord')}
                 >
                   <Send size={12} />
                   <span>{testingChannel === 'discord' ? 'Sending...' : 'Test'}</span>
                 </Button>
+              {/if}
+              {#if webhookSecrets.hasDiscordUrl}
                 <Button
                   variant="ghost"
                   size="sm"
@@ -655,6 +668,11 @@
                 </Button>
               {/if}
             </div>
+            {#if webhookFeedback?.channel === 'discord'}
+              <p class="webhook-feedback" class:fb-ok={webhookFeedback.ok} class:fb-err={!webhookFeedback.ok}>
+                {webhookFeedback.text}
+              </p>
+            {/if}
           </div>
 
           <div class="webhook-box">
@@ -1393,5 +1411,21 @@
     margin-top: 2px;
     font-size: var(--text-xs);
     color: var(--text-muted);
+  }
+
+  .webhook-feedback {
+    margin: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    line-height: 1.4;
+    word-break: break-word;
+  }
+
+  .webhook-feedback.fb-ok {
+    color: var(--success-text);
+  }
+
+  .webhook-feedback.fb-err {
+    color: var(--error-text);
   }
 </style>

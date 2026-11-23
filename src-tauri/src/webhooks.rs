@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
+use chrono::{SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -89,14 +89,10 @@ impl WebhookDispatcher {
         }
     }
 
-    pub fn save_discord_url(raw_url: &str) -> Result<(), String> {
+    fn normalize_discord_url(raw_url: &str) -> Result<String, String> {
         let trimmed = raw_url.trim();
-        if trimmed.is_empty() {
-            SecretStore::delete_named_secret(WEBHOOK_DISCORD_SECRET_KEY)
-                .map_err(|e| e.user_message())?;
-            return Ok(());
-        }
-        let parsed = Url::parse(trimmed).map_err(|_| "Invalid Discord webhook URL".to_string())?;
+        let mut parsed =
+            Url::parse(trimmed).map_err(|_| "Invalid Discord webhook URL".to_string())?;
         let host = parsed.host_str().unwrap_or_default().to_ascii_lowercase();
         if !DISCORD_WEBHOOK_HOSTS.iter().any(|h| *h == host)
             || validate_url(&parsed, AllowlistKind::Webhook).is_err()
@@ -106,7 +102,22 @@ impl WebhookDispatcher {
                     .to_string(),
             );
         }
-        SecretStore::save_named_secret(WEBHOOK_DISCORD_SECRET_KEY, trimmed)
+        // Normalize legacy/alt Discord domains to discord.com to avoid 301/308 redirects.
+        if host != "discord.com" {
+            let _ = parsed.set_host(Some("discord.com"));
+        }
+        Ok(parsed.to_string())
+    }
+
+    pub fn save_discord_url(raw_url: &str) -> Result<(), String> {
+        let trimmed = raw_url.trim();
+        if trimmed.is_empty() {
+            SecretStore::delete_named_secret(WEBHOOK_DISCORD_SECRET_KEY)
+                .map_err(|e| e.user_message())?;
+            return Ok(());
+        }
+        let normalized = Self::normalize_discord_url(trimmed)?;
+        SecretStore::save_named_secret(WEBHOOK_DISCORD_SECRET_KEY, &normalized)
             .map_err(|e| e.user_message())
     }
 
@@ -183,9 +194,11 @@ impl WebhookDispatcher {
                 if let Ok(Some(url_secret)) =
                     SecretStore::load_named_secret(WEBHOOK_DISCORD_SECRET_KEY)
                 {
+                    let target_url = Self::normalize_discord_url(url_secret.expose())
+                        .unwrap_or_else(|_| url_secret.expose().to_string());
                     let payload = build_discord_payload(&event);
                     match http
-                        .post_webhook_json("discord_webhook", url_secret.expose(), &payload)
+                        .post_webhook_json("discord_webhook", &target_url, &payload)
                         .await
                     {
                         Ok(_) => info!("Delivered Discord webhook notification"),
@@ -225,11 +238,21 @@ impl WebhookDispatcher {
                 let url = SecretStore::load_named_secret(WEBHOOK_DISCORD_SECRET_KEY)
                     .map_err(|e| e.user_message())?
                     .ok_or_else(|| "Save a Discord webhook URL first".to_string())?;
+                let target_url = Self::normalize_discord_url(url.expose())?;
                 let payload = build_discord_payload(&event);
-                http.post_webhook_json("discord_webhook_test", url.expose(), &payload)
+                match http
+                    .post_webhook_json("discord_webhook_test", &target_url, &payload)
                     .await
-                    .map_err(|e| e.user_message())?;
-                Ok(())
+                {
+                    Ok(_) => {
+                        info!("Delivered Discord test webhook notification");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Discord test webhook failed");
+                        Err(e.user_message())
+                    }
+                }
             }
             WebhookChannel::Telegram => {
                 let chat_id = telegram_chat_id.trim();
@@ -241,17 +264,26 @@ impl WebhookDispatcher {
                     .ok_or_else(|| "Save a Telegram bot token first".to_string())?;
                 let url = format!("https://api.telegram.org/bot{}/sendMessage", tok.expose());
                 let payload = build_telegram_payload(chat_id, &event);
-                http.post_webhook_json("telegram_webhook_test", &url, &payload)
+                match http
+                    .post_webhook_json("telegram_webhook_test", &url, &payload)
                     .await
-                    .map_err(|e| e.user_message())?;
-                Ok(())
+                {
+                    Ok(_) => {
+                        info!("Delivered Telegram test webhook notification");
+                        Ok(())
+                    }
+                    Err(e) => {
+                        warn!(error = %e, "Telegram test webhook failed");
+                        Err(e.user_message())
+                    }
+                }
             }
         }
     }
 }
 
 fn build_discord_payload(event: &WebhookEvent) -> Value {
-    let ts = Utc::now().to_rfc3339();
+    let ts = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
     let embed = match event {
         WebhookEvent::DropClaimed {
             platform,

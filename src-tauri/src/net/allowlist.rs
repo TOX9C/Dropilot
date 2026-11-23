@@ -33,7 +33,12 @@ pub const REMOTE_CONFIG_PATH: &str = "/theflash1211/dropilot/main/remote-config.
 pub const REMOTE_CONFIG_URL: &str =
     "https://raw.githubusercontent.com/theflash1211/dropilot/main/remote-config.json";
 
-pub const DISCORD_WEBHOOK_HOSTS: &[&str] = &["discord.com", "discordapp.com"];
+pub const DISCORD_WEBHOOK_HOSTS: &[&str] = &[
+    "discord.com",
+    "discordapp.com",
+    "ptb.discord.com",
+    "canary.discord.com",
+];
 pub const TELEGRAM_API_HOST: &str = "api.telegram.org";
 
 pub const LOGIN_IDP_EXACT_HOSTS: &[&str] = &[
@@ -76,7 +81,11 @@ pub enum AllowlistKind {
 
 fn is_valid_webhook_url(host: &str, path: &str) -> bool {
     if DISCORD_WEBHOOK_HOSTS.contains(&host) {
-        let Some(rest) = path.strip_prefix("/api/webhooks/") else {
+        let rest = path
+            .strip_prefix("/api/webhooks/")
+            .or_else(|| path.strip_prefix("/api/v10/webhooks/"))
+            .or_else(|| path.strip_prefix("/api/v9/webhooks/"));
+        let Some(rest) = rest else {
             return false;
         };
         let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
