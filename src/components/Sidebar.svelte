@@ -1,19 +1,13 @@
 <script lang="ts">
   import BarChart3 from 'lucide-svelte/icons/bar-chart-3';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
-  import Clock from 'lucide-svelte/icons/clock';
   import Gift from 'lucide-svelte/icons/gift';
   import LayoutDashboard from 'lucide-svelte/icons/layout-dashboard';
-  import Minimize2 from 'lucide-svelte/icons/minimize-2';
-  import Pause from 'lucide-svelte/icons/pause';
-  import Play from 'lucide-svelte/icons/play';
   import SettingsIcon from 'lucide-svelte/icons/settings';
-  import { api } from '../lib/api';
-  import { earliestNextActionAt } from '../lib/selectors';
-  import { notifyUi, sidebarCollapsed, unreadAlertCount } from '../lib/stores';
+  import Terminal from 'lucide-svelte/icons/terminal';
+  import { sidebarCollapsed, unreadAlertCount } from '../lib/stores';
   import type { AppSnapshot, NavRoute, PlatformSnapshot } from '../lib/types';
-  import Countdown from './Countdown.svelte';
-  import Monogram from './Monogram.svelte';
+  import BrandMark from './BrandMark.svelte';
 
   interface Props {
     active: NavRoute;
@@ -34,120 +28,17 @@
   );
   const totalActiveCount = $derived(twActiveCount + kkActiveCount);
 
-  const allPaused = $derived(
-    Boolean(tw && kk && tw.state === 'Paused' && kk.state === 'Paused'),
-  );
-  const nextCheckIso = $derived(snapshot ? earliestNextActionAt(snapshot) : null);
-
   function stateLabel(snap: PlatformSnapshot | null): string {
     if (!snap) return 'Off';
     return snap.state === 'LoggedOut' ? 'Off' : snap.state;
-  }
-
-  function stateTone(snap: PlatformSnapshot | null): string {
-    if (!snap) return 'tone-neutral';
-    switch (snap.state) {
-      case 'Mining':
-        return 'tone-success';
-      case 'Claiming':
-      case 'Selecting':
-        return 'tone-info';
-      case 'Idle':
-      case 'Paused':
-        return 'tone-warning';
-      case 'Error':
-        return 'tone-error';
-      default:
-        return 'tone-neutral';
-    }
-  }
-
-  function dotClass(snap: PlatformSnapshot | null): string {
-    if (!snap) return 'dot-neutral';
-    switch (snap.state) {
-      case 'Mining':
-        return 'dot-success';
-      case 'Claiming':
-      case 'Selecting':
-        return 'dot-info';
-      case 'Idle':
-      case 'Paused':
-        return 'dot-warning';
-      case 'Error':
-        return 'dot-error';
-      default:
-        return 'dot-neutral';
-    }
-  }
-
-  async function togglePauseAll() {
-    try {
-      if (allPaused) {
-        await Promise.all([api.resume('twitch'), api.resume('kick')]);
-      } else {
-        await Promise.all([api.pause('twitch'), api.pause('kick')]);
-      }
-    } catch (err) {
-      notifyUi(String(err), 'error');
-    }
-  }
-
-  async function handleHideToTray() {
-    try {
-      await api.hideToTray();
-    } catch (err) {
-      notifyUi(String(err), 'error');
-    }
   }
 </script>
 
 <aside class="sidebar" class:collapsed={$sidebarCollapsed} aria-label="Main navigation">
   <div class="brand-row">
-    <div class="brand">
-      <svg class="mark" viewBox="0 0 32 32" width="32" height="32" aria-hidden="true">
-        <defs>
-          <linearGradient id="dp-bg-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#171e38" />
-            <stop offset="100%" stop-color="#090d1a" />
-          </linearGradient>
-          <linearGradient id="dp-rim-grad" x1="0" y1="0" x2="1" y2="1">
-            <stop offset="0%" stop-color="#67e8f9" stop-opacity="0.55" />
-            <stop offset="50%" stop-color="#818cf8" stop-opacity="0.28" />
-            <stop offset="100%" stop-color="#a855f7" stop-opacity="0.48" />
-          </linearGradient>
-          <linearGradient id="dp-drop-grad" x1="0.15" y1="0.1" x2="0.88" y2="0.88">
-            <stop offset="0%" stop-color="#22d3ee" />
-            <stop offset="35%" stop-color="#22c55e" />
-            <stop offset="68%" stop-color="#6366f1" />
-            <stop offset="100%" stop-color="#a855f7" />
-          </linearGradient>
-        </defs>
-        <rect
-          x="1.5"
-          y="1.5"
-          width="29"
-          height="29"
-          rx="9"
-          fill="url(#dp-bg-grad)"
-          stroke="url(#dp-rim-grad)"
-          stroke-width="1.2"
-        />
-        <path
-          d="M16 6.2C16 6.2 23 14.2 23 19.1C23 22.97 19.87 26.1 16 26.1C12.13 26.1 9 22.97 9 19.1C9 14.2 16 6.2 16 6.2Z"
-          fill="url(#dp-drop-grad)"
-        />
-        <path
-          d="M16 14.3L20.2 20.9L18.1 21.6L16 18.2L13.9 21.6L11.8 20.9L16 14.3Z"
-          fill="#0b1020"
-        />
-      </svg>
-      {#if !$sidebarCollapsed}
-        <div class="brand-text">
-          <span class="brand-name">Dropilot</span>
-          <span class="brand-sub">Auto Drops</span>
-        </div>
-      {/if}
-    </div>
+    <button type="button" class="brand-btn" onclick={() => onnavigate('dashboard')}>
+      <BrandMark size={20} showWordmark={!$sidebarCollapsed} compact={$sidebarCollapsed} />
+    </button>
 
     <button
       type="button"
@@ -166,121 +57,128 @@
 
   <nav class="nav">
     {#if !$sidebarCollapsed}
-      <div class="nav-group-label">Overview</div>
+      <div class="nav-group-label">VIEWS</div>
     {/if}
 
     <button
       type="button"
-      class="nav-item nav-dashboard"
+      class="nav-item"
       class:active={active === 'dashboard'}
       onclick={() => onnavigate('dashboard')}
       title="Dashboard (Ctrl+1)"
     >
-      <span class="nav-ico ico-cyan" aria-hidden="true"><LayoutDashboard size={16} /></span>
+      <span class="nav-ico" aria-hidden="true"><LayoutDashboard size={14} /></span>
       {#if !$sidebarCollapsed}
         <span class="nav-label">Dashboard</span>
+        <span class="kbd-hint">^1</span>
       {/if}
     </button>
 
     <button
       type="button"
-      class="nav-item nav-drops"
+      class="nav-item"
       class:active={active === 'drops'}
       onclick={() => onnavigate('drops')}
       title="All Drops (Ctrl+2)"
     >
-      <span class="nav-ico ico-pink" aria-hidden="true"><Gift size={16} /></span>
+      <span class="nav-ico" aria-hidden="true"><Gift size={14} /></span>
       {#if !$sidebarCollapsed}
         <span class="nav-label">All Drops</span>
         {#if totalActiveCount > 0}
-          <span class="nav-count count-pink tabular">{totalActiveCount}</span>
+          <span class="nav-count tabular">{totalActiveCount}</span>
         {/if}
+        <span class="kbd-hint">^2</span>
       {/if}
     </button>
 
     <button
       type="button"
-      class="nav-item nav-history"
+      class="nav-item"
       class:active={active === 'history'}
       onclick={() => onnavigate('history')}
       title="History & Stats (Ctrl+3)"
     >
-      <span class="nav-ico ico-cyan" aria-hidden="true"><BarChart3 size={16} /></span>
+      <span class="nav-ico" aria-hidden="true"><BarChart3 size={14} /></span>
       {#if !$sidebarCollapsed}
         <span class="nav-label">History</span>
+        <span class="kbd-hint">^3</span>
       {/if}
     </button>
 
     {#if !$sidebarCollapsed}
-      <div class="nav-group-label">Platforms</div>
+      <div class="nav-group-label">MINERS</div>
     {:else}
       <div class="nav-divider" aria-hidden="true"></div>
     {/if}
 
     <button
       type="button"
-      class="nav-item nav-twitch"
+      class="nav-item"
       class:active={active === 'twitch'}
       onclick={() => onnavigate('twitch')}
       title="Twitch (Ctrl+4)"
     >
-      <span class="nav-ico" aria-hidden="true"><span class="plat-pip pip-twitch"></span></span>
+      <span class="nav-ico" aria-hidden="true"><span class="plat-dot dot-twitch"></span></span>
       {#if !$sidebarCollapsed}
         <span class="nav-label">Twitch</span>
         {#if twActiveCount > 0}
-          <span class="nav-count count-twitch tabular">{twActiveCount}</span>
+          <span class="nav-count tabular">{twActiveCount}</span>
         {/if}
+        <span class="kbd-hint">^4</span>
       {/if}
     </button>
 
     <button
       type="button"
-      class="nav-item nav-kick"
+      class="nav-item"
       class:active={active === 'kick'}
       onclick={() => onnavigate('kick')}
       title="Kick (Ctrl+5)"
     >
-      <span class="nav-ico" aria-hidden="true"><span class="plat-pip pip-kick"></span></span>
+      <span class="nav-ico" aria-hidden="true"><span class="plat-dot dot-kick"></span></span>
       {#if !$sidebarCollapsed}
         <span class="nav-label">Kick</span>
         {#if kkActiveCount > 0}
-          <span class="nav-count count-kick tabular">{kkActiveCount}</span>
+          <span class="nav-count tabular">{kkActiveCount}</span>
         {/if}
+        <span class="kbd-hint">^5</span>
       {/if}
     </button>
 
     {#if !$sidebarCollapsed}
-      <div class="nav-group-label">System</div>
+      <div class="nav-group-label">SYSTEM</div>
     {:else}
       <div class="nav-divider" aria-hidden="true"></div>
     {/if}
 
     <button
       type="button"
-      class="nav-item nav-logs"
+      class="nav-item"
       class:active={active === 'logs'}
       onclick={() => onnavigate('logs')}
       title="Logs (Ctrl+6)"
     >
-      <span class="nav-ico ico-info" aria-hidden="true"><Clock size={16} /></span>
+      <span class="nav-ico" aria-hidden="true"><Terminal size={14} /></span>
       {#if !$sidebarCollapsed}
         <span class="nav-label">Logs</span>
         {#if $unreadAlertCount > 0}
           <span class="nav-count count-warn tabular">{$unreadAlertCount}</span>
         {/if}
+        <span class="kbd-hint">^6</span>
       {/if}
     </button>
 
     <button
       type="button"
-      class="nav-item nav-settings"
+      class="nav-item"
       class:active={active === 'settings'}
       onclick={() => onnavigate('settings')}
       title="Settings (Ctrl+7)"
     >
-      <span class="nav-ico ico-warn" aria-hidden="true"><SettingsIcon size={16} /></span>
+      <span class="nav-ico" aria-hidden="true"><SettingsIcon size={14} /></span>
       {#if !$sidebarCollapsed}
         <span class="nav-label">Settings</span>
+        <span class="kbd-hint">^7</span>
       {/if}
     </button>
   </nav>
@@ -289,101 +187,25 @@
     {#if !$sidebarCollapsed}
       <div class="accounts-dock">
         <button type="button" class="dock-row" onclick={() => onnavigate('twitch')}>
-          <div class="avatar-wrap">
-            <Monogram
-              src={tw?.account?.avatarUrl}
-              name={tw?.account?.displayName ?? 'TW'}
-              width={26}
-              height={26}
-              rounded
-            />
-            <span class="avatar-dot {dotClass(tw)}" aria-hidden="true"></span>
-          </div>
-          <div class="dock-meta">
-            <span class="dock-login">{tw?.account ? `@${tw.account.login}` : 'Connect Twitch'}</span>
-            <span class="dock-plat">Twitch</span>
-          </div>
-          <span class="dock-state {stateTone(tw)}">{stateLabel(tw)}</span>
+          <span class="plat-dot dot-twitch" aria-hidden="true"></span>
+          <span class="dock-login">{tw?.account ? `@${tw.account.login}` : 'Connect Twitch'}</span>
+          <span class="dock-state tabular">{stateLabel(tw)}</span>
         </button>
 
         <button type="button" class="dock-row dock-row-sep" onclick={() => onnavigate('kick')}>
-          <div class="avatar-wrap">
-            <Monogram
-              src={kk?.account?.avatarUrl}
-              name={kk?.account?.displayName ?? 'KK'}
-              width={26}
-              height={26}
-              rounded
-            />
-            <span class="avatar-dot {dotClass(kk)}" aria-hidden="true"></span>
-          </div>
-          <div class="dock-meta">
-            <span class="dock-login">{kk?.account ? `@${kk.account.login}` : 'Connect Kick'}</span>
-            <span class="dock-plat">Kick</span>
-          </div>
-          <span class="dock-state {stateTone(kk)}">{stateLabel(kk)}</span>
+          <span class="plat-dot dot-kick" aria-hidden="true"></span>
+          <span class="dock-login">{kk?.account ? `@${kk.account.login}` : 'Connect Kick'}</span>
+          <span class="dock-state tabular">{stateLabel(kk)}</span>
         </button>
       </div>
     {:else}
       <div class="collapsed-accts">
-        <button
-          type="button"
-          class="mini-avatar-btn"
-          onclick={() => onnavigate('twitch')}
-          title={`Twitch (${stateLabel(tw)})`}
-        >
-          <div class="avatar-wrap">
-            <Monogram src={tw?.account?.avatarUrl} name={tw?.account?.displayName ?? 'TW'} width={26} height={26} rounded />
-            <span class="avatar-dot {dotClass(tw)}" aria-hidden="true"></span>
-          </div>
+        <button type="button" class="mini-avatar-btn" onclick={() => onnavigate('twitch')} title={`Twitch (${stateLabel(tw)})`}>
+          <span class="plat-dot dot-twitch"></span>
         </button>
-        <button
-          type="button"
-          class="mini-avatar-btn"
-          onclick={() => onnavigate('kick')}
-          title={`Kick (${stateLabel(kk)})`}
-        >
-          <div class="avatar-wrap">
-            <Monogram src={kk?.account?.avatarUrl} name={kk?.account?.displayName ?? 'KK'} width={26} height={26} rounded />
-            <span class="avatar-dot {dotClass(kk)}" aria-hidden="true"></span>
-          </div>
+        <button type="button" class="mini-avatar-btn" onclick={() => onnavigate('kick')} title={`Kick (${stateLabel(kk)})`}>
+          <span class="plat-dot dot-kick"></span>
         </button>
-      </div>
-    {/if}
-
-    <div class="foot-actions" class:collapsed={$sidebarCollapsed}>
-      <button
-        type="button"
-        class="pause-all-btn"
-        class:is-paused={allPaused}
-        onclick={togglePauseAll}
-        title={allPaused ? 'Resume all miners (Ctrl+P)' : 'Pause all miners (Ctrl+P)'}
-      >
-        {#if allPaused}
-          <Play size={13} />
-          {#if !$sidebarCollapsed}<span>Resume</span>{/if}
-        {:else}
-          <Pause size={13} />
-          {#if !$sidebarCollapsed}<span>Pause</span>{/if}
-        {/if}
-      </button>
-
-      <button
-        type="button"
-        class="tray-btn"
-        onclick={handleHideToTray}
-        aria-label="Hide to tray (ultra-light ~11 MB RAM)"
-        title="Hide UI to system tray — closes WebView2 and keeps farming at ~11 MB RAM"
-      >
-        <Minimize2 size={13} />
-        {#if !$sidebarCollapsed}<span>Tray</span>{/if}
-      </button>
-    </div>
-
-    {#if !$sidebarCollapsed}
-      <div class="meta-foot tabular">
-        <span>Next sync: <Countdown targetIso={nextCheckIso} /></span>
-        <span class="ver">v0.1.0</span>
       </div>
     {/if}
   </div>
@@ -393,21 +215,17 @@
   .sidebar {
     width: var(--sidebar-width);
     flex-shrink: 0;
-    background: linear-gradient(180deg, #10152a 0%, #0b0e1d 55%, #090c18 100%);
+    background: var(--sidebar-bg);
     border-right: 1px solid var(--border);
     display: flex;
     flex-direction: column;
-    padding: 14px 12px 12px;
-    gap: 12px;
-  }
-
-  :global(:root[data-theme="light"]) .sidebar {
-    background: var(--sidebar-bg);
+    padding: 10px 8px 8px;
+    gap: 8px;
   }
 
   .sidebar.collapsed {
     width: var(--sidebar-collapsed);
-    padding: 12px 8px;
+    padding: 10px 6px;
     align-items: center;
   }
 
@@ -415,55 +233,38 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-2);
-    padding: 2px 4px 6px;
+    gap: 8px;
+    padding: 0 2px 8px;
+    border-bottom: 1px solid var(--border);
     width: 100%;
   }
 
   .sidebar.collapsed .brand-row {
     flex-direction: column;
-    gap: 8px;
-    padding: 0 0 4px;
+    gap: 6px;
+    padding: 0 0 6px;
   }
 
-  .brand {
-    display: flex;
+  .brand-btn {
+    border: none;
+    background: transparent;
+    padding: 0;
+    display: inline-flex;
     align-items: center;
-    gap: 10px;
-  }
-
-  .brand-text {
-    display: flex;
-    flex-direction: column;
-    line-height: 1.1;
-  }
-
-  .brand-name {
-    font-size: 15px;
-    font-weight: 700;
-    letter-spacing: -0.02em;
-    color: var(--text);
-  }
-
-  .brand-sub {
-    font-size: 9px;
-    font-weight: 700;
-    letter-spacing: 0.1em;
-    text-transform: uppercase;
-    color: var(--text-faint);
-    margin-top: 2px;
+    min-width: 0;
   }
 
   .collapse-btn {
     border: 1px solid transparent;
     background: transparent;
     color: var(--text-faint);
-    width: 26px;
-    height: 26px;
-    border-radius: 8px;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--radius-xs);
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
   }
 
   .collapse-btn:hover {
@@ -481,12 +282,12 @@
   }
 
   .nav-group-label {
+    font-family: var(--font-mono);
     font-size: 10px;
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: 0.08em;
-    text-transform: uppercase;
     color: var(--text-faint);
-    padding: 10px 10px 4px;
+    padding: 10px 6px 3px;
   }
 
   .nav-group-label:first-child {
@@ -496,59 +297,68 @@
   .nav-divider {
     height: 1px;
     background: var(--border);
-    margin: 6px 8px;
+    margin: 6px 4px;
   }
 
   .nav-item {
     position: relative;
     display: flex;
     align-items: center;
-    gap: 10px;
-    height: 36px;
-    padding: 0 11px;
+    gap: 8px;
+    height: 28px;
+    padding: 0 8px;
     border: 1px solid transparent;
-    border-radius: 10px;
+    border-radius: var(--radius-xs);
     background: transparent;
     color: var(--text-muted);
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 12px;
+    font-weight: 500;
     text-align: left;
-  }
-
-  .nav-ico {
-    width: 18px;
-    height: 18px;
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-    opacity: 0.85;
-  }
-
-  .ico-cyan { color: var(--cyan-text); }
-  .ico-pink { color: var(--pink-text); }
-  .ico-info { color: var(--info-text); }
-  .ico-warn { color: var(--warning-text); }
-
-  .plat-pip {
-    width: 9px;
-    height: 9px;
-    border-radius: var(--radius-pill);
-  }
-
-  .pip-twitch {
-    background: var(--twitch);
-    box-shadow: 0 0 8px rgba(168, 85, 247, 0.7);
-  }
-
-  .pip-kick {
-    background: var(--kick);
-    box-shadow: 0 0 8px rgba(83, 252, 24, 0.55);
   }
 
   .sidebar.collapsed .nav-item {
     justify-content: center;
     padding: 0;
+  }
+
+  .nav-ico {
+    width: 16px;
+    height: 16px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-faint);
+  }
+
+  .nav-item:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .nav-item:hover .nav-ico {
+    color: var(--text-muted);
+  }
+
+  .nav-item.active {
+    background: var(--surface-2);
+    border-color: var(--border);
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+
+  .nav-item.active::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 4px;
+    bottom: 4px;
+    width: 2px;
+    background: var(--accent);
+  }
+
+  .nav-item.active .nav-ico {
+    color: var(--accent-text);
   }
 
   .nav-label {
@@ -559,26 +369,17 @@
   }
 
   .nav-count {
-    font-size: 10px;
-    font-weight: 700;
-    padding: 1px 6px;
-    border-radius: var(--radius-pill);
-    line-height: 1.5;
+    font-size: 10.5px;
+    font-weight: 600;
+    padding: 0 5px;
+    border-radius: var(--radius-xs);
+    background: var(--surface);
+    color: var(--text-muted);
+    line-height: 1.55;
   }
 
-  .count-pink {
-    background: var(--pink-tint);
-    color: var(--pink-text);
-  }
-
-  .count-twitch {
-    background: var(--twitch-tint);
-    color: var(--twitch-text);
-  }
-
-  .count-kick {
-    background: var(--kick-tint);
-    color: var(--kick-text);
+  .nav-item.active .nav-count {
+    color: var(--text);
   }
 
   .count-warn {
@@ -586,104 +387,35 @@
     color: var(--warning-text);
   }
 
-  .nav-item:hover {
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--text);
+  .kbd-hint {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-faint);
   }
-
-  :global(:root[data-theme="light"]) .nav-item:hover {
-    background: var(--surface-2);
-  }
-
-  .nav-item:hover .nav-ico {
-    opacity: 1;
-  }
-
-  .nav-item.active {
-    color: var(--text);
-    background: var(--accent-tint);
-    border-color: var(--border-hover);
-  }
-
-  .nav-item.active .nav-ico {
-    opacity: 1;
-  }
-
-  .nav-item.nav-dashboard.active {
-    background: linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%);
-    border-color: var(--border-hover);
-  }
-
-  .nav-item.nav-drops.active {
-    background: linear-gradient(90deg, var(--pink-tint) 0%, transparent 100%);
-    border-color: rgba(245, 158, 11, 0.30);
-  }
-
-  .nav-item.nav-twitch.active {
-    background: linear-gradient(90deg, rgba(168, 85, 247, 0.17) 0%, transparent 100%);
-    border-color: rgba(168, 85, 247, 0.30);
-  }
-
-  .nav-item.nav-kick.active {
-    background: linear-gradient(90deg, rgba(83, 252, 24, 0.13) 0%, transparent 100%);
-    border-color: rgba(83, 252, 24, 0.28);
-  }
-
-  .nav-item.nav-logs.active {
-    background: linear-gradient(90deg, var(--info-tint) 0%, transparent 100%);
-    border-color: rgba(56, 189, 248, 0.28);
-  }
-
-  .nav-item.nav-settings.active {
-    background: linear-gradient(90deg, var(--accent-tint) 0%, transparent 100%);
-    border-color: var(--border-hover);
-  }
-
-  .nav-item.active::before {
-    content: '';
-    position: absolute;
-    left: 0;
-    top: 8px;
-    bottom: 8px;
-    width: 3px;
-    border-radius: var(--radius-pill);
-    background: var(--accent);
-  }
-
-  .nav-item.nav-dashboard.active::before { background: var(--cyan); }
-  .nav-item.nav-drops.active::before { background: var(--pink); }
-  .nav-item.nav-twitch.active::before { background: var(--twitch); }
-  .nav-item.nav-kick.active::before { background: var(--kick); }
-  .nav-item.nav-logs.active::before { background: var(--info); }
-  .nav-item.nav-settings.active::before { background: var(--warning); }
 
   .footer {
     display: flex;
     flex-direction: column;
-    gap: 8px;
+    gap: 6px;
     width: 100%;
-    padding-top: 10px;
+    padding-top: 8px;
     border-top: 1px solid var(--border);
   }
 
   .accounts-dock {
     display: flex;
     flex-direction: column;
-    border-radius: 12px;
-    background: rgba(255, 255, 255, 0.03);
+    border-radius: var(--radius-xs);
+    background: var(--surface);
     border: 1px solid var(--border);
     overflow: hidden;
-  }
-
-  :global(:root[data-theme="light"]) .accounts-dock {
-    background: var(--surface-2);
   }
 
   .dock-row {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 7px 9px;
+    gap: 6px;
+    padding: 5px 7px;
     width: 100%;
     border: none;
     background: transparent;
@@ -695,88 +427,26 @@
   }
 
   .dock-row:hover {
-    background: var(--surface-hover);
-  }
-
-  .avatar-wrap {
-    position: relative;
-    display: inline-flex;
-    flex-shrink: 0;
-  }
-
-  .avatar-dot {
-    position: absolute;
-    right: -1px;
-    bottom: -1px;
-    width: 8px;
-    height: 8px;
-    border-radius: var(--radius-pill);
-    border: 2px solid #0d1224;
-  }
-
-  :global(:root[data-theme="light"]) .avatar-dot {
-    border-color: var(--surface);
-  }
-
-  .dot-success { background: var(--success); }
-  .dot-info { background: var(--info); }
-  .dot-warning { background: var(--warning); }
-  .dot-error { background: var(--error); }
-  .dot-neutral { background: var(--neutral-dot); }
-
-  .dock-meta {
-    flex: 1;
-    min-width: 0;
-    display: flex;
-    flex-direction: column;
-    line-height: 1.2;
+    background: var(--surface-2);
   }
 
   .dock-login {
-    font-size: 12px;
-    font-weight: 600;
+    flex: 1;
+    min-width: 0;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
     color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
   }
 
-  .dock-plat {
-    font-size: 10px;
-    color: var(--text-faint);
-  }
-
   .dock-state {
     font-size: 10px;
-    font-weight: 700;
-    padding: 1px 6px;
-    border-radius: var(--radius-pill);
+    font-weight: 600;
+    color: var(--text-muted);
     flex-shrink: 0;
-  }
-
-  .tone-success {
-    background: var(--success-tint);
-    color: var(--success-text);
-  }
-
-  .tone-info {
-    background: var(--info-tint);
-    color: var(--info-text);
-  }
-
-  .tone-warning {
-    background: var(--warning-tint);
-    color: var(--warning-text);
-  }
-
-  .tone-error {
-    background: var(--error-tint);
-    color: var(--error-text);
-  }
-
-  .tone-neutral {
-    background: var(--neutral-tint);
-    color: var(--neutral-text);
   }
 
   .collapsed-accts {
@@ -787,99 +457,17 @@
   }
 
   .mini-avatar-btn {
-    border: 1px solid transparent;
-    background: transparent;
-    padding: 3px;
-    border-radius: var(--radius-pill);
+    width: 28px;
+    height: 28px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    border-radius: var(--radius-xs);
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
   .mini-avatar-btn:hover {
-    background: var(--surface-2);
-    border-color: var(--border);
-  }
-
-  .foot-actions {
-    display: flex;
-    align-items: center;
-    gap: 6px;
-    width: 100%;
-  }
-
-  .foot-actions.collapsed {
-    flex-direction: column;
-  }
-
-  .pause-all-btn,
-  .tray-btn {
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    gap: 6px;
-    height: 32px;
-    border-radius: 10px;
-    border: 1px solid var(--border);
-    background: rgba(255, 255, 255, 0.04);
-    color: var(--text);
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .pause-all-btn {
-    flex: 1;
-    min-width: 0;
-  }
-
-  .tray-btn {
-    padding: 0 10px;
-    color: var(--text-muted);
-    flex-shrink: 0;
-  }
-
-  .foot-actions.collapsed .pause-all-btn,
-  .foot-actions.collapsed .tray-btn {
-    width: 100%;
-    padding: 0;
-  }
-
-  :global(:root[data-theme="light"]) .pause-all-btn,
-  :global(:root[data-theme="light"]) .tray-btn {
-    background: var(--surface-2);
-  }
-
-  .pause-all-btn:hover,
-  .tray-btn:hover {
-    background: var(--surface-hover);
     border-color: var(--border-hover);
-    color: var(--text);
-  }
-
-  .pause-all-btn.is-paused {
-    background: var(--warning-tint);
-    border-color: rgba(251, 191, 36, 0.35);
-    color: var(--warning-text);
-  }
-
-  .meta-foot {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    font-size: 10px;
-    color: var(--text-faint);
-    padding: 0 3px;
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .nav-item,
-    .pause-all-btn,
-    .tray-btn,
-    .dock-row {
-      transition:
-        background-color var(--duration-fast) var(--ease-out),
-        color var(--duration-fast) var(--ease-out),
-        border-color var(--duration-fast) var(--ease-out);
-    }
   }
 </style>

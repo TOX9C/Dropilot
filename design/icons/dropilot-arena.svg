@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <!-- Dropilot — Arena: Bold angular drop forming a forward-leaning "D" wing -->
+  <path
+    fill="#E53945"
+    fill-rule="evenodd"
+    clip-rule="evenodd"
+    d="M84 22 L186 108 C206 125 214 144 214 164 C214 204 180 232 134 232 L60 232 L60 40 C60 24 72 12 84 22 Z M102 92 L102 190 L132 190 C156 190 170 178 170 160 C170 148 164 139 152 129 Z"
+  />
+</svg>

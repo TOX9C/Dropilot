@@ -1,0 +1,163 @@
+/* ============================================================================
+ * Design 3 — "Console"
+ * Dense pro utility / trading terminal & IDE feel: crisp 1px grids,
+ * monospace numbers/timers/logs, tight rows, minimal chrome, phosphor amber.
+ * ============================================================================ */
+
+:root[data-design="console"] {
+  /* Typography */
+  --font-display: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+
+  --text-xs: 11px;
+  --text-sm: 12px;
+  --text-base: 13px;
+  --text-md: 14px;
+  --text-lg: 16px;
+  --text-xl: 22px;
+
+  /* Geometry & Spacing */
+  --radius-xs: 2px;
+  --radius-sm: 3px;
+  --radius-md: 4px;
+  --radius-lg: 4px;
+  --radius-pill: 3px;
+
+  --card-pad: 10px;
+  --page-gap: 10px;
+  --grid-gap: 8px;
+  --content-pad-y: 12px;
+  --content-pad-x: 14px;
+  --content-max: 1600px;
+
+  --sidebar-width: 192px;
+  --sidebar-collapsed: 52px;
+
+  --btn-sm-h: 26px;
+  --btn-md-h: 30px;
+  --progress-h: 5px;
+  --progress-tall-h: 7px;
+  --icon-stroke: 1.5;
+}
+
+/* Console — Dark (Default) */
+:root[data-theme="console-dark"] {
+  color-scheme: dark;
+
+  --bg: #0d1117;
+  --sidebar-bg: #090c10;
+  --surface: #12171f;
+  --surface-2: #181f2a;
+  --surface-hover: #1f2836;
+  --border: #252e3c;
+  --border-hover: #3e4d63;
+
+  --text: #e6edf3;
+  --text-muted: #8b949e;
+  --text-faint: #68737f;
+
+  --card-shadow: none;
+  --popover-shadow: 0 8px 24px rgba(0, 0, 0, 0.65);
+  --backdrop: rgba(5, 8, 12, 0.78);
+  --shimmer-a: #141a23;
+  --shimmer-b: #1c2431;
+
+  /* Single technical instrument accent: phosphor amber */
+  --accent: #e5a93b;
+  --accent-hover: #f0bc58;
+  --accent-text: #f0c46c;
+  --accent-tint: rgba(229, 169, 59, 0.14);
+  --accent-on: #0d1117;
+
+  /* Crisp terminal statuses */
+  --success: #3fb950;
+  --success-text: #7ee787;
+  --success-tint: rgba(63, 185, 80, 0.14);
+
+  --warning: #d29922;
+  --warning-text: #e3b341;
+  --warning-tint: rgba(210, 153, 34, 0.14);
+
+  --error: #f85149;
+  --error-text: #ffa198;
+  --error-tint: rgba(248, 81, 73, 0.14);
+
+  --info: #58a6ff;
+  --info-text: #79c0ff;
+  --info-tint: rgba(88, 166, 255, 0.14);
+
+  --neutral-dot: #68737f;
+  --neutral-text: #8b949e;
+  --neutral-tint: rgba(139, 148, 158, 0.12);
+
+  /* Platform identifiers ONLY */
+  --twitch: #a371f7;
+  --twitch-text: #d2a8ff;
+  --twitch-tint: rgba(163, 113, 247, 0.14);
+  --twitch-on: #ffffff;
+
+  --kick: #3fb950;
+  --kick-text: #7ee787;
+  --kick-tint: rgba(63, 185, 80, 0.14);
+  --kick-on: #0d1117;
+}
+
+/* Console — Light */
+:root[data-theme="console-light"] {
+  color-scheme: light;
+
+  --bg: #f6f8fa;
+  --sidebar-bg: #eef1f5;
+  --surface: #ffffff;
+  --surface-2: #f0f3f6;
+  --surface-hover: #e5eaef;
+  --border: #d0d7de;
+  --border-hover: #8c959f;
+
+  --text: #1f2328;
+  --text-muted: #57606a;
+  --text-faint: #6e7781;
+
+  --card-shadow: none;
+  --popover-shadow: 0 8px 20px rgba(31, 35, 40, 0.12);
+  --backdrop: rgba(31, 35, 40, 0.45);
+  --shimmer-a: #edf0f3;
+  --shimmer-b: #dde3e9;
+
+  --accent: #9a6700;
+  --accent-hover: #7d5300;
+  --accent-text: #7d5300;
+  --accent-tint: rgba(154, 103, 0, 0.11);
+  --accent-on: #ffffff;
+
+  --success: #1a7f37;
+  --success-text: #116329;
+  --success-tint: rgba(26, 127, 55, 0.11);
+
+  --warning: #9a6700;
+  --warning-text: #7d5300;
+  --warning-tint: rgba(154, 103, 0, 0.12);
+
+  --error: #cf222e;
+  --error-text: #a40e26;
+  --error-tint: rgba(207, 34, 46, 0.11);
+
+  --info: #0969da;
+  --info-text: #0550ae;
+  --info-tint: rgba(9, 105, 218, 0.11);
+
+  --neutral-dot: #6e7781;
+  --neutral-text: #57606a;
+  --neutral-tint: rgba(87, 96, 106, 0.11);
+
+  --twitch: #8250df;
+  --twitch-text: #6639ba;
+  --twitch-tint: rgba(130, 80, 223, 0.11);
+  --twitch-on: #ffffff;
+
+  --kick: #1a7f37;
+  --kick-text: #116329;
+  --kick-tint: rgba(26, 127, 55, 0.11);
+  --kick-on: #ffffff;
+}

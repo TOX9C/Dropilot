@@ -1,5 +1,6 @@
 <script lang="ts">
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
+  import Gift from 'lucide-svelte/icons/gift';
   import LogIn from 'lucide-svelte/icons/log-in';
   import Pause from 'lucide-svelte/icons/pause';
   import Pin from 'lucide-svelte/icons/pin';
@@ -27,7 +28,6 @@
   } from '../lib/selectors';
   import {
     appSettings,
-    dropsViewMode,
     lastSnapshotAt,
     notifyUi,
     toggleCampaignFarmAction,
@@ -193,8 +193,8 @@
       appSettings.set(updated);
       notifyUi(
         snapshot.account
-          ? `Watching "${match?.game.name ?? clean}" on ${platName} — will auto-mine whenever a drop goes live.`
-          : `Added "${clean}"! Log in to ${platName} to auto-farm when drops go live.`,
+          ? `Watching "${match?.game.name ?? clean}" on ${platName}`
+          : `Added "${clean}" — log in to ${platName} to farm when drops go live.`,
       );
     } catch (err) {
       notifyUi(String(err), 'error');
@@ -210,30 +210,27 @@
 <div class="page">
   <header class="page-header">
     <div class="page-title-wrap">
-      <div class="page-icon page-icon-{platform}">
-        <span class="plat-dot dot-{platform}" aria-hidden="true"></span>
-      </div>
       <div>
         <div class="title-inline">
+          <span class="plat-dot dot-{platform}" aria-hidden="true"></span>
           <h1>{platName}</h1>
           <StatusPill state={snapshot.state} />
         </div>
-        <p class="page-subtitle">Manage {platName} campaigns, priority order, and active stream</p>
       </div>
     </div>
 
     <div class="page-actions">
       {#if snapshot.account}
         <Button variant="secondary" size="sm" onclick={handleRetry}>
-          <RefreshCw size={14} />
+          <RefreshCw size={13} />
           <span>Refresh</span>
         </Button>
         <Button variant="secondary" size="sm" onclick={handleSwitchChannel} disabled={snapshot.state === 'Paused'}>
-          <RefreshCw size={14} />
+          <RefreshCw size={13} />
           <span>Switch</span>
         </Button>
         <Button variant="secondary" size="sm" onclick={handlePauseResume}>
-          {#if snapshot.state === 'Paused'}<Play size={14} /><span>Resume</span>{:else}<Pause size={14} /><span>Pause</span>{/if}
+          {#if snapshot.state === 'Paused'}<Play size={13} /><span>Resume</span>{:else}<Pause size={13} /><span>Pause</span>{/if}
         </Button>
       {/if}
 
@@ -250,36 +247,36 @@
     <div class="banner-warn" role="status">
       <AlertTriangle size={16} />
       <div class="banner-text">
-        <strong>Claim needs you</strong>
+        <strong>Manual claim required</strong>
         <span>{platName} requested a manual verification step to claim a completed drop.</span>
       </div>
       <Button variant="primary" size="sm" onclick={handleOpenInventory}>
-        <span>Open drops inventory ↗</span>
+        <span>Open drops inventory</span>
       </Button>
     </div>
   {/if}
 
   {#if snapshot.state === 'LoggedOut' && snapshot.campaigns.length === 0}
-    <section class="card logged-out-card stripe-{platform}">
-      <div class="lo-icon"><LogIn size={24} /></div>
-      <h2>Sign in to {platName}</h2>
+    <section class="designed-empty">
+      <span class="empty-ico" aria-hidden="true"><LogIn size={18} /></span>
+      <strong>Sign in to {platName}</strong>
       <p>
         Open {platName}'s official site inside Dropilot's isolated window to load active campaigns and track drops.
       </p>
-      <Button variant={platform} size="md" onclick={handleLogin}>
-        <LogIn size={15} />
+      <Button variant="primary" size="md" onclick={handleLogin}>
+        <LogIn size={14} />
         <span>Log in to {platName}</span>
       </Button>
     </section>
   {:else}
     {#if snapshot.state === 'LoggedOut'}
-      <div class="card public-bar stripe-{platform} wash-{platform}">
+      <div class="card public-bar">
         <div class="banner-text">
           <strong>Browsing public {platName} drops catalog</strong>
           <span>Sign in with your {platName} account to farm drops and sync progress automatically.</span>
         </div>
-        <Button variant={platform} size="sm" onclick={handleLogin}>
-          <LogIn size={14} />
+        <Button variant="primary" size="sm" onclick={handleLogin}>
+          <LogIn size={13} />
           <span>Log in to {platName}</span>
         </Button>
       </div>
@@ -315,40 +312,42 @@
           {counts}
           {games}
           {selectedGame}
-          viewMode={$dropsViewMode}
+          viewMode="compact"
           onfilter={(next) => (filter = next)}
           onsort={(next) => (sort = next)}
           onsearch={(next) => (search = next)}
           ongame={(next) => (selectedGame = next)}
-          onviewmode={(next) => dropsViewMode.set(next)}
         />
 
         {#if filteredCampaigns.length === 0}
-          <div class="card empty-campaigns">
+          <div class="designed-empty">
+            <span class="empty-ico" aria-hidden="true"><Gift size={18} /></span>
             {#if snapshot.campaigns.length === 0}
-              <p class="empty-msg">
-                No campaigns right now. Last checked {formatRelativeTime($lastSnapshotAt, $slowNowMs)}.
+              <strong>No active {platName} campaigns right now</strong>
+              <p>
+                Last checked {formatRelativeTime($lastSnapshotAt, $slowNowMs)}.
                 {#if snapshot.nextActionAt}
                   Next check in <Countdown targetIso={snapshot.nextActionAt} />.
                 {/if}
               </p>
               <Button variant="secondary" size="sm" onclick={handleRetry}>
-                <RefreshCw size={14} /> Refresh now
+                <RefreshCw size={13} /> Refresh now
               </Button>
             {:else}
-              <p class="empty-msg">No campaigns match your current filter or search query.</p>
+              <strong>No campaigns match these filters</strong>
+              <p>Try switching status or clearing your search query.</p>
               <Button variant="secondary" size="sm" onclick={() => { filter = 'all'; selectedGame = 'all'; search = ''; }}>
                 Show all campaigns
               </Button>
             {/if}
           </div>
         {:else}
-          <div class="campaigns-grid" class:compact-list={$dropsViewMode === 'compact'}>
+          <div class="campaigns-grid compact-list">
             {#each filteredCampaigns as camp (camp.id)}
               <CampaignCard
                 campaign={camp}
                 showPlatformBadge={false}
-                compact={$dropsViewMode === 'compact'}
+                compact={true}
                 isFarmSelected={isCampaignFarmed(camp, settings)}
                 isExcluded={platSettings.excludedCampaigns.includes(camp.id)}
                 isGamePrioritized={isGamePrioritizedFor(camp, settings)}
@@ -385,7 +384,7 @@
               {#each participatingChannels.slice(0, 8) as ch (ch.id + ch.login)}
                 {@const pinned = activePinnedChannel?.toLowerCase() === ch.login.toLowerCase()}
                 <div class="cand-row">
-                  <Monogram src={ch.avatarUrl} name={ch.displayName} width={28} height={28} rounded />
+                  <Monogram src={ch.avatarUrl} name={ch.displayName} width={26} height={26} rounded />
                   <div class="cand-meta">
                     <span class="cand-name">{ch.displayName}</span>
                     <span class="cand-sub tabular">
@@ -395,12 +394,12 @@
                   <button
                     type="button"
                     class="pin-btn"
-                    class:pinned={pinned}
+                    class:pinned
                     aria-label={pinned ? `Unpin ${ch.displayName}` : `Pin ${ch.displayName}`}
                     data-tip={pinned ? 'Unpin' : 'Pin channel'}
                     onclick={() => handlePinChannel(pinned ? null : ch.login)}
                   >
-                    <Pin size={13} />
+                    <Pin size={12} />
                   </button>
                 </div>
               {/each}
@@ -416,7 +415,7 @@
   .title-inline {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: 8px;
   }
 
   .banner-warn {
@@ -424,11 +423,11 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-3);
-    padding: var(--space-3) var(--space-4);
+    padding: 12px 14px;
     border-radius: var(--radius-md);
     font-size: var(--text-sm);
     background: var(--warning-tint);
-    border: 1px solid rgba(245, 181, 68, 0.35);
+    border: 1px solid var(--warning);
     color: var(--warning-text);
   }
 
@@ -440,19 +439,6 @@
     gap: 2px;
   }
 
-  .logged-out-card {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: var(--space-3);
-    padding: var(--space-8) var(--space-6);
-  }
-
-  .lo-icon {
-    color: var(--text-faint);
-  }
-
   .public-bar {
     display: flex;
     flex-wrap: wrap;
@@ -461,25 +447,13 @@
     gap: var(--space-3);
   }
 
-  .public-bar strong {
-    font-size: var(--text-base);
-  }
-
-  .public-bar span {
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-  }
-
-  .logged-out-card p {
-    color: var(--text-muted);
-    font-size: var(--text-sm);
-    max-width: 420px;
-  }
+  .public-bar strong { font-size: var(--text-base); }
+  .public-bar span { font-size: var(--text-xs); color: var(--text-muted); }
 
   .workspace-split {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 240px;
-    gap: 12px;
+    grid-template-columns: minmax(0, 1fr) 256px;
+    gap: var(--grid-gap, 14px);
     align-items: start;
   }
 
@@ -494,10 +468,10 @@
   .campaigns-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 10px;
+    gap: 12px;
   }
 
-  @media (max-width: 660px) {
+  @media (max-width: 720px) {
     .campaigns-grid {
       grid-template-columns: 1fr;
     }
@@ -508,26 +482,10 @@
     gap: 6px;
   }
 
-  .empty-campaigns {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: var(--space-3);
-    padding: var(--space-8) var(--space-4);
-    color: var(--text-faint);
-  }
-
-  .empty-msg {
-    color: var(--text-muted);
-    font-size: var(--text-sm);
-    max-width: 420px;
-  }
-
   .candidates-card {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: 10px;
   }
 
   .cand-empty {
@@ -544,10 +502,11 @@
   .cand-row {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
-    padding: 5px 8px;
+    gap: 8px;
+    padding: 6px 8px;
     border-radius: var(--radius-sm);
     background: var(--surface-2);
+    border: 1px solid var(--border);
   }
 
   .cand-meta {
@@ -566,9 +525,6 @@
   }
 
   .cand-sub {
-    display: inline-flex;
-    align-items: center;
-    gap: 4px;
     font-size: 11px;
     color: var(--text-muted);
   }
@@ -579,7 +535,7 @@
     color: var(--text-muted);
     width: 26px;
     height: 26px;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -589,6 +545,7 @@
   .pin-btn.pinned {
     color: var(--accent-text);
     border-color: var(--accent);
+    background: var(--accent-tint);
   }
 
   @media (max-width: 899px) {

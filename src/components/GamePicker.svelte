@@ -350,7 +350,6 @@
 
   .gp-bar.gp-open {
     border-color: var(--accent);
-    box-shadow: 0 0 0 2px var(--accent-tint);
   }
 
   .gp-search-ico {
@@ -442,7 +441,7 @@
     border-radius: var(--radius-md);
     background: var(--surface);
     border: 1px solid var(--border-hover);
-    box-shadow: 0 18px 42px rgba(0, 0, 0, 0.52), 0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    box-shadow: var(--popover-shadow);
     overflow: hidden;
     display: flex;
     flex-direction: column;

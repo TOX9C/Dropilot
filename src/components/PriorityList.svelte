@@ -365,7 +365,6 @@
 
   .watch-dot.watch-live {
     background: var(--success);
-    box-shadow: 0 0 6px var(--success);
   }
 
   .watch-live-text {

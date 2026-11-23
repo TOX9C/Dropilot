@@ -1,7 +1,7 @@
 <script lang="ts">
+  import ArrowDownToLine from 'lucide-svelte/icons/arrow-down-to-line';
   import Download from 'lucide-svelte/icons/download';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
-  import Sparkles from 'lucide-svelte/icons/sparkles';
   import X from 'lucide-svelte/icons/x';
   import { api } from '../lib/api';
   import {
@@ -27,13 +27,13 @@
   <aside class="update-toast card" aria-live="polite" aria-label="Application update available">
     <div class="ut-head">
       <div class="ut-title-row">
-        <span class="ut-ico" aria-hidden="true"><Sparkles size={15} /></span>
+        <span class="ut-ico" aria-hidden="true"><ArrowDownToLine size={15} /></span>
         <div>
           <div class="ut-title">
             <strong>Update available</strong>
             <Badge tone="accent">v{$updateInfo.latestVersion}</Badge>
           </div>
-          <span class="ut-sub">Current: v{$updateInfo.currentVersion}</span>
+          <span class="ut-sub tabular">Current: v{$updateInfo.currentVersion}</span>
         </div>
       </div>
 
@@ -76,8 +76,7 @@
         <div class="ut-bar-track">
           <div
             class="ut-bar-fill"
-            class:indeterminate={$updateProgress.percent === null}
-            style={$updateProgress.percent !== null ? `width: ${$updateProgress.percent}%` : ''}
+            style={$updateProgress.percent !== null ? `width: ${$updateProgress.percent}%` : 'width: 40%'}
           ></div>
         </div>
       </div>
@@ -91,7 +90,7 @@
         {:else}
           <Button variant="primary" size="sm" onclick={() => void api.openUrl($updateInfo.releaseUrl)}>
             <Download size={13} />
-            <span>Download v{$updateInfo.latestVersion} ↗</span>
+            <span>Download v{$updateInfo.latestVersion}</span>
           </Button>
         {/if}
         <Button variant="ghost" size="sm" onclick={() => updateBannerDismissed.set(true)}>
@@ -106,8 +105,8 @@
   .update-toast {
     position: fixed;
     right: 20px;
-    bottom: 66px;
-    width: 340px;
+    bottom: 64px;
+    width: 332px;
     max-width: calc(100vw - 32px);
     z-index: 95;
     padding: 14px 16px;
@@ -115,9 +114,7 @@
     flex-direction: column;
     gap: 10px;
     border-color: var(--border-hover);
-    box-shadow:
-      0 18px 40px rgba(2, 6, 16, 0.72),
-      0 0 0 1px rgba(34, 211, 238, 0.16);
+    box-shadow: var(--popover-shadow);
   }
 
   .ut-head {
@@ -134,11 +131,10 @@
   }
 
   .ut-ico {
-    width: 32px;
-    height: 32px;
+    width: 30px;
+    height: 30px;
     border-radius: var(--radius-sm);
     background: var(--accent-tint);
-    border: 1px solid var(--border-hover);
     color: var(--accent-text);
     display: inline-flex;
     align-items: center;
@@ -164,7 +160,7 @@
     color: var(--text-muted);
     cursor: pointer;
     padding: 4px;
-    border-radius: 6px;
+    border-radius: var(--radius-xs);
     display: inline-flex;
   }
 
@@ -212,17 +208,7 @@
   .ut-bar-fill {
     height: 100%;
     border-radius: var(--radius-pill);
-    background: var(--grad-accent);
+    background: var(--accent);
     transition: width 160ms linear;
-  }
-
-  .ut-bar-fill.indeterminate {
-    width: 45%;
-    animation: ut-indet 1.2s ease-in-out infinite;
-  }
-
-  @keyframes ut-indet {
-    0% { transform: translateX(-100%); }
-    100% { transform: translateX(260%); }
   }
 </style>

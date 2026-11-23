@@ -27,10 +27,10 @@
     }
   });
 
-  const displayState = $derived(state === 'LoggedOut' ? 'Logged out' : state);
+  const displayState = $derived(state === 'LoggedOut' ? 'Offline' : state);
 </script>
 
-<span class="pill tone-{tone}" class:compact={compact}>
+<span class="pill tone-{tone}" class:compact>
   <span class="dot" aria-hidden="true"></span>
   <span class="label">
     {#if labelPrefix}{labelPrefix}: {/if}{displayState}
@@ -42,22 +42,25 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    padding: 4px 10px;
+    padding: 2px 6px;
     border-radius: var(--radius-pill);
-    font-size: var(--text-xs);
+    border: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 10px;
     font-weight: 600;
-    line-height: 1.2;
+    text-transform: uppercase;
+    line-height: 1.25;
     white-space: nowrap;
   }
 
   .pill.compact {
-    padding: 3px 8px;
+    padding: 2px 7px;
   }
 
   .dot {
     width: 6px;
     height: 6px;
-    border-radius: var(--radius-pill);
+    border-radius: 999px;
     flex-shrink: 0;
   }
 
@@ -65,39 +68,29 @@
     background: var(--success-tint);
     color: var(--success-text);
   }
-  .tone-success .dot {
-    background: var(--success);
-  }
+  .tone-success .dot { background: var(--success); }
 
   .tone-info {
     background: var(--info-tint);
     color: var(--info-text);
   }
-  .tone-info .dot {
-    background: var(--info);
-  }
+  .tone-info .dot { background: var(--info); }
 
   .tone-warning {
     background: var(--warning-tint);
     color: var(--warning-text);
   }
-  .tone-warning .dot {
-    background: var(--warning);
-  }
+  .tone-warning .dot { background: var(--warning); }
 
   .tone-error {
     background: var(--error-tint);
     color: var(--error-text);
   }
-  .tone-error .dot {
-    background: var(--error);
-  }
+  .tone-error .dot { background: var(--error); }
 
   .tone-neutral {
     background: var(--neutral-tint);
     color: var(--neutral-text);
   }
-  .tone-neutral .dot {
-    background: var(--neutral-dot);
-  }
+  .tone-neutral .dot { background: var(--neutral-dot); }
 </style>

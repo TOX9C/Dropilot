@@ -2,7 +2,6 @@ import { writable } from 'svelte/store';
 import { api } from './api';
 import { subscribeBackendEvents } from './events';
 import type {
-  AccentPreset,
   AppSnapshot,
   Campaign,
   DropsViewMode,
@@ -57,16 +56,7 @@ function readRoute(): NavRoute {
   return 'dashboard';
 }
 
-function readAccentPreset(): AccentPreset {
-  const v = readStorage('dropilot.accentPreset', 'droppilot.accentPreset');
-  if (v === 'cyan' || v === 'emerald' || v === 'amber' || v === 'crimson' || v === 'violet') {
-    return v;
-  }
-  return 'cyan';
-}
-
 export const activeRoute = writable<NavRoute>(readRoute());
-export const accentPreset = writable<AccentPreset>(readAccentPreset());
 export const sidebarCollapsed = writable<boolean>(
   readBool('dropilot.sidebarCollapsed', 'droppilot.sidebarCollapsed', false),
 );
@@ -111,14 +101,6 @@ activeRoute.subscribe((route) => {
 sidebarCollapsed.subscribe((collapsed) => {
   try {
     localStorage.setItem('dropilot.sidebarCollapsed', String(collapsed));
-  } catch {
-    // ignore
-  }
-});
-
-accentPreset.subscribe((preset) => {
-  try {
-    localStorage.setItem('dropilot.accentPreset', preset);
   } catch {
     // ignore
   }

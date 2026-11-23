@@ -16,7 +16,7 @@
 
 <div
   class="track"
-  class:tall={tall}
+  class:tall
   role="progressbar"
   aria-label={label}
   aria-valuenow={Math.round(ratio * 100)}
@@ -29,15 +29,18 @@
 <style>
   .track {
     width: 100%;
-    height: 7px;
+    height: var(--progress-h, 7px);
     border-radius: var(--radius-pill);
     background: var(--surface-2);
-    border: 1px solid var(--border);
     overflow: hidden;
   }
 
   .track.tall {
-    height: 11px;
+    height: var(--progress-tall-h, 10px);
+  }
+
+  :global(:root[data-design="console"]) .track {
+    border: 1px solid var(--border);
   }
 
   .fill {
@@ -45,16 +48,14 @@
     height: 100%;
     border-radius: var(--radius-pill);
     transform-origin: left center;
+    background: var(--accent);
   }
 
-  .fill-accent {
-    background: var(--grad-accent);
-  }
-  .fill-twitch {
-    background: var(--grad-twitch);
-  }
+  /* Single-accent progress across all designs — no neon rainbow bars */
+  .fill-accent,
+  .fill-twitch,
   .fill-kick {
-    background: var(--grad-kick);
+    background: var(--accent);
   }
 
   @media (prefers-reduced-motion: no-preference) {

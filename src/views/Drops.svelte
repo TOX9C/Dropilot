@@ -3,7 +3,7 @@
   import Gift from 'lucide-svelte/icons/gift';
   import LogIn from 'lucide-svelte/icons/log-in';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
-  import Sparkles from 'lucide-svelte/icons/sparkles';
+  import Star from 'lucide-svelte/icons/star';
   import X from 'lucide-svelte/icons/x';
   import Badge from '../components/Badge.svelte';
   import Button from '../components/Button.svelte';
@@ -24,7 +24,6 @@
   import {
     addWatchedGameAction,
     appSettings,
-    dropsViewMode,
     notifyUi,
     toggleCampaignFarmAction,
     toggleGameFarmAction,
@@ -219,16 +218,12 @@
 <div class="page">
   <header class="page-header">
     <div class="page-title-wrap">
-      <div class="page-icon page-icon-pink"><Gift size={18} /></div>
-      <div>
-        <h1>All Drops</h1>
-        <p class="page-subtitle">Browse, filter, and pick Twitch &amp; Kick drops with live end timers</p>
-      </div>
+      <h1>All Drops</h1>
     </div>
 
     <div class="page-actions">
-      <Badge tone="accent">{counts.active} active</Badge>
-      <Badge tone="success">{farmingCount} farming</Badge>
+      <Badge tone="neutral">{counts.active} active</Badge>
+      <Badge tone="accent">{farmingCount} farming</Badge>
       {#if endingUnder24h > 0}
         <Badge tone="warning">
           <Clock size={11} />
@@ -236,19 +231,21 @@
         </Badge>
       {/if}
       {#if needTwitchNotice}
-        <Button variant="twitch" size="sm" onclick={() => handleLogin('twitch')}>
+        <Button variant="secondary" size="sm" onclick={() => handleLogin('twitch')}>
+          <span class="plat-dot dot-twitch" aria-hidden="true"></span>
           <LogIn size={13} />
           <span>Connect Twitch</span>
         </Button>
       {/if}
       {#if needKickNotice}
-        <Button variant="kick" size="sm" onclick={() => handleLogin('kick')}>
+        <Button variant="secondary" size="sm" onclick={() => handleLogin('kick')}>
+          <span class="plat-dot dot-kick" aria-hidden="true"></span>
           <LogIn size={13} />
           <span>Connect Kick</span>
         </Button>
       {/if}
       <Button variant="secondary" size="sm" onclick={refreshAll}>
-        <RefreshCw size={14} />
+        <RefreshCw size={13} />
         <span>Refresh</span>
       </Button>
     </div>
@@ -257,9 +254,8 @@
   <section class="card watchlist-bar" aria-label="Auto-mine game watchlist">
     <div class="wl-top">
       <div class="wl-title">
-        <Sparkles size={14} />
-        <strong>Auto-Mine Watchlist</strong>
-        <span class="wl-sub">Add any game — Dropilot automatically mines it whenever drops go live</span>
+        <Star size={14} />
+        <strong>Game Watchlist</strong>
       </div>
 
       <div class="wl-form">
@@ -267,9 +263,9 @@
           <GamePicker
             campaigns={allCampaigns}
             watchedNames={watchedGames.map((w) => w.name)}
-            placeholder="Search or add any game (e.g. Escape from Tarkov, Rust, VALORANT)..."
+            placeholder="Search or add any game (e.g. Rust, Counter-Strike 2)..."
             disabled={addingWatch}
-            buttonLabel="Watch game"
+            buttonLabel="Watch"
             onSelect={handleSelectWatchedGame}
           />
         </div>
@@ -292,7 +288,7 @@
             </span>
             <span class="wl-chip-name">{chip.name}</span>
             <span class="wl-chip-status" class:status-live={chip.hasLiveDrop}>
-              {chip.hasLiveDrop ? 'Live drop' : 'Waiting'}
+              {chip.hasLiveDrop ? 'Live' : 'Waiting'}
             </span>
             <button
               type="button"
@@ -317,23 +313,22 @@
     {platformCounts}
     {games}
     {selectedGame}
-    viewMode={$dropsViewMode}
+    viewMode="compact"
     onplatform={(next) => (platformFilter = next)}
     onfilter={(next) => (filter = next)}
     onsort={(next) => (sort = next)}
     onsearch={(next) => (search = next)}
     ongame={(next) => (selectedGame = next)}
-    onviewmode={(next) => dropsViewMode.set(next)}
   />
 
   {#if filteredCampaigns.length === 0}
-    <div class="card empty-state">
-      <Gift size={24} />
+    <div class="designed-empty">
+      <span class="empty-ico" aria-hidden="true"><Gift size={18} /></span>
       {#if allCampaigns.length === 0}
-        <strong>No drops loaded yet</strong>
-        <p>Log in to Twitch or Kick above, or hit Refresh to check for active campaigns.</p>
+        <strong>No campaigns loaded yet</strong>
+        <p>Log in to Twitch or Kick above, or hit Refresh to check for active drop campaigns.</p>
         <Button variant="secondary" size="sm" onclick={refreshAll}>
-          <RefreshCw size={14} /> Refresh
+          <RefreshCw size={13} /> Refresh
         </Button>
       {:else}
         <strong>No campaigns match these filters</strong>
@@ -353,12 +348,12 @@
       {/if}
     </div>
   {:else}
-    <div class="drops-grid" class:compact-list={$dropsViewMode === 'compact'}>
+    <div class="drops-grid compact-list">
       {#each filteredCampaigns as camp (camp.platform + ':' + camp.id)}
         <CampaignCard
           campaign={camp}
           showPlatformBadge={true}
-          compact={$dropsViewMode === 'compact'}
+          compact={true}
           isFarmSelected={isCampaignFarmed(camp, settings)}
           isExcluded={settings[camp.platform].excludedCampaigns.includes(camp.id)}
           isGamePrioritized={isGamePrioritizedFor(camp, settings)}
@@ -379,8 +374,7 @@
     display: flex;
     flex-direction: column;
     gap: 10px;
-    padding: 10px 14px;
-    background: linear-gradient(135deg, rgba(129, 140, 248, 0.10), rgba(168, 85, 247, 0.06) 55%, transparent);
+    padding: 11px 14px;
   }
 
   .wl-top {
@@ -396,17 +390,12 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 7px;
-    color: var(--accent-text);
+    color: var(--text-muted);
     font-size: var(--text-sm);
   }
 
   .wl-title strong {
     color: var(--text);
-  }
-
-  .wl-sub {
-    color: var(--text-muted);
-    font-size: var(--text-xs);
   }
 
   .wl-form {
@@ -416,20 +405,20 @@
     gap: 6px;
     flex: 1;
     justify-content: flex-end;
-    min-width: 280px;
+    min-width: 260px;
   }
 
   .wl-picker-wrap {
     flex: 1;
-    min-width: 240px;
-    max-width: 400px;
+    min-width: 220px;
+    max-width: 390px;
   }
 
   .wl-scope {
     display: inline-flex;
     align-items: center;
     padding: 2px;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-sm);
     background: var(--surface-2);
     border: 1px solid var(--border);
   }
@@ -441,7 +430,7 @@
     font-size: 11px;
     font-weight: 600;
     padding: 3px 8px;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-xs);
   }
 
   .scope-pill.active {
@@ -467,8 +456,7 @@
   }
 
   .wl-chip-live {
-    border-color: rgba(52, 211, 153, 0.38);
-    background: rgba(52, 211, 153, 0.08);
+    border-color: var(--border-hover);
   }
 
   .wl-dots {
@@ -483,7 +471,7 @@
   }
 
   .wl-chip-status {
-    font-size: 10px;
+    font-size: 10.5px;
     font-weight: 600;
     color: var(--text-faint);
   }
@@ -512,16 +500,16 @@
   .drops-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
-    gap: 10px;
+    gap: var(--grid-gap, 14px);
   }
 
-  @media (max-width: 780px) {
+  @media (max-width: 960px) {
     .drops-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 
-  @media (max-width: 520px) {
+  @media (max-width: 600px) {
     .drops-grid {
       grid-template-columns: 1fr;
     }
@@ -530,27 +518,5 @@
   .drops-grid.compact-list {
     grid-template-columns: 1fr;
     gap: 6px;
-  }
-
-  .empty-state {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    text-align: center;
-    gap: var(--space-2);
-    padding: var(--space-8) var(--space-4);
-    color: var(--text-faint);
-  }
-
-  .empty-state strong {
-    color: var(--text);
-    font-size: var(--text-base);
-  }
-
-  .empty-state p {
-    color: var(--text-muted);
-    font-size: var(--text-sm);
-    max-width: 420px;
-    margin-bottom: var(--space-2);
   }
 </style>

@@ -10,18 +10,18 @@
     extra?: Snippet;
   }
 
-  let { label, value, hint, tone = 'accent', icon, extra }: Props = $props();
+  let { label, value, hint, tone: _tone = 'accent', icon, extra }: Props = $props();
 </script>
 
-<div class="card stat-tile tile-{tone}">
+<div class="card stat-tile">
   <div class="stat-top">
-    <span class="section-label">{label}</span>
+    <span class="stat-label">{label}</span>
     {#if icon}
-      <span class="stat-icon tone-{tone}" aria-hidden="true">{@render icon()}</span>
+      <span class="stat-icon" aria-hidden="true">{@render icon()}</span>
     {/if}
   </div>
   <div class="stat-mid">
-    <span class="stat-val tabular val-{tone}">{value}</span>
+    <span class="stat-val tabular">{value}</span>
     {#if extra}
       {@render extra()}
     {/if}
@@ -32,106 +32,62 @@
 </div>
 
 <style>
+  /* Zero tinted backgrounds, zero colored borders, zero rainbow numbers */
   .stat-tile {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    padding: var(--space-4);
-    border-top: 2px solid transparent;
-  }
-
-  .tile-twitch {
-    background: var(--tile-twitch-bg);
-    border-top-color: var(--twitch);
-  }
-  .tile-twitch:hover {
-    border-color: rgba(168, 85, 247, 0.42);
-  }
-
-  .tile-accent {
-    background: var(--tile-accent-bg);
-    border-top-color: var(--cyan);
-  }
-  .tile-accent:hover {
-    border-color: rgba(56, 189, 248, 0.42);
-  }
-
-  .tile-success {
-    background: var(--tile-success-bg);
-    border-top-color: var(--success);
-  }
-  .tile-success:hover {
-    border-color: rgba(52, 211, 153, 0.42);
-  }
-
-  .tile-kick {
-    background: var(--tile-kick-bg);
-    border-top-color: var(--kick);
-  }
-  .tile-kick:hover {
-    border-color: rgba(83, 252, 24, 0.4);
+    gap: 3px;
+    padding: 8px 10px;
   }
 
   .stat-top {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: var(--space-2);
+    gap: 8px;
+  }
+
+  .stat-label {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 500;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-muted);
   }
 
   .stat-icon {
-    width: 30px;
-    height: 30px;
-    border-radius: var(--radius-sm);
-    display: flex;
+    color: var(--text-faint);
+    display: inline-flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-    border: 1px solid var(--border);
-  }
-
-  .tone-accent {
-    background: var(--cyan-tint);
-    border-color: rgba(56, 189, 248, 0.34);
-    color: var(--cyan-text);
-  }
-  .tone-twitch {
-    background: var(--twitch-tint);
-    border-color: rgba(168, 85, 247, 0.36);
-    color: var(--twitch-text);
-  }
-  .tone-kick {
-    background: var(--kick-tint);
-    border-color: rgba(83, 252, 24, 0.34);
-    color: var(--kick-text);
-  }
-  .tone-success {
-    background: var(--success-tint);
-    border-color: rgba(52, 211, 153, 0.34);
-    color: var(--success-text);
   }
 
   .stat-mid {
     display: flex;
     align-items: flex-end;
     justify-content: space-between;
-    gap: var(--space-2);
+    gap: 8px;
   }
 
   .stat-val {
-    font-size: 26px;
-    font-weight: 700;
+    font-family: var(--font-mono);
+    font-size: 18px;
+    font-weight: 600;
     letter-spacing: -0.02em;
-    line-height: 1.08;
+    line-height: 1.1;
+    color: var(--text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
-  .val-twitch { color: var(--twitch-text); }
-  .val-accent { color: var(--cyan-text); }
-  .val-success { color: var(--success-text); }
-  .val-kick { color: var(--kick-text); }
-
   .stat-hint {
-    font-size: var(--text-xs);
-    color: var(--text-muted);
+    font-size: 10.5px;
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 </style>

@@ -1,5 +1,4 @@
 <script lang="ts">
-  import Terminal from 'lucide-svelte/icons/terminal';
   import Badge from '../components/Badge.svelte';
   import LogView from '../components/LogView.svelte';
   import { api } from '../lib/api';
@@ -45,13 +44,7 @@
 <div class="page page-logs">
   <header class="page-header">
     <div class="page-title-wrap">
-      <div class="page-icon page-icon-info"><Terminal size={18} /></div>
-      <div>
-        <h1>Logs</h1>
-        <p class="page-subtitle">
-          Redacted operational logs (tokens, cookies, and response bodies are never logged).
-        </p>
-      </div>
+      <h1>Logs</h1>
     </div>
 
     <div class="page-actions">
@@ -72,6 +65,6 @@
 
 <style>
   .page-logs {
-    min-height: calc(100vh - 48px);
+    min-height: calc(100vh - 64px);
   }
 </style>

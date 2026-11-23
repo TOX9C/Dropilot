@@ -2,11 +2,13 @@
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
   import Check from 'lucide-svelte/icons/check';
   import Clock from 'lucide-svelte/icons/clock';
+  import ExternalLink from 'lucide-svelte/icons/external-link';
   import Gift from 'lucide-svelte/icons/gift';
   import Layers from 'lucide-svelte/icons/layers';
   import Pause from 'lucide-svelte/icons/pause';
   import Pin from 'lucide-svelte/icons/pin';
   import Play from 'lucide-svelte/icons/play';
+  import Radio from 'lucide-svelte/icons/radio';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import { nowMs } from '../lib/clock';
   import {
@@ -125,23 +127,26 @@
   );
 </script>
 
-<section class="card now-card now-{platform} stripe-{platform} wash-{platform}" class:error-border={state === 'Error'}>
+<section class="card now-card design-console" class:error-border={state === 'Error'}>
   {#if channel}
     <div class="top">
       <div class="channel-block">
-        <Monogram src={channel.avatarUrl} name={channel.displayName} width={46} height={46} rounded />
+        <Monogram
+          src={channel.avatarUrl}
+          name={channel.displayName}
+          width={32}
+          height={32}
+        />
 
         <div class="ch-meta">
           <div class="ch-name-row">
+            <span class="plat-dot dot-{platform}" aria-hidden="true"></span>
             <span class="ch-name">{channel.displayName}</span>
             <span class="viewers tabular">
               {formatViewerCount(channel.viewerCount)} viewers
             </span>
             {#if isMining}
-              <span class="live-chip" title="Stream-less live watch timer (0 Mbps video)">
-                <span class="live-dot" aria-hidden="true"></span>
-                LIVE
-              </span>
+              <Badge tone="success">LIVE</Badge>
             {/if}
           </div>
           <div class="ch-sub">
@@ -170,9 +175,9 @@
             title="Auto channel by default — only channels participating in this drop are listed"
             searchable={participatingCandidates.length >= 6}
             searchPlaceholder="Search participating streamers..."
-            size="md"
+            size="sm"
             minMenuWidth={256}
-            maxWidth="210px"
+            maxWidth="200px"
           />
         {/if}
 
@@ -183,20 +188,21 @@
           ariaLabel={isPinned ? 'Unpin channel' : 'Pin channel'}
           title={isPinned ? 'Unpin channel' : 'Pin current channel'}
         >
-          <Pin size={14} />
+          <Pin size={13} />
         </Button>
 
         <Button variant="secondary" size="sm" onclick={() => onOpenChannel(channel.login)}>
-          <span>Open stream ↗</span>
+          <ExternalLink size={13} />
+          <span>Stream</span>
         </Button>
 
         <Button variant="secondary" size="sm" onclick={onSwitchChannel}>
-          <RefreshCw size={14} />
+          <RefreshCw size={13} />
           <span>Switch</span>
         </Button>
 
         <Button variant="secondary" size="sm" onclick={onPauseResume}>
-          {#if isPaused}<Play size={14} /><span>Resume</span>{:else}<Pause size={14} /><span>Pause</span>{/if}
+          {#if isPaused}<Play size={13} /><span>Resume</span>{:else}<Pause size={13} /><span>Pause</span>{/if}
         </Button>
       </div>
     </div>
@@ -204,8 +210,7 @@
     {#if liveProg && liveProg.nextSkin}
       {@const skin = liveProg.nextSkin}
       <div class="progress-grid" class:dual={liveProg.isMultiDrop}>
-        <!-- Next Skin / Current Drop Progress -->
-        <div class="prog-panel prog-primary">
+        <div class="prog-panel">
           <div class="prog-head">
             <div class="prog-identity">
               {#if skin.imageUrl}
@@ -215,7 +220,7 @@
               {/if}
               <div class="prog-titles">
                 <span class="prog-eyebrow">
-                  {liveProg.isMultiDrop ? 'Next skin reward' : 'Drop reward'}
+                  {liveProg.isMultiDrop ? 'Next reward' : 'Drop reward'}
                 </span>
                 <strong class="prog-name truncate" title={skin.skinName}>{skin.skinName}</strong>
               </div>
@@ -240,28 +245,27 @@
             <span class="prog-eta">
               {formatLiveRemaining(skin.remainingSeconds)}
               {#if skin.remainingSeconds > 0}
-                <span class="eta-clock">· {formatEtaClock(skin.remainingSeconds, $nowMs)}</span>
+                <span class="eta-clock">· ETA {formatEtaClock(skin.remainingSeconds, $nowMs)}</span>
               {/if}
             </span>
           </div>
         </div>
 
-        <!-- Whole Campaign Progress (for Multi-Drop Campaigns) -->
         {#if liveProg.isMultiDrop}
-          <div class="prog-panel prog-whole">
+          <div class="prog-panel">
             <div class="prog-head">
               <div class="prog-identity">
-                <span class="prog-icon prog-icon-whole"><Layers size={15} /></span>
+                <span class="prog-icon"><Layers size={15} /></span>
                 <div class="prog-titles">
                   <span class="prog-eyebrow">
-                    Whole drop · {liveProg.completedDrops}/{liveProg.totalDrops} skins
+                    Whole campaign · {liveProg.completedDrops}/{liveProg.totalDrops} drops
                   </span>
                   <strong class="prog-name truncate">
                     All {liveProg.totalDrops} rewards
                   </strong>
                 </div>
               </div>
-              <span class="big-pct big-pct-whole tabular">
+              <span class="big-pct big-pct-muted tabular">
                 {formatLivePercent(liveProg.wholeLiveMinutes, liveProg.wholeRequiredMinutes)}
               </span>
             </div>
@@ -281,7 +285,7 @@
               <span class="prog-eta">
                 {formatLiveRemaining(liveProg.wholeRemainingSeconds)}
                 {#if liveProg.wholeRemainingSeconds > 0}
-                  <span class="eta-clock">· {formatEtaClock(liveProg.wholeRemainingSeconds, $nowMs)}</span>
+                  <span class="eta-clock">· ETA {formatEtaClock(liveProg.wholeRemainingSeconds, $nowMs)}</span>
                 {/if}
               </span>
             </div>
@@ -322,18 +326,23 @@
     {/if}
   {:else}
     <div class="status-merged">
+      <div class="status-icon-wrap" class:is-err={state === 'Error'} aria-hidden="true">
+        {#if state === 'Error'}
+          <AlertTriangle size={17} />
+        {:else}
+          <Radio size={17} />
+        {/if}
+      </div>
+
       <div class="status-main">
         <div class="status-title-row">
-          {#if state === 'Error'}
-            <span class="err-icon" aria-hidden="true"><AlertTriangle size={17} /></span>
-          {/if}
           <h2>
             {#if state === 'Error'}
               {stateReason ?? `${platName} needs attention`}
             {:else if isPaused}
               Mining paused
             {:else}
-              Not watching a stream
+              Standing by on {platName}
             {/if}
           </h2>
           <StatusPill {state} />
@@ -341,7 +350,7 @@
         <p class="status-detail">
           {lastError ?? stateReason ?? `Select a campaign or switch idle behavior to farm ${platName} drops.`}
           {#if nextActionAt}
-            <span class="next-inline tabular"> · Next check in <Countdown targetIso={nextActionAt} /></span>
+            <span class="next-inline tabular"> · Retrying in <Countdown targetIso={nextActionAt} /></span>
           {/if}
         </p>
       </div>
@@ -349,15 +358,19 @@
       <div class="controls">
         {#if state === 'Error'}
           <Button variant="secondary" size="sm" onclick={onOpenInventory}>
-            <span>Open {platName} drops ↗</span>
+            <span>Open {platName} drops</span>
           </Button>
           <Button variant="primary" size="sm" onclick={onRetry}>
-            <RefreshCw size={14} />
+            <RefreshCw size={13} />
             <span>Retry now</span>
           </Button>
         {:else}
+          <Button variant="secondary" size="sm" onclick={onRetry}>
+            <RefreshCw size={13} />
+            <span>Check now</span>
+          </Button>
           <Button variant="secondary" size="sm" onclick={onPauseResume}>
-            {#if isPaused}<Play size={14} /><span>Resume</span>{:else}<Pause size={14} /><span>Pause</span>{/if}
+            {#if isPaused}<Play size={13} /><span>Resume</span>{:else}<Pause size={13} /><span>Pause</span>{/if}
           </Button>
         {/if}
       </div>
@@ -372,24 +385,12 @@
     gap: 14px;
   }
 
-  .now-twitch {
-    border-color: rgba(168, 85, 247, 0.28);
-  }
-
-  .now-kick {
-    border-color: rgba(83, 252, 24, 0.24);
-  }
-
-  .wash-twitch {
-    background-image: var(--wash-twitch);
-  }
-
-  .wash-kick {
-    background-image: var(--wash-kick);
+  .now-card.design-console {
+    gap: 10px;
   }
 
   .error-border {
-    border-color: rgba(244, 63, 94, 0.48);
+    border-color: var(--error);
   }
 
   .top,
@@ -404,14 +405,14 @@
   .channel-block {
     display: flex;
     align-items: center;
-    gap: var(--space-3);
+    gap: 12px;
     min-width: 0;
   }
 
   .ch-meta {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
     min-width: 0;
   }
 
@@ -423,34 +424,15 @@
   }
 
   .ch-name {
+    font-family: var(--font-display);
     font-size: var(--text-md);
     font-weight: 700;
+    color: var(--text);
   }
 
   .viewers {
     font-size: var(--text-xs);
     color: var(--text-muted);
-  }
-
-  .live-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
-    padding: 2px 7px;
-    border-radius: var(--radius-pill);
-    background: var(--success-tint);
-    border: 1px solid rgba(16, 185, 129, 0.34);
-    color: var(--success-text);
-    font-size: 10px;
-    font-weight: 800;
-    letter-spacing: 0.06em;
-  }
-
-  .live-dot {
-    width: 6px;
-    height: 6px;
-    border-radius: var(--radius-pill);
-    background: var(--success);
   }
 
   .ch-sub {
@@ -467,19 +449,11 @@
     font-weight: 600;
   }
 
-  .camp-title {
-    color: var(--text-muted);
-  }
-
   .controls {
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: var(--space-2);
-  }
-
-  .pin-select {
-    max-width: 175px;
+    gap: 6px;
   }
 
   .progress-grid {
@@ -504,16 +478,13 @@
     gap: 9px;
     padding: 12px 14px;
     border-radius: var(--radius-md);
-    background: rgba(8, 10, 15, 0.42);
+    background: var(--surface-2);
     border: 1px solid var(--border);
   }
 
-  :global(:root[data-theme="light"]) .prog-panel {
-    background: var(--surface-2);
-  }
-
-  .prog-whole {
-    border-color: var(--border-hover);
+  .design-console .prog-panel {
+    padding: 8px 10px;
+    gap: 6px;
   }
 
   .prog-head {
@@ -533,30 +504,24 @@
   .skin-thumb {
     width: 34px;
     height: 34px;
-    border-radius: 8px;
+    border-radius: var(--radius-sm);
     object-fit: cover;
-    background: var(--surface-2);
+    background: var(--surface);
     border: 1px solid var(--border);
     flex-shrink: 0;
   }
 
   .prog-icon {
-    width: 34px;
-    height: 34px;
-    border-radius: 8px;
-    background: var(--surface-2);
+    width: 32px;
+    height: 32px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text-muted);
     display: inline-flex;
     align-items: center;
     justify-content: center;
     flex-shrink: 0;
-  }
-
-  .prog-icon-whole {
-    background: var(--accent-tint);
-    border-color: var(--border-hover);
-    color: var(--accent-text);
   }
 
   .prog-titles {
@@ -568,7 +533,7 @@
 
   .prog-eyebrow {
     font-size: 11px;
-    font-weight: 700;
+    font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--text-faint);
@@ -576,20 +541,27 @@
 
   .prog-name {
     font-size: 14px;
-    font-weight: 700;
+    font-weight: 600;
     color: var(--text);
   }
 
   .big-pct {
+    font-family: var(--font-display);
     font-size: 26px;
-    font-weight: 800;
+    font-weight: 700;
     letter-spacing: -0.02em;
     line-height: 1;
+    color: var(--text);
     flex-shrink: 0;
   }
 
-  .big-pct-whole {
-    color: var(--accent-text);
+  .design-console .big-pct {
+    font-family: var(--font-mono);
+    font-size: 18px;
+  }
+
+  .big-pct-muted {
+    color: var(--text-muted);
   }
 
   .prog-foot {
@@ -607,12 +579,11 @@
 
   .prog-eta {
     color: var(--text-muted);
-    font-weight: 600;
+    font-weight: 500;
   }
 
   .eta-clock {
     color: var(--text-faint);
-    font-weight: 500;
     margin-left: 3px;
   }
 
@@ -626,7 +597,7 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    max-width: 175px;
+    max-width: 180px;
     padding: 4px 8px;
     border-radius: var(--radius-sm);
     background: var(--surface-2);
@@ -637,14 +608,14 @@
 
   .ms-chip.ms-next {
     background: var(--accent-tint);
-    border-color: var(--border-hover);
+    border-color: var(--accent);
     color: var(--accent-text);
     font-weight: 600;
   }
 
   .ms-chip.ms-done {
     background: var(--success-tint);
-    border-color: rgba(16, 185, 129, 0.32);
+    border-color: transparent;
     color: var(--success-text);
   }
 
@@ -654,12 +625,31 @@
 
   .ms-time {
     color: var(--text-faint);
-    font-weight: 700;
+    font-weight: 600;
     flex-shrink: 0;
   }
 
   .ms-chip.ms-next .ms-time {
     color: var(--accent-text);
+  }
+
+  .status-icon-wrap {
+    width: 36px;
+    height: 36px;
+    border-radius: var(--radius-md);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .status-icon-wrap.is-err {
+    background: var(--error-tint);
+    color: var(--error-text);
+    border-color: transparent;
   }
 
   .status-main {
@@ -675,11 +665,6 @@
     flex-wrap: wrap;
     align-items: center;
     gap: var(--space-2);
-  }
-
-  .err-icon {
-    color: var(--error-text);
-    display: flex;
   }
 
   .status-detail {

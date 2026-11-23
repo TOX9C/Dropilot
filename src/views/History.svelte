@@ -1,7 +1,6 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import Award from 'lucide-svelte/icons/award';
-  import BarChart3 from 'lucide-svelte/icons/bar-chart-3';
   import Clock from 'lucide-svelte/icons/clock';
   import Download from 'lucide-svelte/icons/download';
   import Flame from 'lucide-svelte/icons/flame';
@@ -13,7 +12,6 @@
   import Button from '../components/Button.svelte';
   import CustomSelect, { type SelectOption } from '../components/CustomSelect.svelte';
   import Modal from '../components/Modal.svelte';
-  import Monogram from '../components/Monogram.svelte';
   import StatTile from '../components/StatTile.svelte';
   import { api } from '../lib/api';
   import { formatExactDateTime, formatMinutes } from '../lib/format';
@@ -74,7 +72,6 @@
     exporting = true;
     try {
       const res = await api.exportHistory(format);
-      // Also trigger a quick browser download in addition to saving in %APPDATA%\Dropilot\exports.
       try {
         const blob = new Blob([res.content], {
           type: format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json;charset=utf-8',
@@ -108,33 +105,27 @@
   }
 </script>
 
-<div class="page history-page">
-  <header class="page-head">
-    <div class="head-left">
-      <div class="head-badge">
-        <BarChart3 size={20} />
-      </div>
-      <div>
-        <h1>History &amp; Stats</h1>
-        <p class="subtitle">Persistent lifetime claimed drops, watch time saved, and activity streaks.</p>
-      </div>
+<div class="page history-page hist-console">
+  <header class="page-header">
+    <div class="page-title-wrap">
+      <h1>History &amp; Stats</h1>
     </div>
-    <div class="head-actions">
+    <div class="page-actions">
       <Button variant="secondary" size="sm" disabled={loading} onclick={loadHistory}>
-        <RefreshCw size={14} />
+        <RefreshCw size={13} />
         <span>Refresh</span>
       </Button>
       <Button variant="secondary" size="sm" disabled={exporting} onclick={() => handleExport('csv')}>
-        <Download size={14} />
+        <Download size={13} />
         <span>CSV</span>
       </Button>
       <Button variant="secondary" size="sm" disabled={exporting} onclick={() => handleExport('json')}>
-        <Download size={14} />
+        <Download size={13} />
         <span>JSON</span>
       </Button>
       {#if stats && (stats.claims.length > 0 || stats.totalWatchMinutes > 0)}
         <Button variant="danger" size="sm" onclick={() => (clearModalOpen = true)}>
-          <Trash2 size={14} />
+          <Trash2 size={13} />
           <span>Clear</span>
         </Button>
       {/if}
@@ -146,36 +137,32 @@
       label="Drops Claimed"
       value={stats?.totalClaims ?? 0}
       hint={stats ? `${stats.twitchClaims} Twitch · ${stats.kickClaims} Kick` : 'Loading...'}
-      tone="success"
     >
-      {#snippet icon()}<Gift size={16} />{/snippet}
+      {#snippet icon()}<Gift size={14} />{/snippet}
     </StatTile>
 
     <StatTile
       label="Watch Time Saved"
       value={formatMinutes(stats?.totalWatchMinutes ?? 0)}
       hint="Zero-video background farming"
-      tone="accent"
     >
-      {#snippet icon()}<Clock size={16} />{/snippet}
+      {#snippet icon()}<Clock size={14} />{/snippet}
     </StatTile>
 
     <StatTile
       label="Farming Streak"
       value={stats ? `${stats.currentStreakDays}d` : '0d'}
       hint={stats ? `Best streak: ${stats.bestStreakDays} days` : 'Loading...'}
-      tone="twitch"
     >
-      {#snippet icon()}<Flame size={16} />{/snippet}
+      {#snippet icon()}<Flame size={14} />{/snippet}
     </StatTile>
 
     <StatTile
       label="Top Farmed Game"
       value={stats?.topGame ?? '—'}
       hint={stats?.topGame ? `${stats.topGameClaims} claimed reward${stats.topGameClaims === 1 ? '' : 's'}` : 'No claimed drops yet'}
-      tone="kick"
     >
-      {#snippet icon()}<Award size={16} />{/snippet}
+      {#snippet icon()}<Award size={14} />{/snippet}
     </StatTile>
   </section>
 
@@ -250,11 +237,11 @@
     </div>
 
     {#if loading && !stats}
-      <div class="empty-state">Loading history...</div>
+      <div class="designed-empty">Loading history...</div>
     {:else if filteredClaims.length === 0}
-      <div class="empty-state">
-        <Gift size={28} />
-        <h3>No claim records match your filter</h3>
+      <div class="designed-empty">
+        <span class="empty-ico" aria-hidden="true"><Gift size={18} /></span>
+        <strong>No claim records match your filter</strong>
         <p>
           {stats && stats.claims.length > 0
             ? 'Try clearing your search or switching platform filters.'
@@ -262,31 +249,30 @@
         </p>
       </div>
     {:else}
-      <div class="history-list">
+      <div class="console-table">
+        <div class="ct-head tabular">
+          <span>TIMESTAMP</span>
+          <span>PLAT</span>
+          <span>REWARD</span>
+          <span>GAME &amp; CAMPAIGN</span>
+          <span class="ct-right">STATUS</span>
+        </div>
         {#each filteredClaims as item (item.id + item.claimedAt)}
-          <div class="history-row">
-            <div class="row-main">
-              <Monogram src={item.rewardImageUrl} name={item.gameName} width={36} height={36} />
-              <div class="row-text">
-                <div class="row-title">
-                  <span class="drop-name">{item.dropName}</span>
-                  <Badge tone={item.platform === 'twitch' ? 'twitch' : 'kick'}>
-                    {item.platform === 'twitch' ? 'Twitch' : 'Kick'}
-                  </Badge>
-                  {#if item.status === 'manual_required'}
-                    <Badge tone="warning">Manual claim</Badge>
-                  {:else}
-                    <Badge tone="success">Claimed</Badge>
-                  {/if}
-                </div>
-                <div class="row-sub">
-                  <span>{item.gameName}</span>
-                  <span class="sep">·</span>
-                  <span class="camp-sub">{item.campaignName}</span>
-                </div>
-              </div>
-            </div>
-            <div class="row-time tabular">{formatExactDateTime(item.claimedAt)}</div>
+          <div class="ct-row">
+            <span class="ct-time tabular">{formatExactDateTime(item.claimedAt)}</span>
+            <span class="ct-plat">
+              <span class="plat-dot dot-{item.platform}" aria-hidden="true"></span>
+              <span>{item.platform.toUpperCase()}</span>
+            </span>
+            <span class="ct-drop truncate">{item.dropName}</span>
+            <span class="ct-game truncate">{item.gameName} · <span class="camp-sub">{item.campaignName}</span></span>
+            <span class="ct-right">
+              {#if item.status === 'manual_required'}
+                <Badge tone="warning">Manual</Badge>
+              {:else}
+                <Badge tone="success">Claimed</Badge>
+              {/if}
+            </span>
           </div>
         {/each}
       </div>
@@ -310,70 +296,19 @@
 </Modal>
 
 <style>
-  .history-page {
-    gap: 16px;
-  }
-
-  .page-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-
-  .head-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
-  .head-badge {
-    width: 40px;
-    height: 40px;
-    border-radius: 12px;
-    background: var(--accent-tint);
-    border: 1px solid var(--border-hover);
-    color: var(--accent-text);
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-
-  .head-left h1 {
-    margin: 0;
-    font-size: var(--text-lg);
-    font-weight: 700;
-  }
-
-  .subtitle {
-    margin: 2px 0 0;
-    font-size: var(--text-sm);
-    color: var(--text-muted);
-  }
-
-  .head-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
   .stats-grid {
     display: grid;
     grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 12px;
+    gap: var(--grid-gap, 14px);
   }
 
-  @media (max-width: 980px) {
+  @media (max-width: 920px) {
     .stats-grid {
       grid-template-columns: repeat(2, minmax(0, 1fr));
     }
   }
 
   .activity-card {
-    padding: 16px 18px;
     display: flex;
     flex-direction: column;
     gap: 14px;
@@ -387,14 +322,13 @@
   }
 
   .card-head h2 {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 700;
+    font-size: var(--text-md);
+    font-weight: 600;
   }
 
   .card-sub {
-    margin: 2px 0 0;
-    font-size: 12px;
+    margin-top: 2px;
+    font-size: var(--text-xs);
     color: var(--text-muted);
   }
 
@@ -404,7 +338,12 @@
     gap: 8px;
     align-items: end;
     height: 112px;
-    padding-top: 8px;
+    padding-top: 6px;
+  }
+
+  .hist-console .bars-grid {
+    height: 82px;
+    gap: 4px;
   }
 
   .bar-col {
@@ -419,7 +358,7 @@
     flex: 1;
     width: 100%;
     max-width: 28px;
-    border-radius: 6px;
+    border-radius: var(--radius-xs);
     background: var(--surface-2);
     border: 1px solid var(--border);
     display: flex;
@@ -429,13 +368,12 @@
 
   .bar-fill {
     width: 100%;
-    border-radius: 5px;
-    background: rgba(148, 163, 184, 0.22);
-    transition: height 240ms var(--ease-out);
+    border-radius: var(--radius-xs);
+    background: var(--border-hover);
   }
 
   .bar-fill.active {
-    background: var(--grad-accent);
+    background: var(--accent);
   }
 
   .bar-label {
@@ -445,7 +383,6 @@
   }
 
   .table-card {
-    padding: 16px;
     display: flex;
     flex-direction: column;
     gap: 12px;
@@ -465,21 +402,23 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 0 12px;
-    height: 36px;
-    border-radius: var(--radius-md);
+    padding: 0 11px;
+    height: var(--btn-sm-h, 32px);
+    border-radius: var(--radius-sm);
     background: var(--surface-2);
     border: 1px solid var(--border);
     color: var(--text-muted);
   }
 
   .search-wrap:focus-within {
-    border-color: var(--border-hover);
+    border-color: var(--accent);
     color: var(--text);
   }
 
   .search-wrap input {
     flex: 1;
+    height: 100%;
+    padding: 0;
     border: none;
     background: transparent;
     color: var(--text);
@@ -505,10 +444,9 @@
     justify-content: space-between;
     gap: 12px;
     padding: 10px 12px;
-    border-radius: var(--radius-md);
+    border-radius: var(--radius-sm);
     background: var(--surface-2);
     border: 1px solid var(--border);
-    transition: border-color var(--duration-fast) var(--ease-out);
   }
 
   .history-row:hover {
@@ -532,7 +470,7 @@
   .row-title {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
     flex-wrap: wrap;
   }
 
@@ -540,6 +478,15 @@
     font-size: var(--text-sm);
     font-weight: 600;
     color: var(--text);
+  }
+
+  .plat-tag {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-muted);
   }
 
   .row-sub {
@@ -553,15 +500,8 @@
     white-space: nowrap;
   }
 
-  .sep {
-    color: var(--text-faint);
-  }
-
-  .camp-sub {
-    color: var(--text-faint);
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
+  .sep { color: var(--text-faint); }
+  .camp-sub { color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; }
 
   .row-time {
     font-size: 12px;
@@ -570,26 +510,47 @@
     flex-shrink: 0;
   }
 
-  .empty-state {
-    display: flex;
-    flex-direction: column;
+  /* Console tabular claims list */
+  .console-table {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
+    overflow: hidden;
+  }
+
+  .ct-head,
+  .ct-row {
+    display: grid;
+    grid-template-columns: 155px 80px minmax(150px, 1fr) minmax(180px, 1.3fr) 88px;
     align-items: center;
-    justify-content: center;
-    text-align: center;
-    gap: 8px;
-    padding: 40px 20px;
-    color: var(--text-muted);
+    gap: 10px;
+    padding: 6px 10px;
+    font-size: 11.5px;
   }
 
-  .empty-state h3 {
-    margin: 0;
-    font-size: 15px;
-    color: var(--text);
+  .ct-head {
+    background: var(--surface-2);
+    border-bottom: 1px solid var(--border);
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    color: var(--text-faint);
   }
 
-  .empty-state p {
-    margin: 0;
-    max-width: 420px;
-    font-size: 13px;
+  .ct-row {
+    border-bottom: 1px solid var(--border);
   }
+
+  .ct-row:last-child {
+    border-bottom: none;
+  }
+
+  .ct-row:hover {
+    background: var(--surface-2);
+  }
+
+  .ct-time { color: var(--text-faint); font-size: 11px; }
+  .ct-plat { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
+  .ct-drop { font-weight: 600; color: var(--text); }
+  .ct-game { color: var(--text-muted); }
+  .ct-right { text-align: right; }
 </style>

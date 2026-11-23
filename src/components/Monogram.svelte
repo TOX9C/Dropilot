@@ -29,15 +29,15 @@
     {height}
     loading="lazy"
     class="mono-img"
-    class:rounded={rounded}
+    class:rounded
     style="width:{width}px;height:{height}px"
     onerror={() => (failed = true)}
   />
 {:else}
   <div
     class="mono-tile"
-    class:rounded={rounded}
-    style="width:{width}px;height:{height}px;background:{mono.bg};color:{mono.fg}"
+    class:rounded
+    style="width:{width}px;height:{height}px"
     aria-hidden="true"
   >
     {mono.initials}
@@ -54,9 +54,15 @@
     align-items: center;
     justify-content: center;
     object-fit: cover;
+    font-family: var(--font-display);
     font-size: 11px;
-    font-weight: 600;
-    letter-spacing: 0.02em;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+  }
+
+  .mono-tile {
+    background: var(--surface-2);
+    color: var(--text-muted);
   }
 
   .rounded {

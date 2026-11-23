@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <!-- Dropilot — Calm: Organic droplet with negative-space paper-plane flight cut -->
+  <path
+    fill="#D97736"
+    fill-rule="evenodd"
+    clip-rule="evenodd"
+    d="M128 20 C128 20 206 106 206 158 C206 201.08 171.08 236 128 236 C84.92 236 50 201.08 50 158 C50 106 128 20 128 20 Z M168 112 L84 146 L122 156 L132 194 Z"
+  />
+</svg>

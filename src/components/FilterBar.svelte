@@ -302,14 +302,10 @@
     color: var(--text);
   }
 
-  .seg-twitch.active {
-    background: var(--twitch-tint);
-    color: var(--twitch-text);
-  }
-
+  .seg-twitch.active,
   .seg-kick.active {
-    background: var(--kick-tint);
-    color: var(--kick-text);
+    background: var(--surface-hover);
+    color: var(--text);
   }
 
   .search-wrap {
@@ -399,16 +395,11 @@
   }
 
   .tab-pill.pill-connected.active,
-  .tab-pill.pill-farming.active {
-    background: var(--success-tint);
-    border-color: var(--success);
-    color: var(--success-text);
-  }
-
+  .tab-pill.pill-farming.active,
   .tab-pill.pill-unlinked.active {
-    background: var(--warning-tint);
-    border-color: var(--warning);
-    color: var(--warning-text);
+    background: var(--accent-tint);
+    border-color: var(--accent);
+    color: var(--accent-text);
   }
 
   .view-switch {

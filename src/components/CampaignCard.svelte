@@ -78,6 +78,7 @@
   const allClaimed = $derived(
     campaign.drops.length > 0 && campaign.drops.every((d) => d.claimed),
   );
+  const claimedCount = $derived(campaign.drops.filter((d) => d.claimed).length);
   const totalMinutes = $derived(getCampaignTotalMinutes(campaign));
   const nextUnclaimedDrop = $derived.by(() => {
     const unclaimed = campaign.drops.filter((d) => !d.claimed);
@@ -136,6 +137,9 @@
     return progressPercent(watched, totalMinutes);
   });
 
+  // Console uses dense single-row layout for maximum visibility
+  const useCompact = $derived(compact || true);
+
   async function ensureDetailsLoaded() {
     if (!onFetchDetails || loadingDetails) return;
     if (campaign.platform !== 'twitch') return;
@@ -162,35 +166,35 @@
 
 {#snippet connectionBadge()}
   {#if linkState === 'no_link'}
-    <span class="conn-pill conn-ready" title="No external game account link required — ready to farm">
+    <span class="conn-pill conn-ready" title="No external game account link required">
       <CircleCheck size={11} />
-      <span>No link needed</span>
+      <span>Ready</span>
     </span>
   {:else if linkState === 'connected'}
     <span class="conn-pill conn-connected" title="Your game account is connected">
       <Link2 size={11} />
-      <span>Connected</span>
+      <span>Linked</span>
     </span>
   {:else}
     <button
       type="button"
       class="conn-pill conn-unlinked conn-clickable"
-      title="Game account not connected — click to open the connect page"
+      title="Game account not connected — click to connect"
       onclick={() => onOpenUrl(connectTargetUrl)}
     >
       <Unlink size={11} />
-      <span>Not connected</span>
+      <span>Not linked</span>
       <ExternalLink size={9} />
     </button>
   {/if}
 {/snippet}
 
 {#snippet skinsDrawer()}
-  <div class="skins-drawer" class:skins-drawer-wide={compact}>
+  <div class="skins-drawer" class:skins-drawer-wide={useCompact}>
     <div class="skins-drawer-head">
       <div class="skins-drawer-title">
         <Gift size={13} />
-        <span>Skins &amp; Rewards</span>
+        <span>Rewards</span>
         {#if skinTiles.length > 0}
           <Badge>{skinTiles.length}</Badge>
         {/if}
@@ -199,19 +203,20 @@
       {#if linkState === 'unlinked' && campaign.linkUrl}
         <button type="button" class="drawer-link-cta" onclick={() => onOpenUrl(campaign.linkUrl!)}>
           <Unlink size={11} />
-          <span>Link game account ↗</span>
+          <span>Link game account</span>
         </button>
       {:else if campaign.linkUrl}
         <button type="button" class="drawer-link-sub" onclick={() => onOpenUrl(campaign.linkUrl!)}>
-          <span>Manage link ↗</span>
+          <span>Manage link</span>
+          <ExternalLink size={10} />
         </button>
       {/if}
     </div>
 
     {#if loadingDetails}
       <div class="skins-loading">
-        <span class="spin-wrap"><LoaderCircle size={15} /></span>
-        <span>Loading skins &amp; game connection status from Twitch...</span>
+        <span class="spin-wrap"><LoaderCircle size={14} /></span>
+        <span>Loading rewards from Twitch...</span>
       </div>
     {:else if detailsError}
       <div class="skins-error">
@@ -220,7 +225,7 @@
           <button type="button" class="drawer-retry-btn" onclick={ensureDetailsLoaded}>Retry</button>
           {#if campaign.linkUrl}
             <button type="button" class="drawer-link-sub" onclick={() => onOpenUrl(campaign.linkUrl!)}>
-              Open link ↗
+              Open link
             </button>
           {/if}
         </div>
@@ -233,7 +238,7 @@
         {/if}
       </div>
     {:else}
-      <div class="skin-grid" class:skin-grid-wide={compact}>
+      <div class="skin-grid" class:skin-grid-wide={useCompact}>
         {#each skinTiles as tile (tile.key)}
           {@const pct = tile.claimed ? 100 : progressPercent(tile.currentMinutes, tile.requiredMinutes)}
           {@const showImg = Boolean(tile.imageUrl && !brokenImages[tile.key])}
@@ -250,9 +255,8 @@
                   }}
                 />
               {:else}
-                <Monogram src={null} name={tile.skinName} width={52} height={52} />
+                <Monogram src={null} name={tile.skinName} width={44} height={44} />
               {/if}
-
               <span class="skin-time-chip tabular">{formatMinutes(tile.requiredMinutes)}</span>
             </div>
 
@@ -273,7 +277,7 @@
                   {#if tile.claimed}
                     <Badge tone="success"><Check size={10} /> Claimed</Badge>
                   {:else if tile.needsManualClaim}
-                    <button type="button" class="badge-manual" onclick={onOpenInventory}>Claim ↗</button>
+                    <button type="button" class="badge-manual" onclick={onOpenInventory}>Claim</button>
                   {:else if tile.claimable}
                     <Badge tone="info">Ready</Badge>
                   {:else}
@@ -289,37 +293,31 @@
   </div>
 {/snippet}
 
-{#if compact}
+{#if useCompact}
   <article
-    class="card card-interactive cv-compact compact-wrap plat-left-{campaign.platform}"
+    class="card card-interactive cv-compact compact-wrap design-console"
     class:farming-active={activeFarming}
     class:excluded={isExcluded}
     class:skins-expanded={skinsOpen}
   >
     <div class="compact-row">
-      <Monogram
-        src={campaign.game.boxArtUrl}
-        name={campaign.game.name}
-        width={34}
-        height={44}
-      />
 
       <div class="compact-info">
         <div class="compact-top">
           {#if showPlatformBadge}
-            <Badge tone={campaign.platform}>
-              <span class="plat-dot dot-{campaign.platform}" aria-hidden="true"></span>
-              {campaign.platform === 'twitch' ? 'Twitch' : 'Kick'}
-            </Badge>
+            <span
+              class="plat-dot dot-{campaign.platform}"
+              title={campaign.platform === 'twitch' ? 'Twitch' : 'Kick'}
+            ></span>
           {/if}
           <span class="compact-game">{campaign.game.name}</span>
-          <span class="compact-sep" aria-hidden="true">·</span>
+          <span class="compact-sep" aria-hidden="true">/</span>
           <button
             type="button"
             class="compact-title-btn"
             aria-expanded={skinsOpen}
             onclick={toggleSkins}
-            title="Click to inspect skins and rewards"
+            title="Click to inspect rewards"
           >
             <span class="compact-title">{campaign.name}</span>
           </button>
@@ -328,15 +326,20 @@
         <div class="compact-sub tabular">
           {@render connectionBadge()}
           {#if campaign.drops.length > 0}
-            <span>{campaign.drops.length} {campaign.drops.length === 1 ? 'drop' : 'drops'} · {formatMinutes(totalMinutes)}</span>
+            <span>
+              {claimedCount > 0
+                ? `${claimedCount}/${campaign.drops.length} drops`
+                : `${campaign.drops.length} ${campaign.drops.length === 1 ? 'drop' : 'drops'}`}
+              · {formatMinutes(totalMinutes)}
+            </span>
             {#if overallPct !== null && overallPct > 0}
               <span class="compact-pct">· {overallPct}%</span>
             {/if}
           {:else}
-            <span>Click to preview skins</span>
+            <span>Inspect rewards</span>
           {/if}
           {#if allClaimed}
-            <Badge tone="success"><Check size={10} /> Completed</Badge>
+            <Badge tone="success"><Check size={10} /> Done</Badge>
           {/if}
         </div>
       </div>
@@ -348,10 +351,10 @@
           class:active={skinsOpen}
           aria-expanded={skinsOpen}
           onclick={toggleSkins}
-          title={skinsOpen ? 'Hide skin preview' : 'Preview drop skins'}
+          title={skinsOpen ? 'Hide reward preview' : 'Preview drop rewards'}
         >
           <Gift size={11} />
-          <span>{skinTiles.length > 0 ? `Skins (${skinTiles.length})` : 'Skins'}</span>
+          <span>{skinTiles.length > 0 ? `${skinTiles.length}` : 'Rewards'}</span>
           {#if skinsOpen}<ChevronUp size={11} />{:else}<ChevronDown size={11} />{/if}
         </button>
 
@@ -367,7 +370,7 @@
 
         <button
           type="button"
-          class="farm-btn compact-farm farm-{campaign.platform}"
+          class="farm-btn compact-farm"
           class:selected={activeFarming}
           aria-pressed={activeFarming}
           onclick={() => onToggleFarm(!activeFarming)}
@@ -390,7 +393,7 @@
           title={isGamePrioritized ? 'Game prioritized' : 'Prioritize all campaigns for this game'}
           onclick={() => onToggleGameFarm(!isGamePrioritized)}
         >
-          <Star size={13} />
+          <Star size={12} />
         </button>
 
         {#if campaign.linkUrl}
@@ -398,10 +401,10 @@
             type="button"
             class="icon-btn"
             aria-label={`Open link page for ${campaign.game.name}`}
-            title="Open game account link page ↗"
+            title="Open game account link page"
             onclick={() => onOpenUrl(campaign.linkUrl!)}
           >
-            <ExternalLink size={13} />
+            <ExternalLink size={12} />
           </button>
         {/if}
 
@@ -413,7 +416,7 @@
             title="Exclude campaign"
             onclick={onExclude}
           >
-            <X size={13} />
+            <X size={12} />
           </button>
         {/if}
       </div>
@@ -425,12 +428,12 @@
   </article>
 {:else}
   <article
-    class="card card-interactive cv-card campaign-card stripe-{campaign.platform}"
+    class="card card-interactive cv-card campaign-card design-console"
     class:farming-active={activeFarming}
     class:excluded={isExcluded}
     class:skins-expanded={skinsOpen}
   >
-    <div class="banner wash-{campaign.platform}">
+    <div class="banner">
       <Monogram
         src={campaign.game.boxArtUrl}
         name={campaign.game.name}
@@ -473,7 +476,7 @@
           class="camp-title-btn"
           aria-expanded={skinsOpen}
           onclick={toggleSkins}
-          title={skinsOpen ? 'Collapse skin preview' : 'Click to see skins & rewards in this drop'}
+          title={skinsOpen ? 'Collapse reward preview' : 'Inspect rewards in this drop'}
         >
           <h3 class="camp-name" title={campaign.name}>{campaign.name}</h3>
           <span class="title-chevron" aria-hidden="true">
@@ -491,11 +494,14 @@
             onclick={toggleSkins}
           >
             <Gift size={10} />
-            <span>{skinTiles.length > 0 ? `Skins (${skinTiles.length})` : 'View skins'}</span>
-            {#if skinsOpen}<ChevronUp size={10} />{:else}<ChevronDown size={10} />{/if}
+            <span>
+              {campaign.drops.length > 0
+                ? (claimedCount > 0 ? `${claimedCount}/${campaign.drops.length} drops` : `${campaign.drops.length} ${campaign.drops.length === 1 ? 'drop' : 'drops'}`)
+                : 'Rewards'}
+            </span>
           </button>
           {#if campaign.drops.length > 0}
-            <span>{formatMinutes(totalMinutes)}</span>
+            <span class="sum-time">{formatMinutes(totalMinutes)}</span>
           {/if}
           {#if allClaimed}
             <Badge tone="success"><Check size={10} /> Done</Badge>
@@ -513,12 +519,12 @@
             {#if nextUnclaimedDrop}
               {@const nextRem = Math.max(0, nextUnclaimedDrop.requiredMinutes - nextUnclaimedDrop.currentMinutes)}
               <span class="eta-pair">
-                <span class="eta-k">Next skin:</span>
-                <strong>{nextRem === 0 ? 'Ready' : `${formatMinutes(nextRem)} left`}</strong>
+                <span class="eta-k">Next:</span>
+                <strong>{nextRem === 0 ? 'Ready' : `${formatMinutes(nextRem)}`}</strong>
               </span>
             {/if}
             <span class="eta-pair">
-              <span class="eta-k">Whole drop ({overallPct ?? 0}%):</span>
+              <span class="eta-k">Total ({overallPct ?? 0}%):</span>
               <strong>{wholeRemainingMinutes === 0 ? 'Done' : `${formatMinutes(wholeRemainingMinutes)} left`}</strong>
             </span>
           </div>
@@ -544,12 +550,12 @@
                       <Badge tone="success"><Check size={10} /> Claimed</Badge>
                     {:else if drop.needsManualClaim}
                       <button type="button" class="badge-manual" onclick={onOpenInventory}>
-                        Claim ↗
+                        Claim
                       </button>
                     {:else if drop.claimable}
                       <Badge tone="info">Ready</Badge>
                     {:else}
-                      <span>{pct}% · {formatMinutes(rem)} left</span>
+                      <span>{pct}% · {formatMinutes(rem)}</span>
                     {/if}
                   </span>
                 </div>
@@ -576,16 +582,16 @@
       </div>
     {:else}
       <button type="button" class="unhydrated-stage" onclick={toggleSkins}>
-        <span class="unhydrated-ico"><Gift size={13} /></span>
-        <span class="unhydrated-txt">Click to preview reward skins</span>
-        <span class="unhydrated-cta">Preview ▾</span>
+        <Gift size={13} />
+        <span class="unhydrated-txt">Inspect reward details</span>
+        <ChevronDown size={13} />
       </button>
     {/if}
 
     <footer class="card-footer">
       <button
         type="button"
-        class="farm-btn farm-{campaign.platform}"
+        class="farm-btn"
         class:selected={activeFarming}
         aria-pressed={activeFarming}
         onclick={() => onToggleFarm(!activeFarming)}
@@ -620,7 +626,7 @@
             type="button"
             class="icon-btn"
             aria-label={`Open link page for ${campaign.game.name}`}
-            title="Open game account link page ↗"
+            title="Open game account link page"
             onclick={() => onOpenUrl(campaign.linkUrl!)}
           >
             <ExternalLink size={12} />
@@ -653,35 +659,19 @@
 
   .campaign-card.farming-active,
   .compact-wrap.farming-active {
-    border-color: rgba(129, 140, 248, 0.55);
-    box-shadow:
-      0 8px 24px rgba(99, 102, 241, 0.16),
-      inset 0 1px 0 rgba(255, 255, 255, 0.09);
-  }
-
-  .campaign-card.skins-expanded,
-  .compact-wrap.skins-expanded {
-    border-color: rgba(167, 139, 250, 0.45);
+    border-color: var(--accent);
   }
 
   .campaign-card.excluded,
   .compact-wrap.excluded {
-    opacity: 0.6;
+    opacity: 0.56;
   }
 
   .banner {
     display: flex;
     align-items: center;
-    gap: 8px;
-    padding: 9px 10px;
-  }
-
-  .wash-twitch {
-    background: var(--wash-twitch);
-  }
-
-  .wash-kick {
-    background: var(--wash-kick);
+    gap: 12px;
+    padding: 12px 14px;
   }
 
   .meta {
@@ -689,26 +679,26 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 4px;
+    gap: 5px;
   }
 
   .top-row {
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 5px;
+    gap: 6px;
   }
 
   .game-wrap {
     display: flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     min-width: 0;
     flex: 1;
   }
 
   .game-name {
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
     color: var(--text-muted);
     overflow: hidden;
@@ -745,7 +735,8 @@
   }
 
   .camp-name {
-    font-size: 13px;
+    font-family: var(--font-display);
+    font-size: 14px;
     font-weight: 700;
     letter-spacing: -0.01em;
     line-height: 1.25;
@@ -760,9 +751,13 @@
     display: flex;
     flex-wrap: wrap;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     font-size: 11px;
     color: var(--text-muted);
+  }
+
+  .sum-time {
+    color: var(--text-faint);
   }
 
   .conn-pill {
@@ -771,47 +766,44 @@
     gap: 4px;
     padding: 1px 7px;
     border-radius: var(--radius-pill);
-    font-size: 10px;
-    font-weight: 700;
+    font-size: 10.5px;
+    font-weight: 600;
     line-height: 1.45;
     white-space: nowrap;
     border: 1px solid transparent;
   }
 
   .conn-ready {
-    background: rgba(56, 189, 248, 0.14);
-    border-color: rgba(56, 189, 248, 0.36);
-    color: var(--cyan-text);
+    background: var(--surface-2);
+    border-color: var(--border);
+    color: var(--text-muted);
   }
 
   .conn-connected {
-    background: rgba(52, 211, 153, 0.16);
-    border-color: rgba(52, 211, 153, 0.42);
+    background: var(--success-tint);
     color: var(--success-text);
   }
 
   .conn-unlinked {
-    background: rgba(248, 113, 113, 0.16);
-    border-color: rgba(248, 113, 113, 0.45);
+    background: var(--error-tint);
     color: var(--error-text);
   }
 
   .conn-clickable:hover:not(:disabled) {
-    filter: brightness(1.14);
-    border-color: var(--border-hover);
+    border-color: var(--error);
   }
 
   .skins-pill-btn {
     display: inline-flex;
     align-items: center;
-    gap: 3px;
+    gap: 4px;
     padding: 1px 7px;
     border-radius: var(--radius-pill);
-    border: 1px solid rgba(167, 139, 250, 0.28);
-    background: rgba(129, 140, 248, 0.10);
-    color: var(--accent-text);
-    font-size: 10px;
-    font-weight: 700;
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font-size: 10.5px;
+    font-weight: 600;
     line-height: 1.45;
     white-space: nowrap;
   }
@@ -820,6 +812,7 @@
   .skins-pill-btn.active {
     background: var(--accent-tint);
     border-color: var(--accent);
+    color: var(--accent-text);
   }
 
   .spin-wrap {
@@ -832,12 +825,11 @@
     to { transform: rotate(360deg); }
   }
 
-  /* Expanded Skin & Reward Showcase Drawer */
   .skins-drawer {
     display: flex;
     flex-direction: column;
     gap: 8px;
-    padding: 9px 10px;
+    padding: 10px 12px;
     background: var(--surface-2);
     border-top: 1px solid var(--border);
   }
@@ -856,7 +848,7 @@
   .skins-drawer-title {
     display: inline-flex;
     align-items: center;
-    gap: 5px;
+    gap: 6px;
     font-size: 11px;
     font-weight: 700;
     color: var(--text);
@@ -868,18 +860,18 @@
     display: inline-flex;
     align-items: center;
     gap: 4px;
-    border-radius: var(--radius-pill);
-    font-size: 10px;
-    font-weight: 700;
+    border-radius: var(--radius-xs);
+    font-size: 11px;
+    font-weight: 600;
     padding: 2px 8px;
     border: 1px solid var(--border);
     background: var(--surface);
-    color: var(--accent-text);
+    color: var(--text);
   }
 
   .drawer-link-cta {
-    background: rgba(248, 113, 113, 0.16);
-    border-color: rgba(248, 113, 113, 0.42);
+    background: var(--error-tint);
+    border-color: var(--error);
     color: var(--error-text);
   }
 
@@ -895,29 +887,18 @@
     border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
-    font-size: 11px;
+    font-size: 11.5px;
     color: var(--text-muted);
   }
 
-  .skins-loading {
-    justify-content: flex-start;
-  }
-
-  .skins-error {
-    color: var(--error-text);
-    border-color: rgba(248, 113, 113, 0.35);
-  }
-
-  .skins-error-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
-  }
+  .skins-loading { justify-content: flex-start; }
+  .skins-error { color: var(--error-text); border-color: var(--error); }
+  .skins-error-actions { display: inline-flex; align-items: center; gap: 6px; }
 
   .skin-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 7px;
+    gap: 8px;
   }
 
   .skin-grid-wide {
@@ -940,23 +921,15 @@
     align-items: center;
     justify-content: center;
     padding: 6px;
-    background: radial-gradient(circle at 50% 45%, rgba(129, 140, 248, 0.18), rgba(11, 14, 26, 0.55) 75%);
+    background: var(--surface-2);
     border-bottom: 1px solid var(--border);
-  }
-
-  :global(:root[data-theme="light"]) .skin-stage {
-    background: radial-gradient(circle at 50% 45%, rgba(99, 102, 241, 0.12), #edf2fb 78%);
-  }
-
-  :global(:root[data-theme="light"]) .skin-time-chip {
-    background: rgba(255, 255, 255, 0.92);
   }
 
   .skin-img {
     max-width: 100%;
     max-height: 62px;
     object-fit: contain;
-    border-radius: 6px;
+    border-radius: var(--radius-xs);
   }
 
   .skin-time-chip {
@@ -964,25 +937,25 @@
     right: 5px;
     bottom: 5px;
     padding: 1px 5px;
-    border-radius: var(--radius-pill);
-    background: rgba(11, 14, 26, 0.86);
+    border-radius: var(--radius-xs);
+    background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text);
     font-size: 10px;
-    font-weight: 700;
+    font-weight: 600;
   }
 
   .skin-meta {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 6px 7px;
+    padding: 7px 8px;
     flex: 1;
   }
 
   .skin-name {
-    font-size: 11px;
-    font-weight: 700;
+    font-size: 11.5px;
+    font-weight: 600;
     color: var(--text);
     line-height: 1.25;
     display: -webkit-box;
@@ -1008,7 +981,7 @@
   }
 
   .skin-status {
-    font-size: 10px;
+    font-size: 10.5px;
     color: var(--text-muted);
   }
 
@@ -1016,8 +989,8 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 6px;
-    padding: 7px 10px;
+    gap: 8px;
+    padding: 10px 14px;
     border-top: 1px solid var(--border);
   }
 
@@ -1027,34 +1000,18 @@
     align-items: center;
     gap: 8px;
     width: 100%;
-    padding: 8px 10px;
+    padding: 10px 14px;
     border: none;
     border-top: 1px solid var(--border);
-    background: rgba(255, 255, 255, 0.015);
+    background: transparent;
     color: var(--text-muted);
-    font-size: 11px;
+    font-size: 12px;
     text-align: left;
   }
 
-  :global(:root[data-theme="light"]) .unhydrated-stage {
-    background: rgba(91, 108, 243, 0.03);
-  }
-
   .unhydrated-stage:hover {
-    background: rgba(129, 140, 248, 0.08);
+    background: var(--surface-2);
     color: var(--text);
-  }
-
-  .unhydrated-ico {
-    width: 24px;
-    height: 24px;
-    border-radius: 7px;
-    background: var(--accent-tint);
-    color: var(--accent-text);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
   }
 
   .unhydrated-txt {
@@ -1065,23 +1022,16 @@
     white-space: nowrap;
   }
 
-  .unhydrated-cta {
-    font-size: 10px;
-    font-weight: 700;
-    color: var(--accent-text);
-    flex-shrink: 0;
-  }
-
   .drops-list {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
 
   .drop-row {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
   }
 
   .drop-info {
@@ -1089,7 +1039,7 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 4px;
   }
 
   .drop-title-row {
@@ -1118,7 +1068,7 @@
     border: none;
     background: transparent;
     color: var(--accent-text);
-    font-size: 11px;
+    font-size: 11.5px;
     font-weight: 600;
     padding: 2px 0;
   }
@@ -1134,8 +1084,7 @@
     justify-content: space-between;
     gap: 6px;
     padding: 5px 8px;
-    margin-bottom: 8px;
-    border-radius: 8px;
+    border-radius: var(--radius-xs);
     background: var(--surface-2);
     border: 1px solid var(--border);
     font-size: 11px;
@@ -1156,7 +1105,7 @@
     background: var(--warning-tint);
     color: var(--warning-text);
     border: none;
-    border-radius: var(--radius-pill);
+    border-radius: var(--radius-xs);
     padding: 1px 7px;
     font-size: 11px;
     font-weight: 600;
@@ -1168,7 +1117,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 6px;
-    padding: 6px 10px;
+    padding: 8px 14px;
     background: var(--surface-2);
     border-top: 1px solid var(--border);
   }
@@ -1177,38 +1126,31 @@
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    height: 26px;
-    padding: 0 10px;
+    height: 28px;
+    padding: 0 11px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--surface);
     color: var(--text);
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     white-space: nowrap;
   }
 
-  .farm-twitch:hover {
-    border-color: rgba(168, 85, 247, 0.5);
-    background: var(--twitch-tint);
-    color: var(--twitch-text);
-  }
-
-  .farm-kick:hover {
-    border-color: rgba(83, 252, 24, 0.45);
-    background: var(--kick-tint);
-    color: var(--kick-text);
+  .farm-btn:hover {
+    border-color: var(--accent);
+    color: var(--accent-text);
   }
 
   .farm-btn.selected {
-    background: var(--grad-twitch);
-    border-color: transparent;
-    color: var(--twitch-on);
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-on);
   }
 
-  .farm-btn.farm-kick.selected {
-    background: var(--grad-kick);
-    color: var(--kick-on);
+  .farm-btn.selected:hover {
+    background: var(--accent-hover);
+    color: var(--accent-on);
   }
 
   .footer-right {
@@ -1220,11 +1162,12 @@
   .icon-btn {
     display: inline-flex;
     align-items: center;
+    justify-content: center;
     gap: 4px;
     height: 26px;
     min-width: 26px;
     padding: 0 5px;
-    border-radius: var(--radius-sm);
+    border-radius: var(--radius-xs);
     border: 1px solid transparent;
     background: transparent;
     color: var(--text-muted);
@@ -1239,16 +1182,15 @@
   }
 
   .icon-btn.star-active {
-    background: var(--warning-tint);
-    border-color: rgba(251, 191, 36, 0.35);
-    color: var(--warning-text);
+    background: var(--accent-tint);
+    color: var(--accent-text);
   }
 
   .star-lbl {
     font-size: 11px;
   }
 
-  /* Compact horizontal row layout */
+  /* Compact / Console table-row layout */
   .compact-wrap {
     display: flex;
     flex-direction: column;
@@ -1264,12 +1206,9 @@
     padding: 8px 12px;
   }
 
-  .plat-left-twitch {
-    border-left: 3px solid var(--twitch);
-  }
-
-  .plat-left-kick {
-    border-left: 3px solid var(--kick);
+  .design-console .compact-row {
+    padding: 6px 10px;
+    gap: 8px;
   }
 
   .compact-info {
@@ -1277,7 +1216,14 @@
     min-width: 0;
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
+  }
+
+  .design-console .compact-info {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
   }
 
   .compact-top {
@@ -1310,7 +1256,7 @@
   .compact-title {
     display: block;
     font-size: var(--text-sm);
-    font-weight: 700;
+    font-weight: 600;
     color: var(--text);
     overflow: hidden;
     text-overflow: ellipsis;
@@ -1324,6 +1270,7 @@
     gap: 6px;
     font-size: 11px;
     color: var(--text-muted);
+    flex-shrink: 0;
   }
 
   .compact-pct {
@@ -1334,12 +1281,13 @@
   .compact-right {
     display: flex;
     align-items: center;
-    gap: 6px;
+    gap: 5px;
     flex-shrink: 0;
   }
 
   .compact-farm {
-    height: 26px;
+    height: 24px;
     padding: 0 9px;
+    font-size: 11px;
   }
 </style>

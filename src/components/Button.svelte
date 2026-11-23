@@ -42,39 +42,33 @@
     justify-content: center;
     gap: 6px;
     border: 1px solid transparent;
-    font-weight: 600;
+    font-family: var(--font-mono);
+    font-weight: 500;
     line-height: 1;
     white-space: nowrap;
-    transition:
-      background-color var(--duration-fast) var(--ease-out),
-      border-color var(--duration-fast) var(--ease-out),
-      color var(--duration-fast) var(--ease-out),
-      transform var(--duration-fast) var(--ease-out),
-      opacity var(--duration-fast) var(--ease-out);
   }
 
   .btn-sm {
-    height: 32px;
-    padding: 0 var(--space-3);
+    height: var(--btn-sm-h, 32px);
+    padding: 0 11px;
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+  }
+
+  .btn-md {
+    height: var(--btn-md-h, 36px);
+    padding: 0 15px;
     border-radius: var(--radius-sm);
     font-size: var(--text-sm);
   }
 
-  .btn-md {
-    height: 36px;
-    padding: 0 var(--space-4);
-    border-radius: var(--radius-md);
-    font-size: var(--text-base);
+  .btn-primary {
+    background: var(--accent);
+    color: var(--accent-on);
   }
 
-  .btn-primary {
-    background: var(--grad-accent);
-    color: var(--accent-on);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.28);
-  }
   .btn-primary:hover:not(:disabled) {
-    background: var(--grad-accent-hover);
-    transform: translateY(-1px);
+    background: var(--accent-hover);
   }
 
   .btn-secondary {
@@ -82,6 +76,7 @@
     border-color: var(--border);
     color: var(--text);
   }
+
   .btn-secondary:hover:not(:disabled) {
     background: var(--surface-hover);
     border-color: var(--border-hover);
@@ -91,6 +86,7 @@
     background: transparent;
     color: var(--text-muted);
   }
+
   .btn-ghost:hover:not(:disabled) {
     background: var(--surface-2);
     color: var(--text);
@@ -98,44 +94,40 @@
 
   .btn-danger {
     background: var(--error-tint);
-    border-color: rgba(255, 93, 93, 0.35);
+    border-color: var(--error);
     color: var(--error-text);
   }
+
   .btn-danger:hover:not(:disabled) {
-    background: rgba(255, 93, 93, 0.24);
+    background: var(--error);
+    color: #ffffff;
   }
 
-  .btn-twitch {
-    background: var(--grad-twitch);
-    color: var(--twitch-on);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.22);
-  }
-  .btn-twitch:hover:not(:disabled) {
-    filter: brightness(1.08);
-    transform: translateY(-1px);
-  }
-
+  /* Platform login actions stay crisp and restrained — never neon gradient blocks */
+  .btn-twitch,
   .btn-kick {
-    background: var(--grad-kick);
-    color: var(--kick-on);
-    box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.3);
+    background: var(--surface-2);
+    border-color: var(--border-hover);
+    color: var(--text);
   }
+
+  .btn-twitch:hover:not(:disabled),
   .btn-kick:hover:not(:disabled) {
-    filter: brightness(1.05);
-    transform: translateY(-1px);
+    background: var(--surface-hover);
+    border-color: var(--accent);
   }
 
   .btn:disabled {
-    opacity: 0.48;
+    opacity: 0.45;
     cursor: not-allowed;
   }
 
-  @media (prefers-reduced-motion: reduce) {
+  @media (prefers-reduced-motion: no-preference) {
     .btn {
-      transition: none;
-    }
-    .btn-primary:hover:not(:disabled) {
-      transform: none;
+      transition:
+        background-color var(--duration-fast) var(--ease-out),
+        border-color var(--duration-fast) var(--ease-out),
+        color var(--duration-fast) var(--ease-out);
     }
   }
 </style>

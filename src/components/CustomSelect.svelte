@@ -400,7 +400,6 @@
   .cs-trigger.open {
     border-color: var(--accent);
     background: var(--surface-hover);
-    box-shadow: 0 0 0 2px var(--accent-tint);
   }
 
   .cs-trigger-main {
@@ -456,11 +455,8 @@
     border-radius: var(--radius-md);
     border: 1px solid var(--border-hover);
     background: var(--surface);
-    box-shadow:
-      0 18px 42px rgba(2, 6, 16, 0.72),
-      0 0 0 1px rgba(255, 255, 255, 0.04) inset;
+    box-shadow: var(--popover-shadow);
     overflow: hidden;
-    animation: cs-pop 120ms var(--ease-out);
   }
 
   .cs-menu.upward {
@@ -582,7 +578,7 @@
 
   .cs-option.selected {
     background: var(--accent-tint);
-    border-color: rgba(34, 211, 238, 0.25);
+    border-color: transparent;
   }
 
   .cs-option.selected .cs-opt-label {
@@ -650,8 +646,8 @@
   }
 
   .cs-option.selected .cs-opt-meta {
-    background: rgba(6, 182, 212, 0.14);
-    border-color: rgba(34, 211, 238, 0.3);
+    background: var(--surface);
+    border-color: var(--border);
     color: var(--accent-text);
   }
 
@@ -670,7 +666,6 @@
 
   .tone-live {
     background: var(--success);
-    box-shadow: 0 0 6px rgba(16, 185, 129, 0.55);
   }
 
   .tone-offline {
@@ -686,8 +681,7 @@
   }
 
   .tone-accent {
-    background: var(--accent-hover);
-    box-shadow: 0 0 6px rgba(34, 211, 238, 0.45);
+    background: var(--accent);
   }
 
   .tone-info {

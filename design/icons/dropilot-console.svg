@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
+  <!-- Dropilot — Console: Precision tangent teardrop with compass navigation pointer -->
+  <path
+    fill="#D99B26"
+    fill-rule="evenodd"
+    clip-rule="evenodd"
+    d="M128 22 L190 110 A76 76 0 1 1 66 110 Z M128 96 L162 178 L128 158 L94 178 Z"
+  />
+</svg>
