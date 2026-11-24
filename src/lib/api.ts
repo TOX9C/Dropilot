@@ -72,8 +72,6 @@ function createPreviewData(): {
         },
         webhooks: {
           discordEnabled: false,
-          telegramEnabled: false,
-          telegramChatId: '',
           onDropClaimed: true,
           onActionRequired: true,
           onCampaignCompleted: true,
@@ -120,8 +118,6 @@ function createPreviewData(): {
       },
       webhooks: {
         discordEnabled: false,
-        telegramEnabled: false,
-        telegramChatId: '',
         onDropClaimed: true,
         onActionRequired: true,
         onCampaignCompleted: true,
@@ -530,28 +526,24 @@ export const api = {
   getWebhookSecretsStatus: () =>
     call<WebhookSecretsStatus>('get_webhook_secrets_status', undefined, () => ({
       hasDiscordUrl: false,
-      hasTelegramToken: false,
     })),
-  saveWebhookSecrets: (discordUrl?: string | null, telegramToken?: string | null) =>
+  saveWebhookSecrets: (discordUrl?: string | null) =>
     call<WebhookSecretsStatus>(
       'save_webhook_secrets',
       {
         discordUrl: discordUrl ?? null,
-        telegramToken: telegramToken ?? null,
       },
       () => ({
         hasDiscordUrl: Boolean(discordUrl),
-        hasTelegramToken: Boolean(telegramToken),
       }),
     ),
-  testWebhook: (channel: WebhookChannel, telegramChatId?: string) =>
+  testWebhook: (channel: WebhookChannel) =>
     call<string>(
       'test_webhook',
       {
         channel,
-        telegramChatId: telegramChatId ?? null,
       },
-      () => `Test ${channel === 'discord' ? 'Discord' : 'Telegram'} notification sent`,
+      () => 'Test Discord notification sent',
     ),
   getHistoryStats: () =>
     call<HistoryStats>('get_history_stats', undefined, () => ({

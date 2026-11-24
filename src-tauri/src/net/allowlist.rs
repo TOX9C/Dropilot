@@ -39,7 +39,6 @@ pub const DISCORD_WEBHOOK_HOSTS: &[&str] = &[
     "ptb.discord.com",
     "canary.discord.com",
 ];
-pub const TELEGRAM_API_HOST: &str = "api.telegram.org";
 
 pub const LOGIN_IDP_EXACT_HOSTS: &[&str] = &[
     "accounts.google.com",
@@ -91,11 +90,6 @@ fn is_valid_webhook_url(host: &str, path: &str) -> bool {
         };
         let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
         return parts.len() >= 2 && parts[0].chars().all(|c| c.is_ascii_digit());
-    }
-    if host == TELEGRAM_API_HOST {
-        return path.starts_with("/bot")
-            && path.ends_with("/sendMessage")
-            && path.len() > "/bot/sendMessage".len();
     }
     false
 }
@@ -259,7 +253,7 @@ mod tests {
     }
 
     #[test]
-    fn webhook_allows_only_discord_and_telegram_endpoints() {
+    fn webhook_allows_only_discord_endpoints() {
         assert!(validate_url(
             &parse("https://discord.com/api/webhooks/123456789012345678/abcDEF_token-123"),
             AllowlistKind::Webhook
@@ -269,15 +263,7 @@ mod tests {
             AllowlistKind::Webhook
         ).is_ok());
         assert!(validate_url(
-            &parse("https://api.telegram.org/bot123456:ABC-DEF1234/sendMessage"),
-            AllowlistKind::Webhook
-        ).is_ok());
-        assert!(validate_url(
             &parse("https://discord.com/api/v10/users/@me"),
-            AllowlistKind::Webhook
-        ).is_err());
-        assert!(validate_url(
-            &parse("https://api.telegram.org/bot123456:ABC/getUpdates"),
             AllowlistKind::Webhook
         ).is_err());
         assert!(validate_url(

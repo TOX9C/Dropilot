@@ -64,14 +64,11 @@
 
   let webhookSecrets = $state<WebhookSecretsStatus>({
     hasDiscordUrl: false,
-    hasTelegramToken: false,
   });
   let discordUrlInput = $state('');
-  let telegramTokenInput = $state('');
-  let telegramChatIdInput = $state('');
   let savingWebhook = $state(false);
-  let testingChannel = $state<'discord' | 'telegram' | null>(null);
-  let webhookFeedback = $state<{ channel: 'discord' | 'telegram'; ok: boolean; text: string } | null>(null);
+  let testingDiscord = $state(false);
+  let webhookFeedback = $state<{ ok: boolean; text: string } | null>(null);
 
   const timeOptions: SelectOption[] = Array.from({ length: 48 }, (_, idx) => {
     const mins = idx * 30;
@@ -84,20 +81,12 @@
   });
 
   onMount(() => {
-    telegramChatIdInput = settings.webhooks?.telegramChatId ?? '';
     void api
       .getWebhookSecretsStatus()
       .then((st) => {
         webhookSecrets = st;
       })
       .catch(() => {});
-  });
-
-  $effect(() => {
-    const cur = settings.webhooks?.telegramChatId ?? '';
-    if (cur && !telegramChatIdInput) {
-      telegramChatIdInput = cur;
-    }
   });
 
   const tabs: { id: SettingsTab; label: string; desc: string }[] = [
@@ -194,10 +183,8 @@
       await api.clearAppData();
       const fresh = await api.getSettings();
       appSettings.set(fresh);
-      webhookSecrets = { hasDiscordUrl: false, hasTelegramToken: false };
+      webhookSecrets = { hasDiscordUrl: false };
       discordUrlInput = '';
-      telegramTokenInput = '';
-      telegramChatIdInput = '';
       clearModalOpen = false;
       notifyUi('Cleared Dropilot accounts and local WebView2 data');
     } catch (err) {
@@ -226,7 +213,7 @@
     savingWebhook = true;
     try {
       const val = clear ? '' : discordUrlInput.trim();
-      webhookSecrets = await api.saveWebhookSecrets(val, null);
+      webhookSecrets = await api.saveWebhookSecrets(val);
       discordUrlInput = '';
       if (clear) {
         await savePatch((d) => (d.webhooks.discordEnabled = false));
@@ -242,61 +229,25 @@
     }
   }
 
-  async function handleSaveTelegram(clear = false) {
-    savingWebhook = true;
-    try {
-      if (clear) {
-        webhookSecrets = await api.saveWebhookSecrets(null, '');
-        telegramTokenInput = '';
-        telegramChatIdInput = '';
-        await savePatch((d) => {
-          d.webhooks.telegramEnabled = false;
-          d.webhooks.telegramChatId = '';
-        });
-        notifyUi('Telegram credentials removed from Credential Manager');
-      } else {
-        if (telegramTokenInput.trim()) {
-          webhookSecrets = await api.saveWebhookSecrets(null, telegramTokenInput.trim());
-          telegramTokenInput = '';
-        }
-        await savePatch((d) => {
-          d.webhooks.telegramChatId = telegramChatIdInput.trim();
-          if (webhookSecrets.hasTelegramToken && telegramChatIdInput.trim()) {
-            d.webhooks.telegramEnabled = true;
-          }
-        });
-        notifyUi('Telegram alert settings saved');
-      }
-    } catch (err) {
-      notifyUi(String(err), 'error');
-    } finally {
-      savingWebhook = false;
-    }
-  }
-
-  async function handleTestWebhook(channel: 'discord' | 'telegram') {
-    testingChannel = channel;
+  async function handleTestDiscordWebhook() {
+    testingDiscord = true;
     webhookFeedback = null;
     try {
-      if (channel === 'discord' && discordUrlInput.trim()) {
-        webhookSecrets = await api.saveWebhookSecrets(discordUrlInput.trim(), null);
+      if (discordUrlInput.trim()) {
+        webhookSecrets = await api.saveWebhookSecrets(discordUrlInput.trim());
         discordUrlInput = '';
         await savePatch((d) => (d.webhooks.discordEnabled = true));
       }
-      const resultMsg = await api.testWebhook(
-        channel,
-        channel === 'telegram' ? telegramChatIdInput.trim() : undefined,
-      );
-      const okMsg =
-        resultMsg || `Test ${channel === 'discord' ? 'Discord' : 'Telegram'} notification sent`;
-      webhookFeedback = { channel, ok: true, text: okMsg };
+      const resultMsg = await api.testWebhook('discord');
+      const okMsg = resultMsg || 'Test Discord notification sent';
+      webhookFeedback = { ok: true, text: okMsg };
       notifyUi(okMsg);
     } catch (err) {
       const errMsg = String(err);
-      webhookFeedback = { channel, ok: false, text: errMsg };
+      webhookFeedback = { ok: false, text: errMsg };
       notifyUi(errMsg, 'error');
     } finally {
-      testingChannel = null;
+      testingDiscord = false;
     }
   }
 
@@ -798,150 +749,85 @@
       <div class="card pref-card pref-wide webhook-card">
         <div class="studio-head">
           <div>
-            <h3>Discord &amp; Telegram Webhook Alerts</h3>
-            <p class="studio-sub">Get pinged when drops are claimed or require verification. Secrets stay encrypted in Windows Credential Manager.</p>
+            <h3>Discord Webhook Alerts</h3>
+            <p class="studio-sub">Get pinged on Discord when drops are claimed or require verification. Your webhook URL stays encrypted in Windows Credential Manager.</p>
           </div>
           <Badge tone="neutral">Encrypted</Badge>
         </div>
 
-        <div class="webhook-grid">
-          <div class="webhook-box">
-            <div class="webhook-box-head">
-              <div class="webhook-title-row">
-                <strong>Discord Webhook</strong>
-                {#if webhookSecrets.hasDiscordUrl}
-                  <Badge tone="success">Saved</Badge>
-                {:else}
-                  <Badge tone="neutral">Not set</Badge>
-                {/if}
-              </div>
-              <Toggle
-                checked={settings.webhooks.discordEnabled}
-                ariaLabel="Enable Discord webhook alerts"
-                onchange={(v) => savePatch((d) => (d.webhooks.discordEnabled = v))}
-              />
-            </div>
-            <div class="webhook-input-row">
-              <input
-                type="password"
-                class="secret-input"
-                bind:value={discordUrlInput}
-                placeholder={webhookSecrets.hasDiscordUrl
-                  ? 'Webhook URL stored securely (paste new URL to replace)'
-                  : 'https://discord.com/api/webhooks/...'}
-                aria-label="Discord webhook URL"
-              />
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={savingWebhook || !discordUrlInput.trim()}
-                onclick={() => handleSaveDiscordUrl(false)}
-              >
-                Save
-              </Button>
-              {#if webhookSecrets.hasDiscordUrl || discordUrlInput.trim()}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={testingChannel === 'discord' || savingWebhook}
-                  onclick={() => handleTestWebhook('discord')}
-                >
-                  <Send size={12} />
-                  <span>{testingChannel === 'discord' ? 'Sending...' : 'Test'}</span>
-                </Button>
-              {/if}
+        <div class="webhook-box">
+          <div class="webhook-box-head">
+            <div class="webhook-title-row">
+              <strong>Discord Webhook</strong>
               {#if webhookSecrets.hasDiscordUrl}
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={savingWebhook}
-                  onclick={() => handleSaveDiscordUrl(true)}
-                >
-                  Remove
-                </Button>
+                <Badge tone="success">Saved</Badge>
+              {:else}
+                <Badge tone="neutral">Not set</Badge>
               {/if}
             </div>
-            {#if webhookFeedback?.channel === 'discord'}
-              {@const urlMatch = webhookFeedback.text.match(/https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/)}
-              <div class="webhook-feedback-row">
-                <p class="webhook-feedback" class:fb-ok={webhookFeedback.ok} class:fb-err={!webhookFeedback.ok}>
-                  {urlMatch ? webhookFeedback.text.replace(/\s*·\s*https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/, '') : webhookFeedback.text}
-                </p>
-                {#if urlMatch}
-                  <button
-                    type="button"
-                    class="fb-open-link"
-                    onclick={() => api.openUrl(urlMatch[0]).catch((e) => notifyUi(String(e), 'error'))}
-                  >
-                    Open in Discord
-                  </button>
-                {/if}
-              </div>
+            <Toggle
+              checked={settings.webhooks.discordEnabled}
+              ariaLabel="Enable Discord webhook alerts"
+              onchange={(v) => savePatch((d) => (d.webhooks.discordEnabled = v))}
+            />
+          </div>
+          <div class="webhook-input-row">
+            <input
+              type="password"
+              class="secret-input"
+              bind:value={discordUrlInput}
+              placeholder={webhookSecrets.hasDiscordUrl
+                ? 'Webhook URL stored securely (paste new URL to replace)'
+                : 'https://discord.com/api/webhooks/...'}
+              aria-label="Discord webhook URL"
+            />
+            <Button
+              variant="primary"
+              size="sm"
+              disabled={savingWebhook || !discordUrlInput.trim()}
+              onclick={() => handleSaveDiscordUrl(false)}
+            >
+              Save
+            </Button>
+            {#if webhookSecrets.hasDiscordUrl || discordUrlInput.trim()}
+              <Button
+                variant="secondary"
+                size="sm"
+                disabled={testingDiscord || savingWebhook}
+                onclick={handleTestDiscordWebhook}
+              >
+                <Send size={12} />
+                <span>{testingDiscord ? 'Sending...' : 'Test'}</span>
+              </Button>
+            {/if}
+            {#if webhookSecrets.hasDiscordUrl}
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={savingWebhook}
+                onclick={() => handleSaveDiscordUrl(true)}
+              >
+                Remove
+              </Button>
             {/if}
           </div>
-
-          <div class="webhook-box">
-            <div class="webhook-box-head">
-              <div class="webhook-title-row">
-                <strong>Telegram Bot</strong>
-                {#if webhookSecrets.hasTelegramToken}
-                  <Badge tone="success">Token saved</Badge>
-                {:else}
-                  <Badge tone="neutral">Not set</Badge>
-                {/if}
-              </div>
-              <Toggle
-                checked={settings.webhooks.telegramEnabled}
-                ariaLabel="Enable Telegram bot alerts"
-                onchange={(v) => savePatch((d) => (d.webhooks.telegramEnabled = v))}
-              />
-            </div>
-            <div class="webhook-input-row">
-              <input
-                type="password"
-                class="secret-input"
-                bind:value={telegramTokenInput}
-                placeholder={webhookSecrets.hasTelegramToken
-                  ? 'Bot token stored securely (paste to replace)'
-                  : 'Bot token from @BotFather (123456:ABC...)'}
-                aria-label="Telegram bot token"
-              />
-              <input
-                type="text"
-                class="secret-input chat-id-input"
-                bind:value={telegramChatIdInput}
-                placeholder="Chat ID"
-                aria-label="Telegram chat ID"
-              />
-              <Button
-                variant="primary"
-                size="sm"
-                disabled={savingWebhook || (!telegramTokenInput.trim() && !telegramChatIdInput.trim())}
-                onclick={() => handleSaveTelegram(false)}
-              >
-                Save
-              </Button>
-              {#if webhookSecrets.hasTelegramToken}
-                <Button
-                  variant="secondary"
-                  size="sm"
-                  disabled={testingChannel === 'telegram'}
-                  onclick={() => handleTestWebhook('telegram')}
+          {#if webhookFeedback}
+            {@const urlMatch = webhookFeedback.text.match(/https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/)}
+            <div class="webhook-feedback-row">
+              <p class="webhook-feedback" class:fb-ok={webhookFeedback.ok} class:fb-err={!webhookFeedback.ok}>
+                {urlMatch ? webhookFeedback.text.replace(/\s*·\s*https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/, '') : webhookFeedback.text}
+              </p>
+              {#if urlMatch}
+                <button
+                  type="button"
+                  class="fb-open-link"
+                  onclick={() => api.openUrl(urlMatch[0]).catch((e) => notifyUi(String(e), 'error'))}
                 >
-                  <Send size={12} />
-                  <span>{testingChannel === 'telegram' ? 'Sending...' : 'Test'}</span>
-                </Button>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  disabled={savingWebhook}
-                  onclick={() => handleSaveTelegram(true)}
-                >
-                  Remove
-                </Button>
+                  Open in Discord
+                </button>
               {/if}
             </div>
-          </div>
+          {/if}
         </div>
 
         <div class="event-toggles">
@@ -1826,18 +1712,6 @@
     gap: 14px;
   }
 
-  .webhook-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
-  }
-
-  @media (max-width: 860px) {
-    .webhook-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
   .webhook-box {
     display: flex;
     flex-direction: column;
@@ -1873,11 +1747,6 @@
     flex: 1;
     min-width: 160px;
     background: var(--surface);
-  }
-
-  .chat-id-input {
-    flex: 0 0 110px;
-    min-width: 90px;
   }
 
   .event-toggles {

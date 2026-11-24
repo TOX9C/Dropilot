@@ -15,7 +15,7 @@ use crate::secrets::SecretStore;
 use crate::settings::WebhookSettings;
 
 pub const WEBHOOK_DISCORD_SECRET_KEY: &str = "webhook_discord_url";
-pub const WEBHOOK_TELEGRAM_SECRET_KEY: &str = "webhook_telegram_token";
+const LEGACY_WEBHOOK_TELEGRAM_SECRET_KEY: &str = "webhook_telegram_token";
 
 const ACTION_REQUIRED_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 
@@ -23,14 +23,12 @@ const ACTION_REQUIRED_COOLDOWN: Duration = Duration::from_secs(15 * 60);
 #[serde(rename_all = "lowercase")]
 pub enum WebhookChannel {
     Discord,
-    Telegram,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WebhookSecretsStatus {
     pub has_discord_url: bool,
-    pub has_telegram_token: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -79,14 +77,7 @@ impl WebhookDispatcher {
             .ok()
             .flatten()
             .is_some();
-        let has_telegram_token = SecretStore::load_named_secret(WEBHOOK_TELEGRAM_SECRET_KEY)
-            .ok()
-            .flatten()
-            .is_some();
-        WebhookSecretsStatus {
-            has_discord_url,
-            has_telegram_token,
-        }
+        WebhookSecretsStatus { has_discord_url }
     }
 
     fn normalize_discord_url(raw_url: &str) -> Result<String, String> {
@@ -134,36 +125,13 @@ impl WebhookDispatcher {
             .map_err(|e| e.user_message())
     }
 
-    pub fn save_telegram_token(raw_token: &str) -> Result<(), String> {
-        let trimmed = raw_token.trim();
-        if trimmed.is_empty() {
-            SecretStore::delete_named_secret(WEBHOOK_TELEGRAM_SECRET_KEY)
-                .map_err(|e| e.user_message())?;
-            return Ok(());
-        }
-        if trimmed.contains(char::is_whitespace) || !trimmed.contains(':') {
-            return Err(
-                "Telegram bot token must look like 123456789:ABCdef... (from @BotFather)"
-                    .to_string(),
-            );
-        }
-        let probe = format!("https://api.telegram.org/bot{trimmed}/sendMessage");
-        let parsed =
-            Url::parse(&probe).map_err(|_| "Invalid Telegram bot token characters".to_string())?;
-        validate_url(&parsed, AllowlistKind::Webhook)
-            .map_err(|_| "Invalid Telegram bot token format".to_string())?;
-
-        SecretStore::save_named_secret(WEBHOOK_TELEGRAM_SECRET_KEY, trimmed)
-            .map_err(|e| e.user_message())
-    }
-
     pub fn clear_all_secrets() {
         let _ = SecretStore::delete_named_secret(WEBHOOK_DISCORD_SECRET_KEY);
-        let _ = SecretStore::delete_named_secret(WEBHOOK_TELEGRAM_SECRET_KEY);
+        let _ = SecretStore::delete_named_secret(LEGACY_WEBHOOK_TELEGRAM_SECRET_KEY);
     }
 
     fn should_send_event(&self, settings: &WebhookSettings, event: &WebhookEvent) -> bool {
-        if !settings.discord_enabled && !settings.telegram_enabled {
+        if !settings.discord_enabled {
             return false;
         }
         match event {
@@ -219,23 +187,6 @@ impl WebhookDispatcher {
                     }
                 }
             }
-
-            if settings.telegram_enabled && !settings.telegram_chat_id.trim().is_empty() {
-                if let Ok(Some(tok_secret)) =
-                    SecretStore::load_named_secret(WEBHOOK_TELEGRAM_SECRET_KEY)
-                {
-                    let url = format!(
-                        "https://api.telegram.org/bot{}/sendMessage",
-                        tok_secret.expose()
-                    );
-                    let payload =
-                        build_telegram_payload(settings.telegram_chat_id.trim(), &event);
-                    match http.post_webhook_json("telegram_webhook", &url, &payload).await {
-                        Ok(_) => info!("Delivered Telegram webhook notification"),
-                        Err(err) => warn!(error = %err, "Telegram webhook delivery failed"),
-                    }
-                }
-            }
         });
     }
 
@@ -243,7 +194,6 @@ impl WebhookDispatcher {
     pub async fn send_test(
         http: &AllowlistedClient,
         channel: WebhookChannel,
-        telegram_chat_id: &str,
     ) -> Result<String, String> {
         let event = WebhookEvent::TestPing;
         match channel {
@@ -330,39 +280,6 @@ impl WebhookDispatcher {
                     }
                     Err(e) => {
                         warn!(error = %e, "Discord test webhook failed");
-                        Err(e.user_message())
-                    }
-                }
-            }
-            WebhookChannel::Telegram => {
-                let chat_id = telegram_chat_id.trim();
-                if chat_id.is_empty() {
-                    return Err("Enter your Telegram Chat ID first".to_string());
-                }
-                let tok = SecretStore::load_named_secret(WEBHOOK_TELEGRAM_SECRET_KEY)
-                    .map_err(|e| e.user_message())?
-                    .ok_or_else(|| "Save a Telegram bot token first".to_string())?;
-                let url = format!("https://api.telegram.org/bot{}/sendMessage", tok.expose());
-                let payload = build_telegram_payload(chat_id, &event);
-                match http
-                    .post_webhook_json("telegram_webhook_test", &url, &payload)
-                    .await
-                {
-                    Ok((_status, body)) => {
-                        if let Ok(val) = serde_json::from_str::<Value>(&body) {
-                            if val.get("ok").and_then(|v| v.as_bool()) == Some(false) {
-                                let desc = val
-                                    .get("description")
-                                    .and_then(|v| v.as_str())
-                                    .unwrap_or("Telegram rejected request");
-                                return Err(format!("Telegram error: {desc}"));
-                            }
-                        }
-                        info!("Delivered Telegram test webhook notification");
-                        Ok("Test Telegram notification sent".to_string())
-                    }
-                    Err(e) => {
-                        warn!(error = %e, "Telegram test webhook failed");
                         Err(e.user_message())
                     }
                 }
@@ -465,64 +382,6 @@ fn build_discord_payload(event: &WebhookEvent) -> Value {
     })
 }
 
-fn escape_html(s: &str) -> String {
-    s.replace('&', "&amp;")
-        .replace('<', "&lt;")
-        .replace('>', "&gt;")
-}
-
-fn build_telegram_payload(chat_id: &str, event: &WebhookEvent) -> Value {
-    let text = match event {
-        WebhookEvent::DropClaimed {
-            platform,
-            game_name,
-            campaign_name,
-            drop_name,
-            ..
-        } => format!(
-            "<b>Drop Claimed ({})</b>\nReward: <b>{}</b>\nGame: {}\nCampaign: {}",
-            escape_html(platform.display_name()),
-            escape_html(drop_name),
-            escape_html(game_name),
-            escape_html(campaign_name),
-        ),
-        WebhookEvent::ActionRequired {
-            platform,
-            title,
-            detail,
-            ..
-        } => format!(
-            "<b>Action Required ({})</b>\n{}\n{}",
-            escape_html(platform.display_name()),
-            escape_html(title),
-            escape_html(detail),
-        ),
-        WebhookEvent::CampaignCompleted {
-            platform,
-            game_name,
-            campaign_name,
-            drops_count,
-        } => format!(
-            "<b>Campaign Completed ({})</b>\nGame: <b>{}</b>\nCampaign: {}\nRewards claimed: {}",
-            escape_html(platform.display_name()),
-            escape_html(game_name),
-            escape_html(campaign_name),
-            drops_count,
-        ),
-        WebhookEvent::TestPing => format!(
-            "<b>Dropilot Connected</b>\nTest notification succeeded (v{}). Drop claims and action alerts will arrive here.",
-            env!("CARGO_PKG_VERSION")
-        ),
-    };
-
-    json!({
-        "chat_id": chat_id,
-        "text": text,
-        "parse_mode": "HTML",
-        "disable_web_page_preview": true
-    })
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -542,21 +401,6 @@ mod tests {
             payload["embeds"][0]["thumbnail"]["url"],
             "https://static-cdn.jtvnw.net/drop.png"
         );
-    }
-
-    #[test]
-    fn telegram_payload_escapes_html_entities() {
-        let payload = build_telegram_payload(
-            "12345",
-            &WebhookEvent::ActionRequired {
-                platform: PlatformId::Twitch,
-                category: "manual_claim".to_string(),
-                title: "Claim <needs> you & verify".to_string(),
-                detail: "Open inventory".to_string(),
-            },
-        );
-        let text = payload["text"].as_str().unwrap_or("");
-        assert!(text.contains("Claim &lt;needs&gt; you &amp; verify"));
     }
 
     #[test]

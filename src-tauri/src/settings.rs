@@ -147,10 +147,6 @@ impl Default for ScheduleSettings {
 pub struct WebhookSettings {
     #[serde(default)]
     pub discord_enabled: bool,
-    #[serde(default)]
-    pub telegram_enabled: bool,
-    #[serde(default)]
-    pub telegram_chat_id: String,
     #[serde(default = "default_true")]
     pub on_drop_claimed: bool,
     #[serde(default = "default_true")]
@@ -163,8 +159,6 @@ impl Default for WebhookSettings {
     fn default() -> Self {
         Self {
             discord_enabled: false,
-            telegram_enabled: false,
-            telegram_chat_id: String::new(),
             on_drop_claimed: true,
             on_action_required: true,
             on_campaign_completed: true,
@@ -243,7 +237,6 @@ impl Settings {
             .clamp(MIN_REFRESH_MINUTES, MAX_REFRESH_MINUTES);
         self.schedule.quiet_start_minutes %= 24 * 60;
         self.schedule.quiet_end_minutes %= 24 * 60;
-        self.webhooks.telegram_chat_id = self.webhooks.telegram_chat_id.trim().to_string();
         if !cfg!(feature = "mock") {
             self.mock_mode = false;
         }

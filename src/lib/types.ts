@@ -151,8 +151,6 @@ export interface ScheduleSettings {
 
 export interface WebhookSettings {
   discordEnabled: boolean;
-  telegramEnabled: boolean;
-  telegramChatId: string;
   onDropClaimed: boolean;
   onActionRequired: boolean;
   onCampaignCompleted: boolean;
@@ -160,10 +158,9 @@ export interface WebhookSettings {
 
 export interface WebhookSecretsStatus {
   hasDiscordUrl: boolean;
-  hasTelegramToken: boolean;
 }
 
-export type WebhookChannel = 'discord' | 'telegram';
+export type WebhookChannel = 'discord';
 
 export interface RemoteConfigStatus {
   source: 'remote' | 'cache' | 'bundled';

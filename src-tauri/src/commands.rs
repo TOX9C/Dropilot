@@ -682,13 +682,9 @@ pub async fn get_webhook_secrets_status() -> Result<WebhookSecretsStatus, String
 #[tauri::command]
 pub async fn save_webhook_secrets(
     discord_url: Option<String>,
-    telegram_token: Option<String>,
 ) -> Result<WebhookSecretsStatus, String> {
     if let Some(url) = discord_url {
         WebhookDispatcher::save_discord_url(&url)?;
-    }
-    if let Some(tok) = telegram_token {
-        WebhookDispatcher::save_telegram_token(&tok)?;
     }
     Ok(WebhookDispatcher::secrets_status())
 }
@@ -697,13 +693,8 @@ pub async fn save_webhook_secrets(
 pub async fn test_webhook(
     state: State<'_, Arc<AppState>>,
     channel: WebhookChannel,
-    telegram_chat_id: Option<String>,
 ) -> Result<String, String> {
-    let chat_id = match telegram_chat_id {
-        Some(id) if !id.trim().is_empty() => id,
-        _ => state.settings.read().await.webhooks.telegram_chat_id.clone(),
-    };
-    WebhookDispatcher::send_test(&state.http, channel, &chat_id).await
+    WebhookDispatcher::send_test(&state.http, channel).await
 }
 
 #[tauri::command]
