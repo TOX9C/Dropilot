@@ -2,7 +2,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
-use chrono::{SecondsFormat, Utc};
+use chrono::{DateTime, SecondsFormat, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tracing::{info, warn};
@@ -51,6 +51,13 @@ pub enum WebhookEvent {
         game_name: String,
         campaign_name: String,
         drops_count: usize,
+    },
+    EpicFreeGame {
+        title: String,
+        original_price: String,
+        ends_at: DateTime<Utc>,
+        store_url: String,
+        image_url: Option<String>,
     },
     TestPing,
 }
@@ -137,6 +144,7 @@ impl WebhookDispatcher {
         match event {
             WebhookEvent::DropClaimed { .. } => settings.on_drop_claimed,
             WebhookEvent::CampaignCompleted { .. } => settings.on_campaign_completed,
+            WebhookEvent::EpicFreeGame { .. } => settings.on_epic_free_games,
             WebhookEvent::ActionRequired {
                 platform, category, ..
             } => {
@@ -360,6 +368,34 @@ fn build_discord_payload(event: &WebhookEvent) -> Value {
                 "timestamp": ts
             }),
         ),
+        WebhookEvent::EpicFreeGame {
+            title,
+            original_price,
+            ends_at,
+            store_url,
+            image_url,
+        } => {
+            let value_label = if original_price.is_empty() || original_price == "Free" {
+                "FREE".to_string()
+            } else {
+                format!("~~{original_price}~~ → **FREE**")
+            };
+            let mut obj = json!({
+                "title": format!("Epic Free Game · {title}"),
+                "url": store_url,
+                "description": format!("{value_label}\nClaim before <t:{}:R>.", ends_at.timestamp()),
+                "color": 0xe5a93b,
+                "footer": { "text": "Dropilot · Epic Free Weekly" },
+                "timestamp": ts
+            });
+            if let Some(img) = image_url.as_deref().filter(|s| s.starts_with("https://")) {
+                obj["image"] = json!({ "url": img });
+            }
+            (
+                format!("Free on Epic Games Store: **{title}** — {store_url}"),
+                obj,
+            )
+        }
         WebhookEvent::TestPing => (
             format!(
                 "Dropilot v{} webhook connected — test notification succeeded.",

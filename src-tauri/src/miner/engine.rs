@@ -1295,7 +1295,7 @@ async fn claim_ready_drops(
                 state
                     .record_manual_claim(ClaimHistoryEntry {
                         id: format!("{}-{}", camp_id, drop.id),
-                        platform: platform_id,
+                        platform: platform_id.into(),
                         game_name: game_name.clone(),
                         campaign_name: camp_name.clone(),
                         drop_name: display_drop_name.clone(),

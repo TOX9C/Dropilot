@@ -154,6 +154,7 @@ export interface WebhookSettings {
   onDropClaimed: boolean;
   onActionRequired: boolean;
   onCampaignCompleted: boolean;
+  onEpicFreeGames: boolean;
 }
 
 export interface WebhookSecretsStatus {
@@ -173,11 +174,12 @@ export interface RemoteConfigStatus {
   lastError: string | null;
 }
 
+export type ClaimPlatform = 'twitch' | 'kick' | 'epic';
 export type ClaimRecordStatus = 'claimed' | 'manual_required';
 
 export interface ClaimHistoryEntry {
   id: string;
-  platform: PlatformId;
+  platform: ClaimPlatform;
   gameName: string;
   campaignName: string;
   dropName: string;
@@ -196,6 +198,7 @@ export interface HistoryStats {
   totalClaims: number;
   twitchClaims: number;
   kickClaims: number;
+  epicClaims: number;
   totalWatchMinutes: number;
   currentStreakDays: number;
   bestStreakDays: number;
@@ -203,6 +206,32 @@ export interface HistoryStats {
   topGameClaims: number;
   dailyActivity: DailyActivityPoint[];
   claims: ClaimHistoryEntry[];
+}
+
+export type EpicOfferStatus = 'active' | 'upcoming';
+
+export interface EpicFreeGame {
+  id: string;
+  namespace: string;
+  title: string;
+  description: string;
+  seller: string;
+  originalPrice: string;
+  status: EpicOfferStatus;
+  startsAt: string;
+  endsAt: string;
+  storeUrl: string;
+  boxArtUrl: string | null;
+  bannerUrl: string | null;
+  claimed: boolean;
+  claimedAt: string | null;
+}
+
+export interface EpicFeedSnapshot {
+  games: EpicFreeGame[];
+  fetchedAt: string | null;
+  lastError: string | null;
+  source: string;
 }
 
 export interface HistoryExportResult {
@@ -268,10 +297,12 @@ export type NavRoute =
   | 'history'
   | 'twitch'
   | 'kick'
+  | 'epic'
   | 'logs'
   | 'settings';
 
 export type PlatformFilter = 'all' | 'twitch' | 'kick';
+export type HistoryPlatformFilter = 'all' | 'twitch' | 'kick' | 'epic';
 
 export type CampaignFilter =
   | 'all'

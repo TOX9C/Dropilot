@@ -484,18 +484,55 @@ pub async fn open_drops_inventory_window(
     Ok(())
 }
 
+pub async fn open_epic_claim_window(
+    app: &AppHandle,
+    state: Arc<AppState>,
+    store_url: &str,
+    game_title: &str,
+) -> Result<(), AppError> {
+    let parsed = Url::parse(store_url)
+        .map_err(|e| AppError::Internal(format!("Invalid Epic Store URL: {e}")))?;
+    validate_url(&parsed, AllowlistKind::EpicCheckout)?;
+
+    const LABEL: &str = "epic-claim";
+    if let Some(existing) = app.get_webview_window(LABEL) {
+        let _ = existing.navigate(parsed);
+        let _ = existing.set_title(&format!("Claim {} — Epic Games · Dropilot", game_title));
+        let _ = existing.show();
+        let _ = existing.set_focus();
+        return Ok(());
+    }
+
+    let theme = state.settings.read().await.theme;
+    let title = format!("Claim {} — Epic Games · Dropilot", game_title);
+
+    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(parsed))
+        .title(&title)
+        .inner_size(1100.0, 780.0)
+        .center()
+        .theme(resolve_tauri_theme(theme))
+        .data_directory(webview_data_dir())
+        .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
+        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::EpicCheckout))
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed opening Epic Games claim window: {e}")))?;
+
+    Ok(())
+}
+
 pub async fn clear_webview_browsing_data(app: &AppHandle) -> Result<(), AppError> {
     // Clear UI cache if main window is open (separate lightweight UI WebView2 profile).
     if let Some(main) = app.get_webview_window("main") {
         let _ = main.clear_all_browsing_data();
     }
 
-    // Clear platform session cookies (Twitch/Kick) in `webview_data_dir()`.
+    // Clear platform session cookies (Twitch/Kick/Epic) in `webview_data_dir()`.
     for label in [
         "login-twitch",
         "login-kick",
         "inventory-twitch",
         "inventory-kick",
+        "epic-claim",
         "kick-bridge",
         "twitch-bridge",
     ] {

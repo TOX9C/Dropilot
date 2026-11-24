@@ -425,6 +425,44 @@ impl AllowlistedClient {
             .map_err(|e| AppError::PlatformChanged(format!("Invalid remote config JSON: {e}")))
     }
 
+    pub async fn fetch_epic_free_games_json(
+        &self,
+        raw_url: &str,
+    ) -> Result<serde_json::Value, AppError> {
+        let parsed = Url::parse(raw_url)
+            .map_err(|e| AppError::Internal(format!("Invalid Epic feed URL: {e}")))?;
+        validate_url(&parsed, AllowlistKind::EpicFeed)?;
+
+        let started = Instant::now();
+        let resp: Response = self
+            .http_update
+            .get(parsed)
+            .header(USER_AGENT, format!("Dropilot/{}", env!("CARGO_PKG_VERSION")))
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| map_reqwest_error("epic_free_games", e))?;
+
+        let status = resp.status();
+        debug!(
+            op = "epic_free_games",
+            status = status.as_u16(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            "Epic free games fetch completed"
+        );
+
+        if !status.is_success() {
+            return Err(AppError::Network(format!(
+                "Epic Games catalog returned HTTP {}",
+                status.as_u16()
+            )));
+        }
+
+        resp.json::<serde_json::Value>()
+            .await
+            .map_err(|e| AppError::PlatformChanged(format!("Invalid Epic Games catalog JSON: {e}")))
+    }
+
     pub async fn get_webhook_json(
         &self,
         op_name: &str,

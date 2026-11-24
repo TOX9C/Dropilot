@@ -5,6 +5,7 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import Gift from 'lucide-svelte/icons/gift';
   import Play from 'lucide-svelte/icons/play';
+  import Sparkles from 'lucide-svelte/icons/sparkles';
   import Zap from 'lucide-svelte/icons/zap';
   import ActivityFeed from '../components/ActivityFeed.svelte';
   import Badge from '../components/Badge.svelte';
@@ -34,7 +35,7 @@
     computeLiveCampaignProgress,
     computeUpNextQueue,
   } from '../lib/selectors';
-  import { activeRoute, notifyUi, sessionHistory, sessionMinutes } from '../lib/stores';
+  import { activeRoute, epicFeed, notifyUi, sessionHistory, sessionMinutes } from '../lib/stores';
   import type {
     AppSnapshot,
     Campaign,
@@ -57,6 +58,17 @@
   const upNext = $derived(computeUpNextQueue(snapshot, settings, $slowNowMs, 6));
   const endingSoon = $derived(computeEndingSoon(snapshot, $slowNowMs));
   const cards = $derived([snapshot.twitch, snapshot.kick]);
+  const epicFreeNow = $derived(
+    ($epicFeed?.games ?? []).filter((g) => g.status === 'active' && !g.claimed),
+  );
+
+  async function quickClaimEpic(gameId: string) {
+    try {
+      await api.openEpicClaim(gameId);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
 
   function findActiveCampaign(snap: PlatformSnapshot): Campaign | null {
     if (!snap.currentCampaignId) return null;
@@ -234,6 +246,52 @@
       </div>
     {/each}
   </section>
+
+  {#if epicFreeNow.length > 0}
+    <section class="card epic-banner" aria-label="Epic Games free this week">
+      <div class="epic-banner-head">
+        <div class="epic-banner-title">
+          <Sparkles size={14} class="epic-accent-ico" />
+          <span class="epic-banner-kicker">EPIC FREE THIS WEEK</span>
+          <Badge tone="accent">{epicFreeNow.length} unclaimed</Badge>
+        </div>
+        <Button variant="ghost" size="sm" onclick={() => activeRoute.set('epic')}>
+          View all
+        </Button>
+      </div>
+      <div class="epic-banner-list">
+        {#each epicFreeNow as game (game.id)}
+          <div class="epic-banner-row">
+            {#if game.bannerUrl || game.boxArtUrl}
+              <img
+                src={game.bannerUrl || game.boxArtUrl || ''}
+                alt={game.title}
+                class="epic-thumb"
+                loading="lazy"
+                decoding="async"
+              />
+            {/if}
+            <div class="epic-banner-info">
+              <strong class="epic-banner-name truncate">{game.title}</strong>
+              <div class="epic-banner-meta tabular">
+                {#if game.originalPrice && game.originalPrice !== 'Free'}
+                  <span class="epic-orig-price">{game.originalPrice}</span>
+                {/if}
+                <span class="epic-free-tag">FREE</span>
+                <span class="epic-sep">·</span>
+                <span>{formatEndCountdown(game.endsAt, $slowNowMs)}</span>
+              </div>
+            </div>
+            <div class="epic-banner-actions">
+              <Button variant="primary" size="sm" onclick={() => quickClaimEpic(game.id)}>
+                Claim
+              </Button>
+            </div>
+          </div>
+        {/each}
+      </div>
+    </section>
+  {/if}
 
   <section class="stats-strip" aria-label="Session summary">
     <StatTile label="Active drops" value={stats.activeCampaigns} hint="Twitch & Kick live">
@@ -725,5 +783,105 @@
     font-size: 11px;
     color: var(--text-faint);
     white-space: nowrap;
+  }
+
+  .epic-banner {
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+  }
+
+  .epic-banner-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+  }
+
+  .epic-banner-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .epic-banner-title :global(.epic-accent-ico) {
+    color: var(--accent);
+  }
+
+  .epic-banner-kicker {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.08em;
+    color: var(--text);
+  }
+
+  .epic-banner-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+    gap: 8px;
+  }
+
+  .epic-banner-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    min-width: 0;
+  }
+
+  .epic-thumb {
+    width: 64px;
+    height: 36px;
+    border-radius: var(--radius-xs);
+    object-fit: cover;
+    flex-shrink: 0;
+    border: 1px solid var(--border);
+    background: var(--surface-1);
+  }
+
+  .epic-banner-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .epic-banner-name {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .epic-banner-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 11px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
+
+  .epic-orig-price {
+    text-decoration: line-through;
+    color: var(--text-faint);
+  }
+
+  .epic-free-tag {
+    color: var(--success);
+    font-weight: 700;
+  }
+
+  .epic-sep {
+    color: var(--text-faint);
+  }
+
+  .epic-banner-actions {
+    flex-shrink: 0;
   }
 </style>

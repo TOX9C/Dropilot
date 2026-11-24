@@ -190,6 +190,10 @@ a:focus-visible,
   background: var(--kick);
 }
 
+.dot-epic {
+  background: var(--accent);
+}
+
 .designed-empty {
   display: flex;
   flex-direction: column;

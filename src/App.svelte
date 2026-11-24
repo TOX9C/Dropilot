@@ -32,6 +32,7 @@
   import type { FontFamily, FontScale, NavRoute, ThemeMode } from './lib/types';
   import Dashboard from './views/Dashboard.svelte';
   import Drops from './views/Drops.svelte';
+  import EpicGames from './views/EpicGames.svelte';
   import History from './views/History.svelte';
   import Logs from './views/Logs.svelte';
   import Platform from './views/Platform.svelte';
@@ -46,6 +47,7 @@
     'history',
     'twitch',
     'kick',
+    'epic',
     'logs',
     'settings',
   ];
@@ -259,6 +261,8 @@
                 snapshot={$appSnapshot.kick}
                 settings={$appSettings}
               />
+            {:else if $activeRoute === 'epic'}
+              <EpicGames />
             {:else if $activeRoute === 'logs'}
               <Logs logs={$appLogs} />
             {:else if $activeRoute === 'settings'}
@@ -286,7 +290,7 @@
 
 <Modal open={$shortcutsOpen} title="Keyboard Shortcuts" onclose={() => shortcutsOpen.set(false)}>
   <div class="sc-list">
-    <div class="sc-row"><kbd class="mono">Ctrl + 1…7</kbd><span>Switch pages</span></div>
+    <div class="sc-row"><kbd class="mono">Ctrl + 1…8</kbd><span>Switch pages</span></div>
     <div class="sc-row"><kbd class="mono">Ctrl + R</kbd><span>Refresh active platform</span></div>
     <div class="sc-row"><kbd class="mono">Ctrl + P</kbd><span>Pause / Resume all</span></div>
     <div class="sc-row"><kbd class="mono">Alt + Up/Down</kbd><span>Reorder priority item</span></div>

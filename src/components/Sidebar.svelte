@@ -4,8 +4,9 @@
   import Gift from 'lucide-svelte/icons/gift';
   import LayoutDashboard from 'lucide-svelte/icons/layout-dashboard';
   import SettingsIcon from 'lucide-svelte/icons/settings';
+  import Sparkles from 'lucide-svelte/icons/sparkles';
   import Terminal from 'lucide-svelte/icons/terminal';
-  import { sidebarCollapsed, unreadAlertCount } from '../lib/stores';
+  import { epicFeed, sidebarCollapsed, unreadAlertCount } from '../lib/stores';
   import type { AppSnapshot, NavRoute, PlatformSnapshot } from '../lib/types';
   import BrandMark from './BrandMark.svelte';
 
@@ -27,6 +28,9 @@
     kk ? kk.campaigns.filter((c) => c.status === 'active').length : 0,
   );
   const totalActiveCount = $derived(twActiveCount + kkActiveCount);
+  const epicUnclaimedCount = $derived(
+    ($epicFeed?.games ?? []).filter((g) => g.status === 'active' && !g.claimed).length,
+  );
 
   function stateLabel(snap: PlatformSnapshot | null): string {
     if (!snap) return 'Off';
@@ -146,6 +150,29 @@
     </button>
 
     {#if !$sidebarCollapsed}
+      <div class="nav-group-label">REWARDS</div>
+    {:else}
+      <div class="nav-divider" aria-hidden="true"></div>
+    {/if}
+
+    <button
+      type="button"
+      class="nav-item"
+      class:active={active === 'epic'}
+      onclick={() => onnavigate('epic')}
+      title="Epic Free Weekly (Ctrl+6)"
+    >
+      <span class="nav-ico" aria-hidden="true"><Sparkles size={14} /></span>
+      {#if !$sidebarCollapsed}
+        <span class="nav-label">Epic Free</span>
+        {#if epicUnclaimedCount > 0}
+          <span class="nav-count count-warn tabular">{epicUnclaimedCount}</span>
+        {/if}
+        <span class="kbd-hint">^6</span>
+      {/if}
+    </button>
+
+    {#if !$sidebarCollapsed}
       <div class="nav-group-label">SYSTEM</div>
     {:else}
       <div class="nav-divider" aria-hidden="true"></div>
@@ -156,7 +183,7 @@
       class="nav-item"
       class:active={active === 'logs'}
       onclick={() => onnavigate('logs')}
-      title="Logs (Ctrl+6)"
+      title="Logs (Ctrl+7)"
     >
       <span class="nav-ico" aria-hidden="true"><Terminal size={14} /></span>
       {#if !$sidebarCollapsed}
@@ -164,7 +191,7 @@
         {#if $unreadAlertCount > 0}
           <span class="nav-count count-warn tabular">{$unreadAlertCount}</span>
         {/if}
-        <span class="kbd-hint">^6</span>
+        <span class="kbd-hint">^7</span>
       {/if}
     </button>
 
@@ -173,12 +200,12 @@
       class="nav-item"
       class:active={active === 'settings'}
       onclick={() => onnavigate('settings')}
-      title="Settings (Ctrl+7)"
+      title="Settings (Ctrl+8)"
     >
       <span class="nav-ico" aria-hidden="true"><SettingsIcon size={14} /></span>
       {#if !$sidebarCollapsed}
         <span class="nav-label">Settings</span>
-        <span class="kbd-hint">^7</span>
+        <span class="kbd-hint">^8</span>
       {/if}
     </button>
   </nav>

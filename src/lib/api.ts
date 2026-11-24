@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AppSnapshot,
   Campaign,
+  EpicFeedSnapshot,
   HistoryExportResult,
   HistoryStats,
   LogEntry,
@@ -75,6 +76,7 @@ function createPreviewData(): {
           onDropClaimed: true,
           onActionRequired: true,
           onCampaignCompleted: true,
+          onEpicFreeGames: true,
         },
         disclaimerAcceptedVersion: 1,
         logLevel: 'info',
@@ -121,6 +123,7 @@ function createPreviewData(): {
         onDropClaimed: true,
         onActionRequired: true,
         onCampaignCompleted: true,
+        onEpicFreeGames: true,
       },
       disclaimerAcceptedVersion: 1,
       logLevel: 'info',
@@ -550,6 +553,7 @@ export const api = {
       totalClaims: previewSnapshot.recentClaims.length,
       twitchClaims: previewSnapshot.recentClaims.filter((c) => c.platform === 'twitch').length,
       kickClaims: previewSnapshot.recentClaims.filter((c) => c.platform === 'kick').length,
+      epicClaims: 0,
       totalWatchMinutes: 145,
       currentStreakDays: 2,
       bestStreakDays: 4,
@@ -575,4 +579,33 @@ export const api = {
       content: format === 'json' ? '[]' : 'claimed_at,platform,game,campaign,drop,status\n',
     })),
   clearHistory: () => call<void>('clear_history'),
+  getEpicFreeGames: () =>
+    call<EpicFeedSnapshot>('get_epic_free_games', undefined, () => ({
+      games: [],
+      fetchedAt: new Date().toISOString(),
+      lastError: null,
+      source: 'cache',
+    })),
+  refreshEpicFreeGames: () =>
+    call<EpicFeedSnapshot>('refresh_epic_free_games', undefined, () => ({
+      games: [],
+      fetchedAt: new Date().toISOString(),
+      lastError: null,
+      source: 'live',
+    })),
+  openEpicClaim: (gameId: string) =>
+    call<void>('open_epic_claim', { gameId }, () => {
+      window.open('https://store.epicgames.com/en-US/free-games', '_blank', 'noopener,noreferrer');
+    }),
+  markEpicGameClaimed: (gameId: string, claimed: boolean) =>
+    call<EpicFeedSnapshot>(
+      'mark_epic_game_claimed',
+      { gameId, claimed },
+      () => ({
+        games: [],
+        fetchedAt: new Date().toISOString(),
+        lastError: null,
+        source: 'cache',
+      }),
+    ),
 };

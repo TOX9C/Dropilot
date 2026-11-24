@@ -33,6 +33,37 @@ pub const REMOTE_CONFIG_PATH: &str = "/theflash1211/dropilot/main/remote-config.
 pub const REMOTE_CONFIG_URL: &str =
     "https://raw.githubusercontent.com/theflash1211/dropilot/main/remote-config.json";
 
+pub const EPIC_FREE_GAMES_HOST: &str = "store-site-backend-static-ipv4.ak.epicgames.com";
+pub const EPIC_FREE_GAMES_PATH: &str = "/freeGamesPromotions";
+pub const EPIC_FREE_GAMES_URL: &str =
+    "https://store-site-backend-static-ipv4.ak.epicgames.com/freeGamesPromotions?locale=en-US&country=US&allowCountries=US";
+
+pub const EPIC_CHECKOUT_EXACT_HOSTS: &[&str] = &[
+    "epicgames.com",
+    "www.epicgames.com",
+    "store.epicgames.com",
+    "accounts.epicgames.com",
+    "hcaptcha.com",
+    "newassets.hcaptcha.com",
+    "talon-website-prod.ecosec.on.epicgames.com",
+    "steamcommunity.com",
+    "login.live.com",
+    "login.microsoftonline.com",
+    "my.account.sony.com",
+    "ca.account.sony.com",
+    "accounts.nintendo.com",
+];
+
+pub const EPIC_CHECKOUT_SUFFIX_HOSTS: &[&str] = &[
+    ".epicgames.com",
+    ".unrealengine.com",
+    ".hcaptcha.com",
+    ".arkoselabs.com",
+    ".funcaptcha.com",
+    ".paypal.com",
+    ".stripe.com",
+];
+
 pub const DISCORD_WEBHOOK_HOSTS: &[&str] = &[
     "discord.com",
     "discordapp.com",
@@ -64,6 +95,9 @@ pub const EXTERNAL_LINK_EXACT_HOSTS: &[&str] = &[
     "kick.com",
     "github.com",
     "discord.com",
+    "epicgames.com",
+    "www.epicgames.com",
+    "store.epicgames.com",
     "developer.microsoft.com",
 ];
 
@@ -74,6 +108,8 @@ pub enum AllowlistKind {
     Platform,
     UpdateCheck,
     RemoteConfig,
+    EpicFeed,
+    EpicCheckout,
     Webhook,
     LoginNavigation,
     ExternalOpen,
@@ -139,6 +175,8 @@ pub fn validate_url(url: &Url, kind: AllowlistKind) -> Result<(), AppError> {
         AllowlistKind::Platform => scheme == "https" || scheme == "wss",
         AllowlistKind::UpdateCheck
         | AllowlistKind::RemoteConfig
+        | AllowlistKind::EpicFeed
+        | AllowlistKind::EpicCheckout
         | AllowlistKind::Webhook
         | AllowlistKind::LoginNavigation
         | AllowlistKind::ExternalOpen => scheme == "https",
@@ -169,6 +207,13 @@ pub fn validate_url(url: &Url, kind: AllowlistKind) -> Result<(), AppError> {
         }
         AllowlistKind::RemoteConfig => {
             host == REMOTE_CONFIG_HOST && url.path() == REMOTE_CONFIG_PATH
+        }
+        AllowlistKind::EpicFeed => {
+            host == EPIC_FREE_GAMES_HOST && url.path() == EPIC_FREE_GAMES_PATH
+        }
+        AllowlistKind::EpicCheckout => {
+            matches_host(&host, EPIC_CHECKOUT_EXACT_HOSTS, EPIC_CHECKOUT_SUFFIX_HOSTS)
+                || matches_host(&host, LOGIN_IDP_EXACT_HOSTS, LOGIN_IDP_SUFFIX_HOSTS)
         }
         AllowlistKind::Webhook => is_valid_webhook_url(&host, url.path()),
         AllowlistKind::LoginNavigation => {
@@ -270,5 +315,25 @@ mod tests {
             &parse("https://evil.example/api/webhooks/12345/token"),
             AllowlistKind::Webhook
         ).is_err());
+    }
+
+    #[test]
+    fn epic_feed_and_checkout_allowlist_enforce_exact_hosts() {
+        assert!(validate_url(&parse(EPIC_FREE_GAMES_URL), AllowlistKind::EpicFeed).is_ok());
+        assert!(validate_url(
+            &parse("https://evil.example/freeGamesPromotions"),
+            AllowlistKind::EpicFeed
+        )
+        .is_err());
+        assert!(validate_url(
+            &parse("https://store.epicgames.com/en-US/p/celeste"),
+            AllowlistKind::EpicCheckout
+        )
+        .is_ok());
+        assert!(validate_url(
+            &parse("https://evil.example/en-US/p/celeste"),
+            AllowlistKind::EpicCheckout
+        )
+        .is_err());
     }
 }

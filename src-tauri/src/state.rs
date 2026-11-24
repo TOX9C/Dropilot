@@ -7,11 +7,12 @@ use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::warn;
 
 use crate::events::EventHub;
-use crate::history::{ClaimHistoryEntry, HistoryStore};
+use crate::history::{ClaimHistoryEntry, ClaimPlatform, ClaimRecordStatus, HistoryStore};
 use crate::logging::{LogBuffer, LogHandle};
 use crate::net::client::AllowlistedClient;
 use crate::platforms::{AppSnapshot, Campaign, PlatformId, PlatformSnapshot, RecentClaim};
 use crate::remote_config::RemoteConfigManager;
+use crate::rewards::epic::{EpicFreeGame, EpicTracker};
 use crate::settings::{save_settings, Settings};
 use crate::webhooks::{WebhookDispatcher, WebhookEvent};
 
@@ -41,6 +42,7 @@ pub struct AppState {
     pub log_handle: StdMutex<Option<LogHandle>>,
     pub events: EventHub,
     pub remote_config: Arc<RemoteConfigManager>,
+    pub epic: Arc<EpicTracker>,
     pub webhooks: Arc<WebhookDispatcher>,
     pub history: Arc<RwLock<HistoryStore>>,
     pub twitch_snapshot: Arc<RwLock<PlatformSnapshot>>,
@@ -64,6 +66,7 @@ impl AppState {
         let initial_claims: VecDeque<RecentClaim> =
             history_store.recent_claimed(MAX_RECENT_CLAIMS).into_iter().collect();
         let remote_config = Arc::new(RemoteConfigManager::load_initial());
+        let epic = Arc::new(EpicTracker::load_initial());
 
         Self {
             settings: Arc::new(RwLock::new(initial_settings)),
@@ -72,6 +75,7 @@ impl AppState {
             log_handle: StdMutex::new(None),
             events: EventHub::new(),
             remote_config,
+            epic,
             webhooks: Arc::new(WebhookDispatcher::new()),
             history: Arc::new(RwLock::new(history_store)),
             twitch_snapshot: Arc::new(RwLock::new(PlatformSnapshot::logged_out(PlatformId::Twitch))),
@@ -136,6 +140,33 @@ impl AppState {
             if let Err(err) = hist.save() {
                 warn!(error = %err, "Failed persisting manual claim record");
             }
+        }
+    }
+
+    pub async fn record_epic_claim(&self, game: &EpicFreeGame) {
+        let entry = ClaimHistoryEntry {
+            id: format!("epic-{}", game.id),
+            platform: ClaimPlatform::Epic,
+            game_name: game.title.clone(),
+            campaign_name: "Epic Free Weekly".to_string(),
+            drop_name: game.title.clone(),
+            reward_image_url: game.box_art_url.clone().or_else(|| game.banner_url.clone()),
+            claimed_at: game.claimed_at.unwrap_or_else(chrono::Utc::now),
+            status: ClaimRecordStatus::Claimed,
+        };
+        let mut hist = self.history.write().await;
+        hist.record_claim(entry);
+        if let Err(err) = hist.save() {
+            warn!(error = %err, "Failed persisting Epic claim history");
+        }
+    }
+
+    pub async fn remove_epic_claim(&self, game_id: &str) {
+        let entry_id = format!("epic-{game_id}");
+        let mut hist = self.history.write().await;
+        hist.remove_claim(&entry_id);
+        if let Err(err) = hist.save() {
+            warn!(error = %err, "Failed updating Epic claim history");
         }
     }
 

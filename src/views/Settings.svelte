@@ -855,6 +855,14 @@
               onchange={(v) => savePatch((d) => (d.webhooks.onCampaignCompleted = v))}
             />
           </label>
+          <label class="ev-chip">
+            <span>Epic Free Game Live</span>
+            <Toggle
+              checked={settings.webhooks.onEpicFreeGames}
+              ariaLabel="Notify when Epic free games go live"
+              onchange={(v) => savePatch((d) => (d.webhooks.onEpicFreeGames = v))}
+            />
+          </label>
         </div>
       </div>
 

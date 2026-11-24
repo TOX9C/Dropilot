@@ -8,6 +8,7 @@ pub mod miner;
 pub mod net;
 pub mod platforms;
 pub mod remote_config;
+pub mod rewards;
 pub mod secrets;
 pub mod settings;
 pub mod state;
@@ -128,6 +129,10 @@ pub fn run() {
             commands::get_history_stats,
             commands::export_history,
             commands::clear_history,
+            commands::get_epic_free_games,
+            commands::refresh_epic_free_games,
+            commands::open_epic_claim,
+            commands::mark_epic_game_claimed,
         ])
         .setup(move |app| {
             let app_handle = app.handle().clone();
@@ -156,6 +161,11 @@ pub fn run() {
                     let _ = sync_state.remote_config.refresh_if_stale(&sync_state.http).await;
                 }
             });
+
+            crate::rewards::epic::spawn_epic_poll_loop(
+                app_handle.clone(),
+                state_for_setup.clone(),
+            );
 
             // Spawn platform miner tasks.
             let twitch_real = Arc::new(TwitchPlatform::new(

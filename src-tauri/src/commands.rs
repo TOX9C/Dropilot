@@ -8,7 +8,8 @@ use url::Url;
 
 use crate::auth::login_window::{
     clear_webview_browsing_data, close_kick_bridge_window, close_twitch_bridge_window,
-    open_drops_inventory_window, open_login_window, twitch_bridge_fetch_campaign_details,
+    open_drops_inventory_window, open_epic_claim_window, open_login_window,
+    twitch_bridge_fetch_campaign_details,
 };
 use crate::autostart::sync_autostart;
 use crate::history::{history_path, HistoryExportResult, HistoryStats, HistoryStore};
@@ -18,6 +19,7 @@ use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::parse_campaign_details;
 use crate::platforms::{AppSnapshot, Campaign, PlatformId};
 use crate::remote_config::RemoteConfigStatus;
+use crate::rewards::epic::{notify_newly_live_games, EpicFeedSnapshot};
 use crate::secrets::SecretStore;
 use crate::settings::{appdata_dir, PriorityItem, Settings, CURRENT_DISCLAIMER_VERSION};
 use crate::state::{AppState, MinerControl};
@@ -535,6 +537,7 @@ pub async fn clear_app_data(
     }
     state.recent_claims.write().await.clear();
     state.remote_config.reset_to_bundled().await;
+    state.epic.clear_cache().await;
     let _ = fs::remove_file(history_path());
     let _ = fs::remove_file(appdata_dir().join("settings.json"));
     state.persist_settings().await?;
@@ -727,4 +730,60 @@ pub async fn clear_history(
     state.publish_snapshot(&app, true).await;
     info!("Cleared persistent drop claim history and stats");
     Ok(())
+}
+
+#[tauri::command]
+pub async fn get_epic_free_games(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<EpicFeedSnapshot, String> {
+    if state.epic.is_stale().await {
+        let (snap, newly_live) = state.epic.refresh_now(&state.http).await;
+        notify_newly_live_games(&app, state.inner(), &newly_live).await;
+        return Ok(snap);
+    }
+    Ok(state.epic.snapshot().await)
+}
+
+#[tauri::command]
+pub async fn refresh_epic_free_games(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+) -> Result<EpicFeedSnapshot, String> {
+    let (snap, newly_live) = state.epic.refresh_now(&state.http).await;
+    notify_newly_live_games(&app, state.inner(), &newly_live).await;
+    Ok(snap)
+}
+
+#[tauri::command]
+pub async fn open_epic_claim(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    game_id: String,
+) -> Result<(), String> {
+    let game = state
+        .epic
+        .find_game(&game_id)
+        .await
+        .ok_or_else(|| "Epic free game offer not found; try refreshing".to_string())?;
+    open_epic_claim_window(&app, state.inner().clone(), &game.store_url, &game.title)
+        .await
+        .map_err(|e| e.user_message())
+}
+
+#[tauri::command]
+pub async fn mark_epic_game_claimed(
+    state: State<'_, Arc<AppState>>,
+    game_id: String,
+    claimed: bool,
+) -> Result<EpicFeedSnapshot, String> {
+    let updated_game = state.epic.set_claimed(&game_id, claimed).await;
+    if claimed {
+        if let Some(ref game) = updated_game {
+            state.record_epic_claim(game).await;
+        }
+    } else {
+        state.remove_epic_claim(&game_id).await;
+    }
+    Ok(state.epic.snapshot().await)
 }

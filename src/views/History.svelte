@@ -16,7 +16,7 @@
   import { api } from '../lib/api';
   import { formatExactDateTime, formatMinutes } from '../lib/format';
   import { notifyUi } from '../lib/stores';
-  import type { HistoryStats, PlatformFilter } from '../lib/types';
+  import type { HistoryPlatformFilter, HistoryStats } from '../lib/types';
 
   let stats = $state<HistoryStats | null>(null);
   let loading = $state(true);
@@ -24,7 +24,7 @@
   let clearModalOpen = $state(false);
 
   let search = $state('');
-  let platformFilter = $state<PlatformFilter>('all');
+  let platformFilter = $state<HistoryPlatformFilter>('all');
   let statusFilter = $state<'all' | 'claimed' | 'manual_required'>('all');
 
   async function loadHistory() {
@@ -136,7 +136,11 @@
     <StatTile
       label="Drops Claimed"
       value={stats?.totalClaims ?? 0}
-      hint={stats ? `${stats.twitchClaims} Twitch · ${stats.kickClaims} Kick` : 'Loading...'}
+      hint={stats
+        ? stats.epicClaims > 0
+          ? `${stats.twitchClaims} Twitch · ${stats.kickClaims} Kick · ${stats.epicClaims} Epic`
+          : `${stats.twitchClaims} Twitch · ${stats.kickClaims} Kick`
+        : 'Loading...'}
     >
       {#snippet icon()}<Gift size={14} />{/snippet}
     </StatTile>
@@ -215,9 +219,10 @@
             { value: 'all', label: 'All platforms', dotTone: 'accent' },
             { value: 'twitch', label: 'Twitch', dotTone: 'twitch' },
             { value: 'kick', label: 'Kick', dotTone: 'kick' },
+            { value: 'epic', label: 'Epic Games', dotTone: 'accent' },
           ] satisfies SelectOption[]}
           value={platformFilter}
-          onchange={(v) => (platformFilter = v as PlatformFilter)}
+          onchange={(v) => (platformFilter = v as HistoryPlatformFilter)}
           ariaLabel="Filter by platform"
           size="sm"
         />

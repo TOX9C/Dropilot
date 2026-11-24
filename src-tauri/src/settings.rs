@@ -153,6 +153,8 @@ pub struct WebhookSettings {
     pub on_action_required: bool,
     #[serde(default = "default_true")]
     pub on_campaign_completed: bool,
+    #[serde(default = "default_true")]
+    pub on_epic_free_games: bool,
 }
 
 impl Default for WebhookSettings {
@@ -162,6 +164,7 @@ impl Default for WebhookSettings {
             on_drop_claimed: true,
             on_action_required: true,
             on_campaign_completed: true,
+            on_epic_free_games: true,
         }
     }
 }

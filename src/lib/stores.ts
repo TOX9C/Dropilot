@@ -5,6 +5,7 @@ import type {
   AppSnapshot,
   Campaign,
   DropsViewMode,
+  EpicFeedSnapshot,
   LogEntry,
   NavRoute,
   PlatformId,
@@ -48,6 +49,7 @@ function readRoute(): NavRoute {
     v === 'history' ||
     v === 'twitch' ||
     v === 'kick' ||
+    v === 'epic' ||
     v === 'logs' ||
     v === 'settings'
   ) {
@@ -69,6 +71,7 @@ export const shortcutsOpen = writable<boolean>(false);
 export const appSnapshot = writable<AppSnapshot | null>(null);
 export const appSettings = writable<Settings | null>(null);
 export const appLogs = writable<LogEntry[]>([]);
+export const epicFeed = writable<EpicFeedSnapshot | null>(null);
 export const remoteConfigStatus = writable<RemoteConfigStatus | null>(null);
 export const updateInfo = writable<UpdateStatus | null>(null);
 export const updateProgress = writable<UpdateProgressEvent | null>(null);
@@ -399,6 +402,11 @@ export async function initializeAppStores(): Promise<() => void> {
   if (settings.updateCheck) {
     void checkForAppUpdate(true);
   }
+
+  void api
+    .getEpicFreeGames()
+    .then((feed) => epicFeed.set(feed))
+    .catch(() => {});
 
   return unlisten;
 }

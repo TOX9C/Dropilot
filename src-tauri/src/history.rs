@@ -13,6 +13,33 @@ const HISTORY_SCHEMA_VERSION: u32 = 1;
 const MAX_HISTORY_CLAIMS: usize = 5_000;
 const MAX_DAILY_BUCKETS: usize = 365;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ClaimPlatform {
+    Twitch,
+    Kick,
+    Epic,
+}
+
+impl ClaimPlatform {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ClaimPlatform::Twitch => "twitch",
+            ClaimPlatform::Kick => "kick",
+            ClaimPlatform::Epic => "epic",
+        }
+    }
+}
+
+impl From<PlatformId> for ClaimPlatform {
+    fn from(p: PlatformId) -> Self {
+        match p {
+            PlatformId::Twitch => ClaimPlatform::Twitch,
+            PlatformId::Kick => ClaimPlatform::Kick,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ClaimRecordStatus {
@@ -24,7 +51,7 @@ pub enum ClaimRecordStatus {
 #[serde(rename_all = "camelCase")]
 pub struct ClaimHistoryEntry {
     pub id: String,
-    pub platform: PlatformId,
+    pub platform: ClaimPlatform,
     pub game_name: String,
     pub campaign_name: String,
     pub drop_name: String,
@@ -37,7 +64,7 @@ impl From<&RecentClaim> for ClaimHistoryEntry {
     fn from(c: &RecentClaim) -> Self {
         Self {
             id: c.id.clone(),
-            platform: c.platform,
+            platform: c.platform.into(),
             game_name: c.game_name.clone(),
             campaign_name: c.campaign_name.clone(),
             drop_name: c.drop_name.clone(),
@@ -90,6 +117,7 @@ pub struct HistoryStats {
     pub total_claims: usize,
     pub twitch_claims: usize,
     pub kick_claims: usize,
+    pub epic_claims: usize,
     pub total_watch_minutes: u64,
     pub current_streak_days: u32,
     pub best_streak_days: u32,
@@ -210,6 +238,10 @@ impl HistoryStore {
         }
     }
 
+    pub fn remove_claim(&mut self, id: &str) {
+        self.claims.retain(|c| c.id != id);
+    }
+
     pub fn record_watch_minutes(&mut self, delta_minutes: u32) {
         if delta_minutes == 0 {
             return;
@@ -232,16 +264,23 @@ impl HistoryStore {
         self.claims
             .iter()
             .filter(|c| c.status == ClaimRecordStatus::Claimed)
-            .take(max)
-            .map(|c| RecentClaim {
-                id: c.id.clone(),
-                platform: c.platform,
-                game_name: c.game_name.clone(),
-                campaign_name: c.campaign_name.clone(),
-                drop_name: c.drop_name.clone(),
-                reward_image_url: c.reward_image_url.clone(),
-                claimed_at: c.claimed_at,
+            .filter_map(|c| {
+                let platform = match c.platform {
+                    ClaimPlatform::Twitch => PlatformId::Twitch,
+                    ClaimPlatform::Kick => PlatformId::Kick,
+                    ClaimPlatform::Epic => return None,
+                };
+                Some(RecentClaim {
+                    id: c.id.clone(),
+                    platform,
+                    game_name: c.game_name.clone(),
+                    campaign_name: c.campaign_name.clone(),
+                    drop_name: c.drop_name.clone(),
+                    reward_image_url: c.reward_image_url.clone(),
+                    claimed_at: c.claimed_at,
+                })
             })
+            .take(max)
             .collect()
     }
 
@@ -260,11 +299,15 @@ impl HistoryStore {
         let total_claims = claimed_only.len();
         let twitch_claims = claimed_only
             .iter()
-            .filter(|c| c.platform == PlatformId::Twitch)
+            .filter(|c| c.platform == ClaimPlatform::Twitch)
             .count();
         let kick_claims = claimed_only
             .iter()
-            .filter(|c| c.platform == PlatformId::Kick)
+            .filter(|c| c.platform == ClaimPlatform::Kick)
+            .count();
+        let epic_claims = claimed_only
+            .iter()
+            .filter(|c| c.platform == ClaimPlatform::Epic)
             .count();
 
         let mut game_counts: HashMap<&str, usize> = HashMap::new();
@@ -320,6 +363,7 @@ impl HistoryStore {
             total_claims,
             twitch_claims,
             kick_claims,
+            epic_claims,
             total_watch_minutes: self.total_watch_minutes,
             current_streak_days,
             best_streak_days,
@@ -444,7 +488,7 @@ mod tests {
         let mut store = HistoryStore::default();
         let entry = ClaimHistoryEntry {
             id: "c1-d1".to_string(),
-            platform: PlatformId::Twitch,
+            platform: ClaimPlatform::Twitch,
             game_name: "Rust".to_string(),
             campaign_name: "Rivals".to_string(),
             drop_name: "Hoodie, \"Pro\"".to_string(),
