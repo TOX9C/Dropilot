@@ -9,7 +9,7 @@
   <Identity
     Name="io.dropilot.app"
     Publisher="CN=Dropilot"
-    Version="0.2.3.0"
+    Version="0.3.0.0"
     ProcessorArchitecture="x64" />
   <Properties>
     <DisplayName>Dropilot</DisplayName>

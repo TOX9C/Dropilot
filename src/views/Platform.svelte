@@ -8,6 +8,7 @@
   import Pause from 'lucide-svelte/icons/pause';
   import Pin from 'lucide-svelte/icons/pin';
   import Play from 'lucide-svelte/icons/play';
+  import Plus from 'lucide-svelte/icons/plus';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Search from 'lucide-svelte/icons/search';
   import Star from 'lucide-svelte/icons/star';
@@ -35,6 +36,7 @@
   } from '../lib/selectors';
   import {
     appSettings,
+    appSnapshot,
     lastSnapshotAt,
     notifyUi,
     toggleCampaignFarmAction,
@@ -42,12 +44,14 @@
     updateSnapshotCampaign,
   } from '../lib/stores';
   import type {
+    AccountProfile,
     Campaign,
     CampaignFilter,
     CampaignSort,
     PlatformId,
     PlatformSnapshot,
     PriorityItem,
+    ProfileSnapshot,
     Settings,
   } from '../lib/types';
 
@@ -65,12 +69,64 @@
   let selectedGame = $state('all');
   let refreshing = $state(false);
   let addingWatch = $state(false);
+  let addingAccount = $state(false);
+  let newAccountLabel = $state('');
+  let savingAccount = $state(false);
 
   $effect(() => {
     void platform;
     filter = 'all';
     selectedGame = 'all';
     search = '';
+    addingAccount = false;
+    newAccountLabel = '';
+  });
+
+  const activeProfileId = $derived(
+    platform === 'twitch'
+      ? (settings.activeTwitchProfileId ?? 'default-twitch')
+      : (settings.activeKickProfileId ?? 'default-kick'),
+  );
+  const platformProfiles = $derived<AccountProfile[]>(
+    (settings.profiles ?? []).filter((p) => p.platform === platform),
+  );
+  const profileCards = $derived.by<ProfileSnapshot[]>(() => {
+    const snapMap = new Map(
+      ($appSnapshot?.profiles ?? []).map((p) => [p.profileId, p]),
+    );
+    if (platformProfiles.length === 0) {
+      return [
+        snapMap.get(activeProfileId) ?? {
+          profileId: activeProfileId,
+          label: 'Main',
+          platform,
+          snapshot,
+        },
+      ];
+    }
+    return platformProfiles.map((prof) => {
+      const fromSnap = snapMap.get(prof.id);
+      if (fromSnap) return fromSnap;
+      return {
+        profileId: prof.id,
+        label: prof.label,
+        platform,
+        snapshot: prof.id === activeProfileId ? snapshot : {
+          platform,
+          state: 'LoggedOut',
+          stateReason: 'Not logged in',
+          account: null,
+          watching: null,
+          currentCampaignId: null,
+          currentDropId: null,
+          nextActionAt: null,
+          lastError: null,
+          campaigns: [],
+          candidateChannels: [],
+          pinnedChannel: null,
+        },
+      };
+    });
   });
 
   const platSettings = $derived(settings[platform]);
@@ -124,12 +180,45 @@
     trimmedSearch ? countSearchMatchesIgnoringFilters(snapshot.campaigns, trimmedSearch) : 0,
   );
 
+  async function handleSwitchProfile(profileId: string) {
+    if (profileId === activeProfileId) return;
+    try {
+      const updated = await api.setActiveProfile(platform, profileId);
+      appSettings.set(updated);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
+
+  async function handleAddAccount(ev: SubmitEvent) {
+    ev.preventDefault();
+    if (savingAccount) return;
+    savingAccount = true;
+    try {
+      const updated = await api.addAccountProfile(platform, newAccountLabel.trim());
+      const added = (updated.profiles ?? []).filter((p) => p.platform === platform).at(-1);
+      if (added) {
+        const activated = await api.setActiveProfile(platform, added.id);
+        appSettings.set(activated);
+      } else {
+        appSettings.set(updated);
+      }
+      addingAccount = false;
+      newAccountLabel = '';
+      notifyUi(`Added ${platName} account "${added?.label ?? 'Account'}"`);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    } finally {
+      savingAccount = false;
+    }
+  }
+
   async function handleLogin() {
-    try { await api.login(platform); } catch (err) { notifyUi(String(err), 'error'); }
+    try { await api.login(platform, activeProfileId); } catch (err) { notifyUi(String(err), 'error'); }
   }
 
   async function handleLogout() {
-    try { await api.logout(platform); } catch (err) { notifyUi(String(err), 'error'); }
+    try { await api.logout(platform, activeProfileId); } catch (err) { notifyUi(String(err), 'error'); }
   }
 
   async function handleOpenBrowserDrops() {
@@ -142,20 +231,20 @@
 
   async function handlePauseResume() {
     try {
-      if (snapshot.state === 'Paused') await api.resume(platform);
-      else await api.pause(platform);
+      if (snapshot.state === 'Paused') await api.resume(platform, activeProfileId);
+      else await api.pause(platform, activeProfileId);
     } catch (err) {
       notifyUi(String(err), 'error');
     }
   }
 
   async function handleSwitchChannel() {
-    try { await api.switchChannel(platform); } catch (err) { notifyUi(String(err), 'error'); }
+    try { await api.switchChannel(platform, activeProfileId); } catch (err) { notifyUi(String(err), 'error'); }
   }
 
   async function handlePinChannel(login: string | null) {
     try {
-      const updated = await api.pinChannel(platform, login);
+      const updated = await api.pinChannel(platform, login, activeProfileId);
       appSettings.set(updated);
     } catch (err) {
       notifyUi(String(err), 'error');
@@ -185,7 +274,7 @@
 
   async function handleReorderPriority(items: PriorityItem[]) {
     try {
-      const updated = await api.setPriority(platform, items);
+      const updated = await api.setPriority(platform, items, activeProfileId);
       appSettings.set(updated);
     } catch (err) {
       notifyUi(String(err), 'error');
@@ -194,7 +283,7 @@
 
   async function handleToggleEndingSoon(enabled: boolean) {
     try {
-      const updated = await api.setPrioritizeEndingSoon(platform, enabled);
+      const updated = await api.setPrioritizeEndingSoon(platform, enabled, activeProfileId);
       appSettings.set(updated);
     } catch (err) {
       notifyUi(String(err), 'error');
@@ -211,13 +300,13 @@
   }
 
   async function handleOpenInventory() {
-    try { await api.openDropsInventory(platform); } catch (err) { notifyUi(String(err), 'error'); }
+    try { await api.openDropsInventory(platform, activeProfileId); } catch (err) { notifyUi(String(err), 'error'); }
   }
 
   async function handleRetry() {
     refreshing = true;
     try {
-      await api.retryPlatform(platform);
+      await api.retryPlatform(platform, activeProfileId);
     } catch (err) {
       notifyUi(String(err), 'error');
     } finally {
@@ -238,6 +327,7 @@
         match?.game.id ?? '',
         match?.game.name ?? clean,
         true,
+        activeProfileId,
       );
       appSettings.set(updated);
       notifyUi(
@@ -253,7 +343,7 @@
   }
 
   async function handleFetchDetails(camp: Campaign) {
-    const detailed = await api.fetchCampaignDetails(platform, camp.id);
+    const detailed = await api.fetchCampaignDetails(platform, camp.id, activeProfileId);
     updateSnapshotCampaign(detailed);
   }
 
@@ -299,6 +389,69 @@
       />
     </div>
   </header>
+
+  <div class="acct-switcher" role="region" aria-label="{platName} accounts">
+    <span class="acct-sw-kicker tabular">ACCOUNTS</span>
+    <div class="acct-sw-pills">
+      {#each profileCards as card (card.profileId)}
+        {@const isCurrent = card.profileId === activeProfileId}
+        {@const st = card.snapshot.state}
+        <button
+          type="button"
+          class="acct-pill"
+          class:active={isCurrent}
+          onclick={() => handleSwitchProfile(card.profileId)}
+          title={`${card.label} — ${card.snapshot.account ? '@' + card.snapshot.account.login : 'Not signed in'} (${st})`}
+        >
+          <span
+            class="sw-dot"
+            class:sw-live={st === 'Mining' || st === 'Claiming'}
+            class:sw-paused={st === 'Paused'}
+            class:sw-err={st === 'Error'}
+            class:sw-idle={st === 'Idle' || st === 'Selecting'}
+            aria-hidden="true"
+          ></span>
+          <span class="sw-label">{card.label}</span>
+          {#if card.snapshot.account}
+            <span class="sw-login tabular">@{card.snapshot.account.login}</span>
+          {:else}
+            <span class="sw-off tabular">Off</span>
+          {/if}
+        </button>
+      {/each}
+    </div>
+
+    {#if addingAccount}
+      <form class="acct-add-form" onsubmit={handleAddAccount}>
+        <input
+          type="text"
+          class="acct-add-input"
+          bind:value={newAccountLabel}
+          placeholder="Label (e.g. Alt)"
+          maxlength={24}
+          onkeydown={(e) => e.key === 'Escape' && (addingAccount = false)}
+        />
+        <Button type="submit" variant="primary" size="sm" disabled={savingAccount}>
+          {savingAccount ? 'Adding...' : 'Add'}
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onclick={() => (addingAccount = false)}>
+          Cancel
+        </Button>
+      </form>
+    {:else}
+      <Button
+        variant="ghost"
+        size="sm"
+        onclick={() => {
+          newAccountLabel = '';
+          addingAccount = true;
+        }}
+      >
+        <Plus size={12} />
+        <span>Add account</span>
+      </Button>
+    {/if}
+  </div>
 
   {#if hasManualClaim}
     <div class="banner-warn" role="status">
@@ -548,6 +701,112 @@
     display: flex;
     align-items: center;
     gap: 8px;
+  }
+
+  .acct-switcher {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 10px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+
+  .acct-sw-kicker {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+  }
+
+  .acct-sw-pills {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
+    flex: 1;
+    min-width: 0;
+  }
+
+  .acct-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    height: 26px;
+    padding: 0 9px;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--text-muted);
+    font-size: 11.5px;
+    font-weight: 500;
+  }
+
+  .acct-pill:hover {
+    border-color: var(--border-hover);
+    color: var(--text);
+  }
+
+  .acct-pill.active {
+    border-color: var(--accent);
+    background: var(--accent-tint);
+    color: var(--accent-text);
+  }
+
+  .sw-dot {
+    width: 6px;
+    height: 6px;
+    border-radius: 999px;
+    background: var(--text-faint);
+    flex-shrink: 0;
+  }
+
+  .sw-dot.sw-live { background: var(--success); }
+  .sw-dot.sw-idle { background: var(--accent); }
+  .sw-dot.sw-paused { background: var(--warning); }
+  .sw-dot.sw-err { background: var(--error); }
+
+  .sw-label {
+    font-weight: 600;
+    color: inherit;
+  }
+
+  .sw-login {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    opacity: 0.9;
+  }
+
+  .sw-off {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-faint);
+  }
+
+  .acct-add-form {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .acct-add-input {
+    height: 26px;
+    width: 148px;
+    padding: 0 8px;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
+    background: var(--bg);
+    color: var(--text);
+    font-size: 11.5px;
+    font-family: var(--font-mono);
+  }
+
+  .acct-add-input:focus {
+    outline: none;
+    border-color: var(--accent);
   }
 
   .banner-warn {

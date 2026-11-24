@@ -3,9 +3,10 @@ use reqwest::{Method, StatusCode};
 use serde_json::Value;
 use tauri::AppHandle;
 
-use crate::auth::login_window::kick_webview_fetch_with_waiters;
+use crate::auth::login_window::kick_webview_fetch_with_waiters_for_profile;
 use crate::net::client::{parse_header_name_value, AllowlistedClient};
 use crate::platforms::{AppError, PlatformId};
+use crate::settings::DEFAULT_KICK_PROFILE_ID;
 use crate::state::BridgeWaiters;
 
 pub const KICK_USER_URL: &str = "https://kick.com/api/v1/user";
@@ -78,6 +79,17 @@ pub async fn kick_request_json(
     token: &str,
     req: KickRequest<'_>,
 ) -> Result<Value, AppError> {
+    kick_request_json_for_profile(http, app, waiters, DEFAULT_KICK_PROFILE_ID, token, req).await
+}
+
+pub async fn kick_request_json_for_profile(
+    http: &AllowlistedClient,
+    app: Option<&AppHandle>,
+    waiters: &BridgeWaiters,
+    profile_id: &str,
+    token: &str,
+    req: KickRequest<'_>,
+) -> Result<Value, AppError> {
     let KickRequest {
         op_name,
         method,
@@ -105,9 +117,10 @@ pub async fn kick_request_json(
             let method_str = if method == Method::POST { "POST" } else { "GET" };
             let body_str = json_body.and_then(|v| serde_json::to_string(v).ok());
             let bearer = normalize_kick_bearer_token(token);
-            let bridged = kick_webview_fetch_with_waiters(
+            let bridged = kick_webview_fetch_with_waiters_for_profile(
                 app_handle,
                 waiters,
+                profile_id,
                 method_str,
                 url,
                 body_str.as_deref(),

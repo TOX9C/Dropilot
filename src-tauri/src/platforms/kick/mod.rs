@@ -13,11 +13,13 @@ use reqwest::header::{HeaderMap, HeaderValue, ACCEPT};
 use reqwest::Method;
 use tauri::AppHandle;
 
-use crate::auth::login_window::{close_compat_watch_window, close_kick_bridge_window};
+use crate::auth::login_window::{
+    close_compat_watch_window_for_profile, close_kick_bridge_window_for_profile,
+};
 use crate::miner::selector::game_names_match;
 use crate::net::client::AllowlistedClient;
 use crate::platforms::kick::api::{
-    kick_request_json, KickRequest, KICK_CAMPAIGNS_URL, KICK_CHANNEL_V2_BASE,
+    kick_request_json_for_profile, KickRequest, KICK_CAMPAIGNS_URL, KICK_CHANNEL_V2_BASE,
     KICK_GAMIFICATION_CHALLENGES_URL, KICK_LIVESTREAMS_BASE, KICK_PROGRESS_URL, KICK_USER_URL,
 };
 use crate::platforms::kick::models::{
@@ -31,11 +33,13 @@ use crate::platforms::{
     Account, AppError, Campaign, Channel, ClaimResult, Drop, DropProgress, Platform, PlatformId,
     WatchTickResult,
 };
+use crate::settings::DEFAULT_KICK_PROFILE_ID;
 use crate::state::BridgeWaiters;
 
 const KICK_GAMIFICATION_COOLDOWN: Duration = Duration::from_secs(30 * 60);
 
 pub struct KickPlatform {
+    profile_id: String,
     http: Arc<AllowlistedClient>,
     app: Option<AppHandle>,
     waiters: BridgeWaiters,
@@ -51,7 +55,17 @@ impl KickPlatform {
         app: Option<AppHandle>,
         waiters: BridgeWaiters,
     ) -> Self {
+        Self::new_for_profile(DEFAULT_KICK_PROFILE_ID.to_string(), http, app, waiters)
+    }
+
+    pub fn new_for_profile(
+        profile_id: String,
+        http: Arc<AllowlistedClient>,
+        app: Option<AppHandle>,
+        waiters: BridgeWaiters,
+    ) -> Self {
         Self {
+            profile_id,
             http,
             app,
             waiters,
@@ -116,10 +130,11 @@ impl Platform for KickPlatform {
     }
 
     async fn validate_session(&self, token: &str) -> Result<Account, AppError> {
-        let payload = kick_request_json(
+        let payload = kick_request_json_for_profile(
             &self.http,
             self.app.as_ref(),
             &self.waiters,
+            &self.profile_id,
             token,
             KickRequest {
                 op_name: "kick_validate_session",
@@ -136,10 +151,11 @@ impl Platform for KickPlatform {
     }
 
     async fn fetch_campaigns(&self, token: &str) -> Result<Vec<Campaign>, AppError> {
-        let payload = kick_request_json(
+        let payload = kick_request_json_for_profile(
             &self.http,
             self.app.as_ref(),
             &self.waiters,
+            &self.profile_id,
             token,
             KickRequest {
                 op_name: "kick_fetch_campaigns",
@@ -160,10 +176,11 @@ impl Platform for KickPlatform {
         // when web.kick.com requires full browser session cookies.
         let mut loaded_live_cases = false;
         if !self.gamification_on_cooldown() {
-            match kick_request_json(
+            match kick_request_json_for_profile(
                 &self.http,
                 self.app.as_ref(),
                 &self.waiters,
+                &self.profile_id,
                 token,
                 KickRequest {
                     op_name: "kick_gamification_challenges",
@@ -216,10 +233,11 @@ impl Platform for KickPlatform {
     }
 
     async fn fetch_progress(&self, token: &str) -> Result<Vec<DropProgress>, AppError> {
-        let payload = kick_request_json(
+        let payload = kick_request_json_for_profile(
             &self.http,
             self.app.as_ref(),
             &self.waiters,
+            &self.profile_id,
             token,
             KickRequest {
                 op_name: "kick_fetch_progress",
@@ -241,10 +259,11 @@ impl Platform for KickPlatform {
                 || !self.gamification_synced_once.load(Ordering::Relaxed));
 
         if should_sync_gamification {
-            match kick_request_json(
+            match kick_request_json_for_profile(
                 &self.http,
                 self.app.as_ref(),
                 &self.waiters,
+                &self.profile_id,
                 token,
                 KickRequest {
                     op_name: "kick_gamification_progress",
@@ -310,10 +329,11 @@ impl Platform for KickPlatform {
         // Sunset Drop simultaneously, then fall back to any live Kick stream.
         if is_kick_any_stream_campaign(campaign) {
             let gta_url = format!("{KICK_LIVESTREAMS_BASE}?subcategory=grand-theft-auto-vi&sort=desc&limit=25");
-            if let Ok(payload) = kick_request_json(
+            if let Ok(payload) = kick_request_json_for_profile(
                 &self.http,
                 self.app.as_ref(),
                 &self.waiters,
+                &self.profile_id,
                 token,
                 KickRequest {
                     op_name: "kick_find_channels_gta",
@@ -340,10 +360,11 @@ impl Platform for KickPlatform {
             }
 
             let any_url = format!("{KICK_LIVESTREAMS_BASE}?sort=desc&limit=25");
-            let payload = kick_request_json(
+            let payload = kick_request_json_for_profile(
                 &self.http,
                 self.app.as_ref(),
                 &self.waiters,
+                &self.profile_id,
                 token,
                 KickRequest {
                     op_name: "kick_find_channels_any",
@@ -376,10 +397,11 @@ impl Platform for KickPlatform {
         };
         let url = format!("{KICK_LIVESTREAMS_BASE}{category_query}");
 
-        let payload = kick_request_json(
+        let payload = kick_request_json_for_profile(
             &self.http,
             self.app.as_ref(),
             &self.waiters,
+            &self.profile_id,
             token,
             KickRequest {
                 op_name: "kick_find_channels",
@@ -403,10 +425,11 @@ impl Platform for KickPlatform {
 
     async fn check_live(&self, token: &str, channel: &Channel) -> Result<Channel, AppError> {
         let url = format!("{KICK_CHANNEL_V2_BASE}/{}", channel.login);
-        let payload = kick_request_json(
+        let payload = kick_request_json_for_profile(
             &self.http,
             self.app.as_ref(),
             &self.waiters,
+            &self.profile_id,
             token,
             KickRequest {
                 op_name: "kick_check_live",
@@ -446,10 +469,11 @@ impl Platform for KickPlatform {
     ) -> Result<WatchTickResult, AppError> {
         self.is_watching.store(true, Ordering::Relaxed);
         self.watch
-            .tick(
+            .tick_for_profile(
                 &self.http,
                 self.app.as_ref(),
                 &self.waiters,
+                &self.profile_id,
                 token,
                 channel,
                 compat_mode,
@@ -475,10 +499,11 @@ impl Platform for KickPlatform {
         campaign: &Campaign,
         drop: &Drop,
     ) -> Result<ClaimResult, AppError> {
-        claim::claim_drop(
+        claim::claim_drop_for_profile(
             &self.http,
             self.app.as_ref(),
             &self.waiters,
+            &self.profile_id,
             token,
             campaign,
             drop,
@@ -491,8 +516,8 @@ impl Platform for KickPlatform {
         self.gamification_synced_once.store(false, Ordering::Relaxed);
         self.watch.close().await;
         if let Some(ref app_handle) = self.app {
-            close_compat_watch_window(app_handle, PlatformId::Kick);
-            close_kick_bridge_window(app_handle);
+            close_compat_watch_window_for_profile(app_handle, PlatformId::Kick, &self.profile_id);
+            close_kick_bridge_window_for_profile(app_handle, &self.profile_id);
         }
         Ok(())
     }

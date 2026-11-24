@@ -13,9 +13,10 @@ use tauri::AppHandle;
 use tokio::sync::Mutex;
 
 use crate::auth::login_window::{
-    close_compat_watch_window, close_twitch_bridge_window, twitch_bridge_capture,
-    twitch_bridge_claim_drop,
+    close_compat_watch_window_for_profile, close_twitch_bridge_window_for_profile,
+    twitch_bridge_capture_for_profile, twitch_bridge_claim_drop_for_profile,
 };
+use crate::settings::DEFAULT_TWITCH_PROFILE_ID;
 use crate::miner::selector::game_names_match;
 use crate::net::client::AllowlistedClient;
 use crate::platforms::twitch::gql::{
@@ -37,6 +38,7 @@ const TWITCH_DROPS_TAG_ID: &str = "c2542d6d-cd10-4532-919b-3dcc9f54d5bf";
 const TWITCH_INVENTORY_BRIDGE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
 
 pub struct TwitchPlatform {
+    profile_id: String,
     http: Arc<AllowlistedClient>,
     app: Option<AppHandle>,
     bridge_lock: Arc<Mutex<()>>,
@@ -52,7 +54,17 @@ impl TwitchPlatform {
         app: Option<AppHandle>,
         bridge_lock: Arc<Mutex<()>>,
     ) -> Self {
+        Self::new_for_profile(DEFAULT_TWITCH_PROFILE_ID.to_string(), http, app, bridge_lock)
+    }
+
+    pub fn new_for_profile(
+        profile_id: String,
+        http: Arc<AllowlistedClient>,
+        app: Option<AppHandle>,
+        bridge_lock: Arc<Mutex<()>>,
+    ) -> Self {
         Self {
+            profile_id,
             http,
             app,
             bridge_lock,
@@ -263,8 +275,9 @@ impl Platform for TwitchPlatform {
                     .app
                     .as_ref()
                     .ok_or_else(|| AppError::Internal("Missing app handle".to_string()))?;
-                twitch_bridge_capture(
+                twitch_bridge_capture_for_profile(
                     app_handle,
+                    &self.profile_id,
                     "https://www.twitch.tv/drops/campaigns",
                     "campaigns",
                 )
@@ -438,8 +451,9 @@ impl Platform for TwitchPlatform {
         }
 
         let _guard = self.bridge_lock.lock().await;
-        let payload = twitch_bridge_capture(
+        let payload = twitch_bridge_capture_for_profile(
             app_handle,
+            &self.profile_id,
             "https://www.twitch.tv/drops/inventory",
             "inventory",
         )
@@ -637,7 +651,9 @@ impl Platform for TwitchPlatform {
             if need_bridge {
                 let _guard = self.bridge_lock.lock().await;
                 let url = format!("https://www.twitch.tv/directory/category/{slug}?filter=drops");
-                let payload = twitch_bridge_capture(app_handle, &url, "directory").await?;
+                let payload =
+                    twitch_bridge_capture_for_profile(app_handle, &self.profile_id, &url, "directory")
+                        .await?;
                 let channels = parse_directory_channels(&payload, &campaign.game.name)?;
                 tracing::info!(
                     game = %campaign.game.name,
@@ -773,7 +789,14 @@ impl Platform for TwitchPlatform {
             *g = Some((channel.id.clone(), channel.login.clone()));
         }
         self.watch
-            .tick(&self.http, self.app.as_ref(), token, channel, compat_mode)
+            .tick_for_profile(
+                &self.http,
+                self.app.as_ref(),
+                &self.profile_id,
+                token,
+                channel,
+                compat_mode,
+            )
             .await
     }
 
@@ -813,8 +836,9 @@ impl Platform for TwitchPlatform {
                     .ok_or_else(|| AppError::Internal("Missing app handle".to_string()))?;
                 let reward_names: Vec<String> =
                     drop.rewards.iter().map(|r| r.name.clone()).collect();
-                twitch_bridge_claim_drop(
+                twitch_bridge_claim_drop_for_profile(
                     app_handle,
+                    &self.profile_id,
                     &campaign.name,
                     &campaign.game.name,
                     &drop.id,
@@ -838,8 +862,8 @@ impl Platform for TwitchPlatform {
             *g = None;
         }
         if let Some(ref app_handle) = self.app {
-            close_compat_watch_window(app_handle, PlatformId::Twitch);
-            close_twitch_bridge_window(app_handle);
+            close_compat_watch_window_for_profile(app_handle, PlatformId::Twitch, &self.profile_id);
+            close_twitch_bridge_window_for_profile(app_handle, &self.profile_id);
         }
         Ok(())
     }

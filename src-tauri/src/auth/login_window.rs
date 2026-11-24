@@ -11,9 +11,11 @@ use url::Url;
 use crate::net::allowlist::{validate_url, AllowlistKind};
 use crate::platforms::{AppError, PlatformId};
 use crate::secrets::SecretStore;
+use crate::settings::{default_profile_id, is_default_profile};
 use crate::state::{AppState, BridgeWaiters, MinerControl};
 use crate::windows::{
-    apply_low_memory_mode, resolve_tauri_theme, webview_data_dir, PLATFORM_WEBVIEW_BROWSER_ARGS,
+    apply_low_memory_mode, profile_webview_data_dir, resolve_tauri_theme,
+    sanitize_profile_id_for_fs, webview_data_dir, PLATFORM_WEBVIEW_BROWSER_ARGS,
 };
 
 const KICK_BRIDGE_SCRIPT: &str = r##"
@@ -322,6 +324,86 @@ pub fn compat_window_label(platform: PlatformId) -> &'static str {
     }
 }
 
+pub fn login_window_label_for_profile(platform: PlatformId, profile_id: &str) -> String {
+    if is_default_profile(profile_id) {
+        login_window_label(platform).to_string()
+    } else {
+        format!(
+            "login-{}-{}",
+            platform.as_str(),
+            sanitize_profile_id_for_fs(profile_id)
+        )
+    }
+}
+
+pub fn inventory_window_label_for_profile(platform: PlatformId, profile_id: &str) -> String {
+    if is_default_profile(profile_id) {
+        match platform {
+            PlatformId::Twitch => "inventory-twitch".to_string(),
+            PlatformId::Kick => "inventory-kick".to_string(),
+        }
+    } else {
+        format!(
+            "inventory-{}-{}",
+            platform.as_str(),
+            sanitize_profile_id_for_fs(profile_id)
+        )
+    }
+}
+
+pub fn compat_window_label_for_profile(platform: PlatformId, profile_id: &str) -> String {
+    if is_default_profile(profile_id) {
+        compat_window_label(platform).to_string()
+    } else {
+        format!(
+            "compat-watch-{}-{}",
+            platform.as_str(),
+            sanitize_profile_id_for_fs(profile_id)
+        )
+    }
+}
+
+pub fn kick_bridge_window_label_for_profile(profile_id: &str) -> String {
+    if is_default_profile(profile_id) {
+        "kick-bridge".to_string()
+    } else {
+        format!("kick-bridge-{}", sanitize_profile_id_for_fs(profile_id))
+    }
+}
+
+pub fn twitch_bridge_window_label_for_profile(profile_id: &str) -> String {
+    if is_default_profile(profile_id) {
+        "twitch-bridge".to_string()
+    } else {
+        format!("twitch-bridge-{}", sanitize_profile_id_for_fs(profile_id))
+    }
+}
+
+pub fn close_profile_windows(app: &AppHandle, platform: PlatformId, profile_id: &str) {
+    let labels = [
+        login_window_label_for_profile(platform, profile_id),
+        inventory_window_label_for_profile(platform, profile_id),
+        compat_window_label_for_profile(platform, profile_id),
+        match platform {
+            PlatformId::Twitch => twitch_bridge_window_label_for_profile(profile_id),
+            PlatformId::Kick => kick_bridge_window_label_for_profile(profile_id),
+        },
+    ];
+    for label in labels {
+        if let Some(win) = app.get_webview_window(&label) {
+            let _ = win.close();
+        }
+    }
+}
+
+pub fn close_all_aux_windows(app: &AppHandle) {
+    for (label, win) in app.webview_windows() {
+        if label != "main" {
+            let _ = win.close();
+        }
+    }
+}
+
 fn platform_login_url(platform: PlatformId) -> &'static str {
     match platform {
         PlatformId::Twitch => "https://www.twitch.tv",
@@ -363,8 +445,17 @@ pub async fn open_login_window(
     state: Arc<AppState>,
     platform: PlatformId,
 ) -> Result<(), AppError> {
-    let label = login_window_label(platform);
-    if let Some(existing) = app.get_webview_window(label) {
+    open_login_window_for_profile(app, state, platform, default_profile_id(platform)).await
+}
+
+pub async fn open_login_window_for_profile(
+    app: &AppHandle,
+    state: Arc<AppState>,
+    platform: PlatformId,
+    profile_id: &str,
+) -> Result<(), AppError> {
+    let label = login_window_label_for_profile(platform, profile_id);
+    if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.show();
         let _ = existing.set_focus();
         return Ok(());
@@ -373,17 +464,29 @@ pub async fn open_login_window(
     let start_url = Url::parse(platform_login_url(platform))
         .map_err(|e| AppError::Internal(format!("Invalid login URL: {e}")))?;
 
-    let theme = state.settings.read().await.theme;
-    let title = format!("Sign in to {} — Dropilot", platform.display_name());
+    let (theme, profile_label) = {
+        let guard = state.settings.read().await;
+        let lbl = guard
+            .profile_by_id(profile_id)
+            .map(|p| p.label.clone())
+            .filter(|l| !l.trim().is_empty());
+        (guard.theme, lbl)
+    };
+    let title = match profile_label {
+        Some(lbl) if !is_default_profile(profile_id) => {
+            format!("Sign in to {} ({lbl}) — Dropilot", platform.display_name())
+        }
+        _ => format!("Sign in to {} — Dropilot", platform.display_name()),
+    };
 
-    let mut builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(start_url))
+    let mut builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(start_url))
         .title(&title)
         .inner_size(1060.0, 760.0)
         .min_inner_size(880.0, 640.0)
         .center()
         .resizable(true)
         .theme(resolve_tauri_theme(theme))
-        .data_directory(webview_data_dir())
+        .data_directory(profile_webview_data_dir(profile_id))
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation));
     builder = attach_main_owner(app, builder);
@@ -396,12 +499,17 @@ pub async fn open_login_window(
         .build()
         .map_err(|e| AppError::Internal(format!("Failed opening login window: {e}")))?;
 
-    info!(platform = platform.as_str(), "Opened official login window");
+    info!(
+        platform = platform.as_str(),
+        profile_id,
+        "Opened official login window"
+    );
 
     // Poll Dropilot's own isolated WebView2 cookie jar off the UI thread.
     let app_clone = app.clone();
     let state_clone = state.clone();
-    let label_string = label.to_string();
+    let label_string = label;
+    let profile_id_owned = profile_id.to_string();
 
     tauri::async_runtime::spawn(async move {
         let cookie_url = match Url::parse(platform_cookie_url(platform)) {
@@ -435,12 +543,20 @@ pub async fn open_login_window(
             });
 
             if let Some(token) = token_opt {
-                if let Err(err) = SecretStore::save_token(platform, &token) {
-                    warn!(platform = platform.as_str(), error = %err, "Failed saving login token");
+                if let Err(err) =
+                    SecretStore::save_profile_token(platform, &profile_id_owned, &token)
+                {
+                    warn!(
+                        platform = platform.as_str(),
+                        profile_id = %profile_id_owned,
+                        error = %err,
+                        "Failed saving login token"
+                    );
                     continue;
                 }
                 info!(
                     platform = platform.as_str(),
+                    profile_id = %profile_id_owned,
                     "Captured official session cookie into Credential Manager"
                 );
                 // Give Twitch/Kick web pages a brief moment to finish writing companion cookies
@@ -450,7 +566,7 @@ pub async fn open_login_window(
                     let _ = login_win.close();
                 }
                 state_clone
-                    .send_miner(platform, MinerControl::LoginComplete)
+                    .send_profile_miner(&profile_id_owned, MinerControl::LoginComplete)
                     .await;
                 break;
             }
@@ -465,12 +581,19 @@ pub async fn open_drops_inventory_window(
     state: Arc<AppState>,
     platform: PlatformId,
 ) -> Result<(), AppError> {
-    let label = match platform {
-        PlatformId::Twitch => "inventory-twitch",
-        PlatformId::Kick => "inventory-kick",
-    };
+    open_drops_inventory_window_for_profile(app, state, platform, default_profile_id(platform))
+        .await
+}
 
-    if let Some(existing) = app.get_webview_window(label) {
+pub async fn open_drops_inventory_window_for_profile(
+    app: &AppHandle,
+    state: Arc<AppState>,
+    platform: PlatformId,
+    profile_id: &str,
+) -> Result<(), AppError> {
+    let label = inventory_window_label_for_profile(platform, profile_id);
+
+    if let Some(existing) = app.get_webview_window(&label) {
         let _ = existing.show();
         let _ = existing.set_focus();
         return Ok(());
@@ -483,15 +606,30 @@ pub async fn open_drops_inventory_window(
     let parsed = Url::parse(url_str)
         .map_err(|e| AppError::Internal(format!("Invalid inventory URL: {e}")))?;
 
-    let theme = state.settings.read().await.theme;
-    let title = format!("{} Drops Inventory — Dropilot", platform.display_name());
+    let (theme, profile_label) = {
+        let guard = state.settings.read().await;
+        let lbl = guard
+            .profile_by_id(profile_id)
+            .map(|p| p.label.clone())
+            .filter(|l| !l.trim().is_empty());
+        (guard.theme, lbl)
+    };
+    let title = match profile_label {
+        Some(lbl) if !is_default_profile(profile_id) => {
+            format!(
+                "{} Drops Inventory ({lbl}) — Dropilot",
+                platform.display_name()
+            )
+        }
+        _ => format!("{} Drops Inventory — Dropilot", platform.display_name()),
+    };
 
-    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
+    let builder = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
         .title(&title)
         .inner_size(980.0, 720.0)
         .center()
         .theme(resolve_tauri_theme(theme))
-        .data_directory(webview_data_dir())
+        .data_directory(profile_webview_data_dir(profile_id))
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation));
     attach_main_owner(app, builder)
@@ -542,6 +680,44 @@ pub fn close_epic_claim_window(app: &AppHandle) {
     if let Some(win) = app.get_webview_window("epic-claim") {
         let _ = win.close();
     }
+}
+
+pub async fn clear_profile_webview_browsing_data(
+    app: &AppHandle,
+    platform: PlatformId,
+    profile_id: &str,
+) -> Result<(), AppError> {
+    if is_default_profile(profile_id) {
+        return clear_webview_browsing_data(app).await;
+    }
+
+    for label in [
+        login_window_label_for_profile(platform, profile_id),
+        inventory_window_label_for_profile(platform, profile_id),
+        compat_window_label_for_profile(platform, profile_id),
+        kick_bridge_window_label_for_profile(profile_id),
+        twitch_bridge_window_label_for_profile(profile_id),
+    ] {
+        if let Some(existing) = app.get_webview_window(&label) {
+            return existing.clear_all_browsing_data().map_err(|e| {
+                AppError::Internal(format!("Failed clearing WebView2 browsing data: {e}"))
+            });
+        }
+    }
+
+    let tmp_label = format!("clear-data-tmp-{}", sanitize_profile_id_for_fs(profile_id));
+    let tmp = WebviewWindowBuilder::new(app, &tmp_label, WebviewUrl::default())
+        .visible(false)
+        .data_directory(profile_webview_data_dir(profile_id))
+        .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
+        .build()
+        .map_err(|e| AppError::Internal(format!("Failed opening cleanup helper: {e}")))?;
+
+    let res = tmp
+        .clear_all_browsing_data()
+        .map_err(|e| AppError::Internal(format!("Failed clearing WebView2 browsing data: {e}")));
+    let _ = tmp.close();
+    res
 }
 
 pub async fn clear_webview_browsing_data(app: &AppHandle) -> Result<(), AppError> {
@@ -607,7 +783,21 @@ pub fn ensure_compat_watch_window(
     platform: PlatformId,
     channel_login: &str,
 ) -> Result<(), AppError> {
-    let label = compat_window_label(platform);
+    ensure_compat_watch_window_for_profile(
+        app,
+        platform,
+        default_profile_id(platform),
+        channel_login,
+    )
+}
+
+pub fn ensure_compat_watch_window_for_profile(
+    app: &AppHandle,
+    platform: PlatformId,
+    profile_id: &str,
+    channel_login: &str,
+) -> Result<(), AppError> {
+    let label = compat_window_label_for_profile(platform, profile_id);
     let url_str = match platform {
         PlatformId::Twitch => format!("https://www.twitch.tv/{channel_login}"),
         PlatformId::Kick => format!("https://kick.com/{channel_login}"),
@@ -616,7 +806,7 @@ pub fn ensure_compat_watch_window(
         .map_err(|e| AppError::Internal(format!("Invalid compat watch URL: {e}")))?;
     validate_url(&parsed, AllowlistKind::Platform)?;
 
-    if let Some(existing) = app.get_webview_window(label) {
+    if let Some(existing) = app.get_webview_window(&label) {
         #[cfg(windows)]
         configure_hidden_muted_webview(&existing);
 
@@ -632,6 +822,7 @@ pub fn ensure_compat_watch_window(
             let _ = existing.navigate(parsed);
             info!(
                 platform = platform.as_str(),
+                profile_id,
                 channel = %channel_login,
                 "Switched hidden muted watch window"
             );
@@ -639,14 +830,14 @@ pub fn ensure_compat_watch_window(
         return Ok(());
     }
 
-    let win = WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
+    let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
         .title("Dropilot Compatibility Player")
         .inner_size(960.0, 540.0)
         .center()
         .visible(false)
         .focused(false)
         .skip_taskbar(true)
-        .data_directory(webview_data_dir())
+        .data_directory(profile_webview_data_dir(profile_id))
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .initialization_script(COMPAT_WATCH_SCRIPT)
         .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::Platform))
@@ -659,6 +850,7 @@ pub fn ensure_compat_watch_window(
 
     info!(
         platform = platform.as_str(),
+        profile_id,
         channel = %channel_login,
         "Started hidden muted compatibility watch window"
     );
@@ -666,25 +858,62 @@ pub fn ensure_compat_watch_window(
 }
 
 pub fn close_compat_watch_window(app: &AppHandle, platform: PlatformId) {
-    if let Some(win) = app.get_webview_window(compat_window_label(platform)) {
+    close_compat_watch_window_for_profile(app, platform, default_profile_id(platform));
+}
+
+pub fn close_compat_watch_window_for_profile(
+    app: &AppHandle,
+    platform: PlatformId,
+    profile_id: &str,
+) {
+    let label = compat_window_label_for_profile(platform, profile_id);
+    if let Some(win) = app.get_webview_window(&label) {
         let _ = win.close();
     }
 }
 
 #[cfg(windows)]
-static KICK_BRIDGE_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+static KICK_BRIDGE_LOCKS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, Arc<tokio::sync::Mutex<()>>>>,
+> = std::sync::OnceLock::new();
 #[cfg(windows)]
-static KICK_BRIDGE_IDLE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static KICK_BRIDGE_IDLE_GENS: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<String, Arc<std::sync::atomic::AtomicU64>>>,
+> = std::sync::OnceLock::new();
 
 #[cfg(windows)]
-fn schedule_kick_bridge_idle_close(app: &AppHandle) {
+fn kick_bridge_lock_for(label: &str) -> Arc<tokio::sync::Mutex<()>> {
+    let map = KICK_BRIDGE_LOCKS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = map.lock().expect("kick bridge lock map poisoned");
+    guard
+        .entry(label.to_string())
+        .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+        .clone()
+}
+
+#[cfg(windows)]
+fn kick_bridge_idle_gen_for(label: &str) -> Arc<std::sync::atomic::AtomicU64> {
+    let map = KICK_BRIDGE_IDLE_GENS
+        .get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()));
+    let mut guard = map.lock().expect("kick bridge idle gen map poisoned");
+    guard
+        .entry(label.to_string())
+        .or_insert_with(|| Arc::new(std::sync::atomic::AtomicU64::new(0)))
+        .clone()
+}
+
+#[cfg(windows)]
+fn schedule_kick_bridge_idle_close_for_label(app: &AppHandle, label: String) {
     use std::sync::atomic::Ordering;
-    let gen = KICK_BRIDGE_IDLE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    let idle_gen = kick_bridge_idle_gen_for(&label);
+    let gen = idle_gen.fetch_add(1, Ordering::SeqCst) + 1;
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
         sleep(Duration::from_secs(6)).await;
-        if KICK_BRIDGE_IDLE_GEN.load(Ordering::SeqCst) == gen {
-            close_kick_bridge_window(&app_clone);
+        if idle_gen.load(Ordering::SeqCst) == gen {
+            if let Some(win) = app_clone.get_webview_window(&label) {
+                let _ = win.close();
+            }
         }
     });
 }
@@ -722,7 +951,12 @@ pub(crate) fn parse_kick_bridge_message(raw: &str) -> Option<KickBridgeMessage> 
 }
 
 pub fn close_kick_bridge_window(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("kick-bridge") {
+    close_kick_bridge_window_for_profile(app, crate::settings::DEFAULT_KICK_PROFILE_ID);
+}
+
+pub fn close_kick_bridge_window_for_profile(app: &AppHandle, profile_id: &str) {
+    let label = kick_bridge_window_label_for_profile(profile_id);
+    if let Some(win) = app.get_webview_window(&label) {
         let _ = win.close();
     }
 }
@@ -735,6 +969,27 @@ pub fn close_kick_bridge_window(app: &AppHandle) {
 pub async fn kick_webview_fetch_with_waiters(
     app: &AppHandle,
     waiters: &BridgeWaiters,
+    method: &str,
+    target_url: &str,
+    json_body: Option<&str>,
+    bearer_token: Option<&str>,
+) -> Result<KickBridgeResult, AppError> {
+    kick_webview_fetch_with_waiters_for_profile(
+        app,
+        waiters,
+        crate::settings::DEFAULT_KICK_PROFILE_ID,
+        method,
+        target_url,
+        json_body,
+        bearer_token,
+    )
+    .await
+}
+
+pub async fn kick_webview_fetch_with_waiters_for_profile(
+    app: &AppHandle,
+    waiters: &BridgeWaiters,
+    profile_id: &str,
     method: &str,
     target_url: &str,
     json_body: Option<&str>,
@@ -754,7 +1009,7 @@ pub async fn kick_webview_fetch_with_waiters(
 
     #[cfg(not(windows))]
     {
-        let _ = (app, waiters, method, json_body, bearer_token);
+        let _ = (app, waiters, profile_id, method, json_body, bearer_token);
         Err(AppError::Blocked(
             "Kick official page sync requires Windows WebView2".to_string(),
         ))
@@ -766,19 +1021,19 @@ pub async fn kick_webview_fetch_with_waiters(
         use webview2_com::{take_pwstr, WebMessageReceivedEventHandler};
         use windows::core::{HSTRING, PWSTR};
 
-        let _lock = KICK_BRIDGE_LOCK
-            .get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await;
+        let bridge_label = kick_bridge_window_label_for_profile(profile_id);
+        let bridge_data_dir = profile_webview_data_dir(profile_id);
+        let bridge_lock = kick_bridge_lock_for(&bridge_label);
+        let _lock = bridge_lock.lock().await;
 
         let mut last_err: Option<AppError> = None;
         for attempt in 0..2u8 {
             if attempt > 0 {
-                close_kick_bridge_window(app);
+                close_kick_bridge_window_for_profile(app, profile_id);
                 sleep(Duration::from_millis(1500)).await;
             }
 
-            let win = if let Some(existing) = app.get_webview_window("kick-bridge") {
+            let win = if let Some(existing) = app.get_webview_window(&bridge_label) {
                 existing
             } else {
                 let blank = Url::parse("about:blank")
@@ -786,7 +1041,7 @@ pub async fn kick_webview_fetch_with_waiters(
 
                 let created = WebviewWindowBuilder::new(
                     app,
-                    "kick-bridge",
+                    &bridge_label,
                     WebviewUrl::External(blank),
                 )
                 .title("Dropilot Kick Bridge")
@@ -795,7 +1050,7 @@ pub async fn kick_webview_fetch_with_waiters(
                 .visible(false)
                 .skip_taskbar(true)
                 .focused(false)
-                .data_directory(webview_data_dir())
+                .data_directory(bridge_data_dir.clone())
                 .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
                 .initialization_script(KICK_BRIDGE_SCRIPT)
                 .on_navigation(|url| {
@@ -887,7 +1142,7 @@ pub async fn kick_webview_fetch_with_waiters(
 
                     let _ = attach_tx.send(attach_res);
                 }) {
-                    close_kick_bridge_window(app);
+                    close_kick_bridge_window_for_profile(app, profile_id);
                     last_err = Some(AppError::Internal(format!(
                         "Failed attaching Kick bridge listener: {err}"
                     )));
@@ -897,12 +1152,12 @@ pub async fn kick_webview_fetch_with_waiters(
                 match timeout(Duration::from_secs(5), attach_rx).await {
                     Ok(Ok(Ok(()))) => {}
                     Ok(Ok(Err(msg))) => {
-                        close_kick_bridge_window(app);
+                        close_kick_bridge_window_for_profile(app, profile_id);
                         last_err = Some(AppError::Internal(msg));
                         continue;
                     }
                     _ => {
-                        close_kick_bridge_window(app);
+                        close_kick_bridge_window_for_profile(app, profile_id);
                         last_err = Some(AppError::Internal(
                             "Timed out preparing Kick WebView2 listener".to_string(),
                         ));
@@ -913,7 +1168,7 @@ pub async fn kick_webview_fetch_with_waiters(
                 let inventory_url = Url::parse("https://kick.com/drops/inventory")
                     .map_err(|e| AppError::Internal(format!("Invalid bridge base URL: {e}")))?;
                 if let Err(err) = created.navigate(inventory_url) {
-                    close_kick_bridge_window(app);
+                    close_kick_bridge_window_for_profile(app, profile_id);
                     last_err = Some(AppError::Internal(format!(
                         "Kick bridge navigation failed: {err}"
                     )));
@@ -923,7 +1178,7 @@ pub async fn kick_webview_fetch_with_waiters(
                 match timeout(Duration::from_secs(20), ready_rx).await {
                     Ok(Ok(())) => {}
                     _ => {
-                        close_kick_bridge_window(app);
+                        close_kick_bridge_window_for_profile(app, profile_id);
                         last_err = Some(AppError::Blocked(
                             "Kick background page timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
                                 .to_string(),
@@ -980,7 +1235,7 @@ pub async fn kick_webview_fetch_with_waiters(
                 if let Ok(mut guard) = waiters.lock() {
                     guard.remove(&req_id);
                 }
-                close_kick_bridge_window(app);
+                close_kick_bridge_window_for_profile(app, profile_id);
                 last_err = Some(AppError::Internal(format!(
                     "Kick bridge dispatch failed: {err}"
                 )));
@@ -993,7 +1248,7 @@ pub async fn kick_webview_fetch_with_waiters(
                     if let Ok(mut guard) = waiters.lock() {
                         guard.remove(&req_id);
                     }
-                    close_kick_bridge_window(app);
+                    close_kick_bridge_window_for_profile(app, profile_id);
                     last_err = Some(AppError::Internal(msg));
                     continue;
                 }
@@ -1001,7 +1256,7 @@ pub async fn kick_webview_fetch_with_waiters(
                     if let Ok(mut guard) = waiters.lock() {
                         guard.remove(&req_id);
                     }
-                    close_kick_bridge_window(app);
+                    close_kick_bridge_window_for_profile(app, profile_id);
                     last_err = Some(AppError::Blocked(
                         "Kick bridge dispatcher timed out".to_string(),
                     ));
@@ -1023,7 +1278,7 @@ pub async fn kick_webview_fetch_with_waiters(
                         if parsed_target.host_str() != Some("websockets.kick.com")
                             || parsed.body.contains("Just a moment...")
                         {
-                            close_kick_bridge_window(app);
+                            close_kick_bridge_window_for_profile(app, profile_id);
                         }
                         last_err = Some(AppError::Blocked(
                             "Kick security check blocked background access; open Kick Drops Inventory to verify"
@@ -1031,7 +1286,7 @@ pub async fn kick_webview_fetch_with_waiters(
                         ));
                         continue;
                     }
-                    schedule_kick_bridge_idle_close(app);
+                    schedule_kick_bridge_idle_close_for_label(app, bridge_label.clone());
                     return Ok(parsed);
                 }
                 Ok(Ok(Err(err_msg))) => {
@@ -1043,7 +1298,7 @@ pub async fn kick_webview_fetch_with_waiters(
                     continue;
                 }
                 Err(_) => {
-                    close_kick_bridge_window(app);
+                    close_kick_bridge_window_for_profile(app, profile_id);
                     last_err = Some(AppError::Blocked(
                         "Kick background request timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
                             .to_string(),
@@ -1063,7 +1318,12 @@ pub async fn kick_webview_fetch_with_waiters(
 }
 
 pub fn close_twitch_bridge_window(app: &AppHandle) {
-    if let Some(win) = app.get_webview_window("twitch-bridge") {
+    close_twitch_bridge_window_for_profile(app, crate::settings::DEFAULT_TWITCH_PROFILE_ID);
+}
+
+pub fn close_twitch_bridge_window_for_profile(app: &AppHandle, profile_id: &str) {
+    let label = twitch_bridge_window_label_for_profile(profile_id);
+    if let Some(win) = app.get_webview_window(&label) {
         let _ = win.close();
     }
 }
@@ -1759,6 +2019,7 @@ fn build_twitch_claim_drop_script(
 #[cfg(windows)]
 async fn run_twitch_bridge(
     app: &AppHandle,
+    profile_id: &str,
     page_url: &str,
     expected_kind: &str,
     timeout_secs: u64,
@@ -1783,20 +2044,21 @@ async fn run_twitch_bridge(
         ));
     }
 
-    close_twitch_bridge_window(app);
+    let bridge_label = twitch_bridge_window_label_for_profile(profile_id);
+    close_twitch_bridge_window_for_profile(app, profile_id);
     sleep(Duration::from_millis(150)).await;
 
     let blank = Url::parse("about:blank")
         .map_err(|e| AppError::Internal(format!("Invalid about:blank URL: {e}")))?;
 
-    let mut builder = WebviewWindowBuilder::new(app, "twitch-bridge", WebviewUrl::External(blank))
+    let mut builder = WebviewWindowBuilder::new(app, &bridge_label, WebviewUrl::External(blank))
         .title("Dropilot Twitch Sync")
         .inner_size(1200.0, 800.0)
         .center()
         .visible(false)
         .skip_taskbar(true)
         .focused(false)
-        .data_directory(webview_data_dir())
+        .data_directory(profile_webview_data_dir(profile_id))
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .on_navigation(|url| {
             url.as_str() == "about:blank"
@@ -1816,7 +2078,7 @@ async fn run_twitch_bridge(
     let (ready_tx, ready_rx) = oneshot::channel::<Result<(), String>>();
     let integrity_attempts = Arc::new(AtomicUsize::new(0));
     let seen_gql_ops: Arc<StdMutex<Vec<String>>> = Arc::new(StdMutex::new(Vec::new()));
-    let saved_twitch_token = SecretStore::load_token(PlatformId::Twitch)
+    let saved_twitch_token = SecretStore::load_profile_token(PlatformId::Twitch, profile_id)
         .ok()
         .flatten()
         .map(|s| s.expose().to_string());
@@ -2051,7 +2313,7 @@ async fn run_twitch_bridge(
 
         let _ = ready_tx.send(attach_res);
     }) {
-        close_twitch_bridge_window(app);
+        close_twitch_bridge_window_for_profile(app, profile_id);
         return Err(AppError::Internal(format!(
             "Failed attaching Twitch bridge listener: {err}"
         )));
@@ -2060,20 +2322,20 @@ async fn run_twitch_bridge(
     match timeout(Duration::from_secs(5), ready_rx).await {
         Ok(Ok(Ok(()))) => {}
         Ok(Ok(Err(msg))) => {
-            close_twitch_bridge_window(app);
+            close_twitch_bridge_window_for_profile(app, profile_id);
             return Err(AppError::Internal(msg));
         }
         _ => {
-            close_twitch_bridge_window(app);
+            close_twitch_bridge_window_for_profile(app, profile_id);
             return Err(AppError::Internal(
                 "Timed out preparing Twitch WebView2 listener".to_string(),
             ));
         }
     }
 
-    info!(kind = expected_kind, "Syncing Twitch data via official page");
+    info!(kind = expected_kind, profile_id, "Syncing Twitch data via official page");
     if let Err(err) = win.navigate(parsed) {
-        close_twitch_bridge_window(app);
+        close_twitch_bridge_window_for_profile(app, profile_id);
         return Err(AppError::Internal(format!(
             "Twitch bridge navigation failed: {err}"
         )));
@@ -2084,7 +2346,7 @@ async fn run_twitch_bridge(
         .url()
         .map(|u| u.path().to_string())
         .unwrap_or_else(|_| "unknown".to_string());
-    close_twitch_bridge_window(app);
+    close_twitch_bridge_window_for_profile(app, profile_id);
 
     match wait_res {
         Ok(Ok(Ok(val))) => {
@@ -2136,9 +2398,24 @@ pub async fn twitch_bridge_capture(
     page_url: &str,
     expected_kind: &str,
 ) -> Result<serde_json::Value, AppError> {
+    twitch_bridge_capture_for_profile(
+        app,
+        crate::settings::DEFAULT_TWITCH_PROFILE_ID,
+        page_url,
+        expected_kind,
+    )
+    .await
+}
+
+pub async fn twitch_bridge_capture_for_profile(
+    app: &AppHandle,
+    profile_id: &str,
+    page_url: &str,
+    expected_kind: &str,
+) -> Result<serde_json::Value, AppError> {
     #[cfg(not(windows))]
     {
-        let _ = (app, page_url, expected_kind);
+        let _ = (app, profile_id, page_url, expected_kind);
         Err(AppError::Blocked(
             "Twitch official page sync requires Windows WebView2".to_string(),
         ))
@@ -2150,7 +2427,16 @@ pub async fn twitch_bridge_capture(
         let timeout_secs = 35;
         let inspector: TwitchPayloadInspector =
             Arc::new(move |bytes| inspect_twitch_gql_payload(bytes, &kind_owned));
-        run_twitch_bridge(app, page_url, expected_kind, timeout_secs, None, inspector).await
+        run_twitch_bridge(
+            app,
+            profile_id,
+            page_url,
+            expected_kind,
+            timeout_secs,
+            None,
+            inspector,
+        )
+        .await
     }
 }
 
@@ -2164,9 +2450,28 @@ pub async fn twitch_bridge_fetch_campaign_details(
     game_id: &str,
     game_name: &str,
 ) -> Result<serde_json::Value, AppError> {
+    twitch_bridge_fetch_campaign_details_for_profile(
+        app,
+        crate::settings::DEFAULT_TWITCH_PROFILE_ID,
+        campaign_id,
+        campaign_name,
+        game_id,
+        game_name,
+    )
+    .await
+}
+
+pub async fn twitch_bridge_fetch_campaign_details_for_profile(
+    app: &AppHandle,
+    profile_id: &str,
+    campaign_id: &str,
+    campaign_name: &str,
+    game_id: &str,
+    game_name: &str,
+) -> Result<serde_json::Value, AppError> {
     #[cfg(not(windows))]
     {
-        let _ = (app, campaign_id, campaign_name, game_id, game_name);
+        let _ = (app, profile_id, campaign_id, campaign_name, game_id, game_name);
         Err(AppError::Blocked(
             "Twitch official page sync requires Windows WebView2".to_string(),
         ))
@@ -2180,6 +2485,7 @@ pub async fn twitch_bridge_fetch_campaign_details(
             Arc::new(move |bytes| inspect_twitch_campaign_details_payload(bytes, &camp_id_owned));
         run_twitch_bridge(
             app,
+            profile_id,
             "https://www.twitch.tv/drops/campaigns",
             "campaign-details",
             15,
@@ -2202,10 +2508,35 @@ pub async fn twitch_bridge_claim_drop(
     reward_names: &[String],
     instance_id: Option<&str>,
 ) -> Result<(), AppError> {
+    twitch_bridge_claim_drop_for_profile(
+        app,
+        crate::settings::DEFAULT_TWITCH_PROFILE_ID,
+        campaign_name,
+        game_name,
+        drop_id,
+        drop_name,
+        reward_names,
+        instance_id,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub async fn twitch_bridge_claim_drop_for_profile(
+    app: &AppHandle,
+    profile_id: &str,
+    campaign_name: &str,
+    game_name: &str,
+    drop_id: &str,
+    drop_name: &str,
+    reward_names: &[String],
+    instance_id: Option<&str>,
+) -> Result<(), AppError> {
     #[cfg(not(windows))]
     {
         let _ = (
             app,
+            profile_id,
             campaign_name,
             game_name,
             drop_id,
@@ -2229,6 +2560,7 @@ pub async fn twitch_bridge_claim_drop(
         });
         let _ = run_twitch_bridge(
             app,
+            profile_id,
             "https://www.twitch.tv/drops/inventory",
             "claim-drop",
             35,

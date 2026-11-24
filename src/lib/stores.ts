@@ -346,10 +346,17 @@ export function updateSnapshotCampaign(updated: Campaign): void {
 
 function trackSessionProgress(snap: AppSnapshot, isBaseline: boolean) {
   let delta = 0;
-  for (const plat of ['twitch', 'kick'] as const) {
-    for (const camp of snap[plat].campaigns) {
+  const entries =
+    snap.profiles && snap.profiles.length > 0
+      ? snap.profiles.map((p) => ({ keyPrefix: p.profileId, platSnap: p.snapshot }))
+      : [
+          { keyPrefix: 'twitch', platSnap: snap.twitch },
+          { keyPrefix: 'kick', platSnap: snap.kick },
+        ];
+  for (const { keyPrefix, platSnap } of entries) {
+    for (const camp of platSnap.campaigns) {
       for (const drop of camp.drops) {
-        const key = `${plat}:${camp.id}:${drop.id}`;
+        const key = `${keyPrefix}:${camp.id}:${drop.id}`;
         const prev = previousDropMinutes.get(key);
         if (!isBaseline && prev !== undefined && drop.currentMinutes > prev) {
           delta += drop.currentMinutes - prev;

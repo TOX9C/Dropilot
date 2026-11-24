@@ -6,10 +6,11 @@
   import SettingsIcon from 'lucide-svelte/icons/settings';
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import Terminal from 'lucide-svelte/icons/terminal';
+  import { api } from '../lib/api';
   import { slowNowMs } from '../lib/clock';
   import { isCampaignActiveNow } from '../lib/selectors';
-  import { epicFeed, sidebarCollapsed, unreadAlertCount } from '../lib/stores';
-  import type { AppSnapshot, NavRoute, PlatformSnapshot } from '../lib/types';
+  import { appSettings, epicFeed, notifyUi, sidebarCollapsed, unreadAlertCount } from '../lib/stores';
+  import type { AppSnapshot, NavRoute, PlatformId, PlatformSnapshot, ProfileSnapshot } from '../lib/types';
   import BrandMark from './BrandMark.svelte';
 
   interface Props {
@@ -22,6 +23,75 @@
 
   const tw = $derived(snapshot?.twitch ?? null);
   const kk = $derived(snapshot?.kick ?? null);
+
+  const dockProfiles = $derived<ProfileSnapshot[]>(
+    snapshot?.profiles && snapshot.profiles.length > 0
+      ? snapshot.profiles
+      : [
+          {
+            profileId: $appSettings?.activeTwitchProfileId ?? 'default-twitch',
+            label: 'Main',
+            platform: 'twitch',
+            snapshot: tw ?? {
+              platform: 'twitch',
+              state: 'LoggedOut',
+              stateReason: null,
+              account: null,
+              watching: null,
+              currentCampaignId: null,
+              currentDropId: null,
+              nextActionAt: null,
+              lastError: null,
+              campaigns: [],
+              candidateChannels: [],
+            },
+          },
+          {
+            profileId: $appSettings?.activeKickProfileId ?? 'default-kick',
+            label: 'Main',
+            platform: 'kick',
+            snapshot: kk ?? {
+              platform: 'kick',
+              state: 'LoggedOut',
+              stateReason: null,
+              account: null,
+              watching: null,
+              currentCampaignId: null,
+              currentDropId: null,
+              nextActionAt: null,
+              lastError: null,
+              campaigns: [],
+              candidateChannels: [],
+            },
+          },
+        ],
+  );
+  const multiTwitch = $derived(dockProfiles.filter((p) => p.platform === 'twitch').length > 1);
+  const multiKick = $derived(dockProfiles.filter((p) => p.platform === 'kick').length > 1);
+
+  function isActiveProfile(prof: ProfileSnapshot): boolean {
+    const activeId =
+      prof.platform === 'twitch'
+        ? ($appSettings?.activeTwitchProfileId ?? 'default-twitch')
+        : ($appSettings?.activeKickProfileId ?? 'default-kick');
+    return prof.profileId === activeId;
+  }
+
+  async function selectDockProfile(platform: PlatformId, profileId: string) {
+    try {
+      const currentActive =
+        platform === 'twitch'
+          ? ($appSettings?.activeTwitchProfileId ?? 'default-twitch')
+          : ($appSettings?.activeKickProfileId ?? 'default-kick');
+      if (profileId && currentActive !== profileId) {
+        const updated = await api.setActiveProfile(platform, profileId);
+        appSettings.set(updated);
+      }
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+    onnavigate(platform);
+  }
 
   const twActiveCount = $derived(
     tw ? tw.campaigns.filter((c) => isCampaignActiveNow(c, $slowNowMs)).length : 0,
@@ -219,26 +289,44 @@
   <div class="footer">
     {#if !$sidebarCollapsed}
       <div class="accounts-dock">
-        <button type="button" class="dock-row" onclick={() => onnavigate('twitch')}>
-          <span class="plat-dot dot-twitch" aria-hidden="true"></span>
-          <span class="dock-login">{tw?.account ? `@${tw.account.login}` : 'Connect Twitch'}</span>
-          <span class="dock-state tabular">{stateLabel(tw)}</span>
-        </button>
-
-        <button type="button" class="dock-row dock-row-sep" onclick={() => onnavigate('kick')}>
-          <span class="plat-dot dot-kick" aria-hidden="true"></span>
-          <span class="dock-login">{kk?.account ? `@${kk.account.login}` : 'Connect Kick'}</span>
-          <span class="dock-state tabular">{stateLabel(kk)}</span>
-        </button>
+        {#each dockProfiles as prof, idx (prof.profileId)}
+          {@const showTag = prof.platform === 'twitch' ? multiTwitch : multiKick}
+          {@const isSelected = isActiveProfile(prof)}
+          <button
+            type="button"
+            class="dock-row"
+            class:dock-row-sep={idx > 0}
+            class:dock-row-active={showTag && isSelected}
+            onclick={() => selectDockProfile(prof.platform, prof.profileId)}
+            title={`${prof.platform === 'twitch' ? 'Twitch' : 'Kick'} (${prof.label}) — ${stateLabel(prof.snapshot)}`}
+          >
+            <span class="plat-dot dot-{prof.platform}" aria-hidden="true"></span>
+            <span class="dock-login">
+              {prof.snapshot.account
+                ? `@${prof.snapshot.account.login}`
+                : showTag
+                  ? `${prof.platform === 'twitch' ? 'Twitch' : 'Kick'} · ${prof.label}`
+                  : `Connect ${prof.platform === 'twitch' ? 'Twitch' : 'Kick'}`}
+            </span>
+            {#if showTag && prof.snapshot.account}
+              <span class="dock-tag">{prof.label}</span>
+            {/if}
+            <span class="dock-state tabular">{stateLabel(prof.snapshot)}</span>
+          </button>
+        {/each}
       </div>
     {:else}
       <div class="collapsed-accts">
-        <button type="button" class="mini-avatar-btn" onclick={() => onnavigate('twitch')} title={`Twitch (${stateLabel(tw)})`}>
-          <span class="plat-dot dot-twitch"></span>
-        </button>
-        <button type="button" class="mini-avatar-btn" onclick={() => onnavigate('kick')} title={`Kick (${stateLabel(kk)})`}>
-          <span class="plat-dot dot-kick"></span>
-        </button>
+        {#each dockProfiles as prof (prof.profileId)}
+          <button
+            type="button"
+            class="mini-avatar-btn"
+            onclick={() => selectDockProfile(prof.platform, prof.profileId)}
+            title={`${prof.platform === 'twitch' ? 'Twitch' : 'Kick'} (${prof.label}: ${stateLabel(prof.snapshot)})`}
+          >
+            <span class="plat-dot dot-{prof.platform}"></span>
+          </button>
+        {/each}
       </div>
     {/if}
   </div>
@@ -468,6 +556,22 @@
 
   .dock-row:hover {
     background: var(--surface-2);
+  }
+
+  .dock-row-active {
+    background: var(--accent-tint);
+  }
+
+  .dock-tag {
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 600;
+    padding: 0 4px;
+    border-radius: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    flex-shrink: 0;
   }
 
   .dock-login {

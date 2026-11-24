@@ -85,10 +85,20 @@ function createPreviewData(): {
         windowBounds: null,
         twitch: emptyPS(),
         kick: emptyPS(),
+        profiles: [
+          { id: 'default-twitch', label: 'Main', platform: 'twitch', settings: emptyPS() },
+          { id: 'default-kick', label: 'Main', platform: 'kick', settings: emptyPS() },
+        ],
+        activeTwitchProfileId: 'default-twitch',
+        activeKickProfileId: 'default-kick',
       },
       snapshot: {
         twitch: emptyPlat('twitch'),
         kick: emptyPlat('kick'),
+        profiles: [
+          { profileId: 'default-twitch', label: 'Main', platform: 'twitch', snapshot: emptyPlat('twitch') },
+          { profileId: 'default-kick', label: 'Main', platform: 'kick', snapshot: emptyPlat('kick') },
+        ],
         recentClaims: [],
         mockActive: false,
       },
@@ -131,6 +141,8 @@ function createPreviewData(): {
       logLevel: 'info',
       mockMode: true,
       windowBounds: null,
+      activeTwitchProfileId: 'default-twitch',
+      activeKickProfileId: 'default-kick',
       twitch: {
         enabled: true,
         priority: [{ kind: 'game', gameId: '263490', gameName: 'Rust' }],
@@ -147,6 +159,34 @@ function createPreviewData(): {
         pinnedChannel: null,
         prioritizeEndingSoon: false,
       },
+      profiles: [
+        {
+          id: 'default-twitch',
+          label: 'Main',
+          platform: 'twitch',
+          settings: {
+            enabled: true,
+            priority: [{ kind: 'game', gameId: '263490', gameName: 'Rust' }],
+            farmCampaigns: ['tw-rust-1'],
+            excludedCampaigns: [],
+            pinnedChannel: null,
+            prioritizeEndingSoon: false,
+          },
+        },
+        {
+          id: 'default-kick',
+          label: 'Main',
+          platform: 'kick',
+          settings: {
+            enabled: true,
+            priority: [{ kind: 'game', gameId: 'rust', gameName: 'Rust' }],
+            farmCampaigns: ['kk-rust-1'],
+            excludedCampaigns: [],
+            pinnedChannel: null,
+            prioritizeEndingSoon: false,
+          },
+        },
+      ],
     },
     snapshot: {
       mockActive: true,
@@ -401,14 +441,70 @@ async function call<T>(
 
 const cloneSettings = () => structuredClone(previewSettings);
 
+function syncPreviewProfiles(next: Settings) {
+  if (!next.profiles) return;
+  const tw = next.profiles.find((p) => p.id === next.activeTwitchProfileId);
+  if (tw) next.twitch = structuredClone(tw.settings);
+  const kk = next.profiles.find((p) => p.id === next.activeKickProfileId);
+  if (kk) next.kick = structuredClone(kk.settings);
+}
+
 export const api = {
-  getSnapshot: () => call<AppSnapshot>('get_snapshot', undefined, () => structuredClone(previewSnapshot)),
-  login: (platform: PlatformId) => call<void>('login', { platform }),
-  logout: (platform: PlatformId) => call<void>('logout', { platform }),
-  setCampaignFarm: (platform: PlatformId, campaignId: string, farm: boolean) =>
-    call<Settings>('set_campaign_farm', { platform, campaignId, farm }, cloneSettings),
-  setGameFarm: (platform: PlatformId, gameId: string, gameName: string, farm: boolean) =>
-    call<Settings>('set_game_farm', { platform, gameId, gameName, farm }, () => {
+  getSnapshot: () => call<AppSnapshot>('get_snapshot', undefined, () => {
+    const snap = structuredClone(previewSnapshot);
+    if (!snap.profiles) {
+      snap.profiles = [
+        { profileId: 'default-twitch', label: 'Main', platform: 'twitch', snapshot: structuredClone(snap.twitch) },
+        { profileId: 'default-kick', label: 'Main', platform: 'kick', snapshot: structuredClone(snap.kick) },
+      ];
+    }
+    return snap;
+  }),
+  addAccountProfile: (platform: PlatformId, label: string) =>
+    call<Settings>('add_account_profile', { platform, label }, () => {
+      const id = `${platform}-${Date.now()}`;
+      const cleanLabel = label.trim() || `Account ${(previewSettings.profiles?.filter((p) => p.platform === platform).length ?? 1) + 1}`;
+      const ps = {
+        enabled: true,
+        priority: [],
+        farmCampaigns: [],
+        excludedCampaigns: [],
+        pinnedChannel: null,
+        prioritizeEndingSoon: false,
+      };
+      previewSettings.profiles = [
+        ...(previewSettings.profiles ?? []),
+        { id, label: cleanLabel, platform, settings: ps },
+      ];
+      return cloneSettings();
+    }),
+  removeAccountProfile: (profileId: string) =>
+    call<Settings>('remove_account_profile', { profileId }, () => {
+      previewSettings.profiles = (previewSettings.profiles ?? []).filter((p) => p.id !== profileId);
+      syncPreviewProfiles(previewSettings);
+      return cloneSettings();
+    }),
+  setActiveProfile: (platform: PlatformId, profileId: string) =>
+    call<Settings>('set_active_profile', { platform, profileId }, () => {
+      if (platform === 'twitch') previewSettings.activeTwitchProfileId = profileId;
+      else previewSettings.activeKickProfileId = profileId;
+      syncPreviewProfiles(previewSettings);
+      return cloneSettings();
+    }),
+  renameAccountProfile: (profileId: string, label: string) =>
+    call<Settings>('rename_account_profile', { profileId, label }, () => {
+      const target = previewSettings.profiles?.find((p) => p.id === profileId);
+      if (target && label.trim()) target.label = label.trim();
+      return cloneSettings();
+    }),
+  login: (platform: PlatformId, profileId?: string | null) =>
+    call<void>('login', { platform, profileId: profileId ?? null }),
+  logout: (platform: PlatformId, profileId?: string | null) =>
+    call<void>('logout', { platform, profileId: profileId ?? null }),
+  setCampaignFarm: (platform: PlatformId, campaignId: string, farm: boolean, profileId?: string | null) =>
+    call<Settings>('set_campaign_farm', { platform, campaignId, farm, profileId: profileId ?? null }, cloneSettings),
+  setGameFarm: (platform: PlatformId, gameId: string, gameName: string, farm: boolean, profileId?: string | null) =>
+    call<Settings>('set_game_farm', { platform, gameId, gameName, farm, profileId: profileId ?? null }, () => {
       const cleanName = gameName.trim();
       const lower = cleanName.toLowerCase();
       if (farm && cleanName) {
@@ -434,44 +530,46 @@ export const api = {
       }
       return cloneSettings();
     }),
-  fetchCampaignDetails: (platform: PlatformId, campaignId: string) =>
-    call<Campaign>('fetch_campaign_details', { platform, campaignId }, () => {
+  fetchCampaignDetails: (platform: PlatformId, campaignId: string, profileId?: string | null) =>
+    call<Campaign>('fetch_campaign_details', { platform, campaignId, profileId: profileId ?? null }, () => {
       const found = previewSnapshot[platform].campaigns.find((c) => c.id === campaignId);
       if (!found) throw new Error('Campaign not found');
       return structuredClone(found);
     }),
-  setPriority: (platform: PlatformId, items: PriorityItem[]) =>
-    call<Settings>('set_priority', { platform, items }, () => {
+  setPriority: (platform: PlatformId, items: PriorityItem[], profileId?: string | null) =>
+    call<Settings>('set_priority', { platform, items, profileId: profileId ?? null }, () => {
       previewSettings[platform].priority = items;
       return cloneSettings();
     }),
-  setPrioritizeEndingSoon: (platform: PlatformId, enabled: boolean) =>
-    call<Settings>('set_prioritize_ending_soon', { platform, enabled }, () => {
+  setPrioritizeEndingSoon: (platform: PlatformId, enabled: boolean, profileId?: string | null) =>
+    call<Settings>('set_prioritize_ending_soon', { platform, enabled, profileId: profileId ?? null }, () => {
       previewSettings[platform].prioritizeEndingSoon = enabled;
       return cloneSettings();
     }),
-  pause: (platform: PlatformId) =>
-    call<void>('pause', { platform }, () => {
+  pause: (platform: PlatformId, profileId?: string | null) =>
+    call<void>('pause', { platform, profileId: profileId ?? null }, () => {
       previewSnapshot[platform].state = 'Paused';
       previewSnapshot[platform].stateReason = 'Paused by user';
     }),
-  resume: (platform: PlatformId) =>
-    call<void>('resume', { platform }, () => {
+  resume: (platform: PlatformId, profileId?: string | null) =>
+    call<void>('resume', { platform, profileId: profileId ?? null }, () => {
       previewSnapshot[platform].state = 'Mining';
     }),
-  switchChannel: (platform: PlatformId) =>
-    call<void>('switch_channel', { platform }, () => {
+  switchChannel: (platform: PlatformId, profileId?: string | null) =>
+    call<void>('switch_channel', { platform, profileId: profileId ?? null }, () => {
       previewSettings[platform].pinnedChannel = null;
       previewSnapshot[platform].pinnedChannel = null;
     }),
-  pinChannel: (platform: PlatformId, channelLogin: string | null) =>
-    call<Settings>('pin_channel', { platform, channelLogin }, () => {
+  pinChannel: (platform: PlatformId, channelLogin: string | null, profileId?: string | null) =>
+    call<Settings>('pin_channel', { platform, channelLogin, profileId: profileId ?? null }, () => {
       previewSettings[platform].pinnedChannel = channelLogin;
       previewSnapshot[platform].pinnedChannel = channelLogin;
       return cloneSettings();
     }),
-  retryPlatform: (platform: PlatformId) => call<void>('retry_platform', { platform }),
-  openDropsInventory: (platform: PlatformId) => call<void>('open_drops_inventory', { platform }),
+  retryPlatform: (platform: PlatformId, profileId?: string | null) =>
+    call<void>('retry_platform', { platform, profileId: profileId ?? null }),
+  openDropsInventory: (platform: PlatformId, profileId?: string | null) =>
+    call<void>('open_drops_inventory', { platform, profileId: profileId ?? null }),
   getSettings: () => call<Settings>('get_settings', undefined, cloneSettings),
   updateSettings: (newSettings: Settings) =>
     call<Settings>('update_settings', { newSettings }, () => {

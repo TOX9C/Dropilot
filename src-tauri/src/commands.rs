@@ -1,30 +1,75 @@
 use std::fs;
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use tauri::{AppHandle, Manager, State};
 use tracing::{info, warn};
 use url::Url;
 
 use crate::auth::login_window::{
-    clear_webview_browsing_data, open_drops_inventory_window, open_epic_claim_window,
-    open_login_window, twitch_bridge_fetch_campaign_details,
+    clear_profile_webview_browsing_data, clear_webview_browsing_data, close_profile_windows,
+    open_drops_inventory_window_for_profile, open_epic_claim_window, open_login_window_for_profile,
+    twitch_bridge_fetch_campaign_details_for_profile,
 };
 use crate::autostart::sync_autostart;
 use crate::history::{history_path, HistoryExportResult, HistoryStats, HistoryStore};
 use crate::logging::{log_dir, LogEntry, LogLevel};
+use crate::miner::engine::{build_platform_backend, spawn_miner_supervisor};
 use crate::net::allowlist::{validate_url, AllowlistKind};
 use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::parse_campaign_details;
-use crate::platforms::{AppSnapshot, Campaign, PlatformId};
+use crate::platforms::{AppSnapshot, Campaign, PlatformId, PlatformSnapshot};
 use crate::remote_config::RemoteConfigStatus;
 use crate::rewards::epic::{notify_newly_live_games, EpicFeedSnapshot};
 use crate::secrets::SecretStore;
-use crate::settings::{appdata_dir, PriorityItem, Settings, CURRENT_DISCLAIMER_VERSION};
+use crate::settings::{
+    appdata_dir, is_default_profile, AccountProfile, PlatformSettings, PriorityItem, Settings,
+    CURRENT_DISCLAIMER_VERSION,
+};
 use crate::state::{AppState, MinerControl};
 use crate::update_check::{check_signed_update, install_signed_update, UpdateStatus};
 use crate::webhooks::{WebhookChannel, WebhookDispatcher, WebhookSecretsStatus};
-use crate::windows::apply_window_theme;
+use crate::windows::{apply_window_theme, profile_webview_data_dir};
+
+static PROFILE_SEQ: AtomicU64 = AtomicU64::new(1);
+
+async fn resolve_profile_id(
+    state: &AppState,
+    platform: PlatformId,
+    profile_id: Option<String>,
+) -> Result<String, String> {
+    let guard = state.settings.read().await;
+    match profile_id {
+        Some(pid) if !pid.trim().is_empty() => {
+            let prof = guard
+                .profile_by_id(&pid)
+                .ok_or_else(|| format!("Profile '{pid}' not found"))?;
+            if prof.platform != platform {
+                return Err(format!(
+                    "Profile '{pid}' belongs to {:?}, not {:?}",
+                    prof.platform, platform
+                ));
+            }
+            Ok(pid)
+        }
+        _ => Ok(guard.active_profile_id(platform).to_string()),
+    }
+}
+
+fn generate_profile_id(platform: PlatformId, existing: &[AccountProfile]) -> String {
+    let ts = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_millis())
+        .unwrap_or(0);
+    loop {
+        let seq = PROFILE_SEQ.fetch_add(1, Ordering::Relaxed);
+        let candidate = format!("{}-{ts:x}-{seq}", platform.as_str());
+        if !existing.iter().any(|p| p.id == candidate) {
+            return candidate;
+        }
+    }
+}
 
 #[tauri::command]
 pub async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot, String> {
@@ -32,18 +77,187 @@ pub async fn get_snapshot(state: State<'_, Arc<AppState>>) -> Result<AppSnapshot
 }
 
 #[tauri::command]
+pub async fn add_account_profile(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    label: String,
+) -> Result<Settings, String> {
+    let (profile, updated) = {
+        let mut guard = state.settings.write().await;
+        let existing_count = guard.profiles_for(platform).len();
+        let trimmed = label.trim().to_string();
+        let clean_label = if trimmed.is_empty() {
+            format!("Account {}", existing_count + 1)
+        } else {
+            trimmed
+        };
+        let id = generate_profile_id(platform, &guard.profiles);
+        let profile = AccountProfile {
+            id: id.clone(),
+            label: clean_label,
+            platform,
+            settings: PlatformSettings::default(),
+        };
+        guard.profiles.push(profile.clone());
+        guard.sanitize();
+        (profile, guard.clone())
+    };
+
+    state.persist_settings().await?;
+    state
+        .update_profile_snapshot(&profile.id, platform, PlatformSnapshot::logged_out(platform))
+        .await;
+
+    let backend = build_platform_backend(&profile.id, platform, &app, state.inner());
+    let tx = spawn_miner_supervisor(
+        profile.id.clone(),
+        platform,
+        0,
+        app.clone(),
+        state.inner().clone(),
+        backend,
+    );
+    state.register_miner_for_profile(&profile.id, tx).await;
+    state.publish_snapshot(&app, true).await;
+    info!(
+        platform = platform.as_str(),
+        profile_id = %profile.id,
+        label = %profile.label,
+        "Added account profile"
+    );
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn remove_account_profile(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    profile_id: String,
+) -> Result<Settings, String> {
+    let platform = {
+        let guard = state.settings.read().await;
+        let prof = guard
+            .profile_by_id(&profile_id)
+            .ok_or_else(|| format!("Profile '{profile_id}' not found"))?;
+        if guard.profiles_for(prof.platform).len() <= 1 {
+            return Err("Cannot remove the last remaining account for this platform".to_string());
+        }
+        prof.platform
+    };
+
+    state
+        .send_profile_miner(&profile_id, MinerControl::Shutdown)
+        .await;
+    state.unregister_miner_for_profile(&profile_id).await;
+    close_profile_windows(&app, platform, &profile_id);
+
+    if !state.mock_active.load(Ordering::Relaxed) {
+        let _ = SecretStore::delete_profile_token(platform, &profile_id);
+    }
+
+    if !is_default_profile(&profile_id) {
+        let dir = profile_webview_data_dir(&profile_id);
+        if dir.exists() {
+            let _ = fs::remove_dir_all(&dir);
+        }
+    }
+
+    let updated = {
+        let mut guard = state.settings.write().await;
+        guard.profiles.retain(|p| p.id != profile_id);
+        if guard.active_profile_id(platform) == profile_id {
+            if let Some(first) = guard.profiles.iter().find(|p| p.platform == platform) {
+                let next_id = first.id.clone();
+                guard.set_active_profile_id(platform, next_id);
+            }
+        }
+        guard.sanitize();
+        guard.clone()
+    };
+
+    state.persist_settings().await?;
+    state.sync_active_platform_snapshot(platform).await;
+    state.publish_snapshot(&app, true).await;
+    info!(
+        platform = platform.as_str(),
+        profile_id = %profile_id,
+        "Removed account profile"
+    );
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn set_active_profile(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    profile_id: String,
+) -> Result<Settings, String> {
+    let updated = {
+        let mut guard = state.settings.write().await;
+        let prof = guard
+            .profile_by_id(&profile_id)
+            .ok_or_else(|| format!("Profile '{profile_id}' not found"))?;
+        if prof.platform != platform {
+            return Err(format!(
+                "Profile '{profile_id}' does not belong to {}",
+                platform.display_name()
+            ));
+        }
+        guard.set_active_profile_id(platform, profile_id.clone());
+        guard.sanitize();
+        guard.clone()
+    };
+
+    state.persist_settings().await?;
+    state.sync_active_platform_snapshot(platform).await;
+    state.publish_snapshot(&app, true).await;
+    Ok(updated)
+}
+
+#[tauri::command]
+pub async fn rename_account_profile(
+    app: AppHandle,
+    state: State<'_, Arc<AppState>>,
+    profile_id: String,
+    label: String,
+) -> Result<Settings, String> {
+    let trimmed = label.trim().to_string();
+    if trimmed.is_empty() {
+        return Err("Profile label cannot be empty".to_string());
+    }
+
+    let updated = {
+        let mut guard = state.settings.write().await;
+        let prof = guard
+            .profile_by_id_mut(&profile_id)
+            .ok_or_else(|| format!("Profile '{profile_id}' not found"))?;
+        prof.label = trimmed;
+        guard.sanitize();
+        guard.clone()
+    };
+
+    state.persist_settings().await?;
+    state.publish_snapshot(&app, true).await;
+    Ok(updated)
+}
+
+#[tauri::command]
 pub async fn login(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
     if state.mock_active.load(Ordering::Relaxed) {
         state
-            .send_miner(platform, MinerControl::LoginComplete)
+            .send_profile_miner(&pid, MinerControl::LoginComplete)
             .await;
         return Ok(());
     }
-    open_login_window(&app, state.inner().clone(), platform)
+    open_login_window_for_profile(&app, state.inner().clone(), platform, &pid)
         .await
         .map_err(|e| e.user_message())
 }
@@ -53,20 +267,24 @@ pub async fn logout(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
     {
         let mut guard = state.settings.write().await;
-        match platform {
-            PlatformId::Twitch => guard.twitch.pinned_channel = None,
-            PlatformId::Kick => guard.kick.pinned_channel = None,
+        if let Some(plat) = guard.profile_settings_mut(&pid) {
+            plat.pinned_channel = None;
         }
+        guard.sync_legacy_mirrors();
     }
     let _ = state.persist_settings().await;
-    state.send_miner(platform, MinerControl::Logout).await;
+    state
+        .send_profile_miner(&pid, MinerControl::Logout)
+        .await;
     if !state.mock_active.load(Ordering::Relaxed) {
-        let _ = SecretStore::delete_token(platform);
-        if let Err(err) = clear_webview_browsing_data(&app).await {
-            warn!(error = %err, "Could not clear WebView2 browsing data on logout");
+        let _ = SecretStore::delete_profile_token(platform, &pid);
+        if let Err(err) = clear_profile_webview_browsing_data(&app, platform, &pid).await {
+            warn!(profile_id = %pid, error = %err, "Could not clear WebView2 browsing data on logout");
         }
     }
     Ok(())
@@ -79,13 +297,14 @@ pub async fn set_campaign_farm(
     platform: PlatformId,
     campaign_id: String,
     farm: bool,
+    profile_id: Option<String>,
 ) -> Result<Settings, String> {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
     let updated = {
         let mut guard = state.settings.write().await;
-        let plat = match platform {
-            PlatformId::Twitch => &mut guard.twitch,
-            PlatformId::Kick => &mut guard.kick,
-        };
+        let plat = guard
+            .profile_settings_mut(&pid)
+            .ok_or_else(|| format!("Profile '{pid}' not found"))?;
         if farm {
             plat.excluded_campaigns.retain(|id| id != &campaign_id);
             if !plat.farm_campaigns.contains(&campaign_id) {
@@ -107,7 +326,7 @@ pub async fn set_campaign_farm(
 
     state.persist_settings().await?;
     state
-        .send_miner(platform, MinerControl::SettingsUpdated)
+        .send_profile_miner(&pid, MinerControl::SettingsUpdated)
         .await;
     state.publish_snapshot(&app, true).await;
     Ok(updated)
@@ -136,18 +355,19 @@ pub async fn set_game_farm(
     game_id: String,
     game_name: String,
     farm: bool,
+    profile_id: Option<String>,
 ) -> Result<Settings, String> {
     let trimmed_name = game_name.trim().to_string();
     if farm && trimmed_name.is_empty() {
         return Err("Game name is required".to_string());
     }
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
 
     let updated = {
         let mut guard = state.settings.write().await;
-        let plat = match platform {
-            PlatformId::Twitch => &mut guard.twitch,
-            PlatformId::Kick => &mut guard.kick,
-        };
+        let plat = guard
+            .profile_settings_mut(&pid)
+            .ok_or_else(|| format!("Profile '{pid}' not found"))?;
         if farm {
             if let Some(existing) = plat
                 .priority
@@ -180,7 +400,7 @@ pub async fn set_game_farm(
 
     state.persist_settings().await?;
     state
-        .send_miner(platform, MinerControl::SettingsUpdated)
+        .send_profile_miner(&pid, MinerControl::SettingsUpdated)
         .await;
     state.publish_snapshot(&app, true).await;
     Ok(updated)
@@ -192,13 +412,14 @@ pub async fn set_priority(
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
     items: Vec<PriorityItem>,
+    profile_id: Option<String>,
 ) -> Result<Settings, String> {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
     let updated = {
         let mut guard = state.settings.write().await;
-        let plat = match platform {
-            PlatformId::Twitch => &mut guard.twitch,
-            PlatformId::Kick => &mut guard.kick,
-        };
+        let plat = guard
+            .profile_settings_mut(&pid)
+            .ok_or_else(|| format!("Profile '{pid}' not found"))?;
         plat.priority = items;
         guard.sanitize();
         guard.clone()
@@ -206,7 +427,7 @@ pub async fn set_priority(
 
     state.persist_settings().await?;
     state
-        .send_miner(platform, MinerControl::SettingsUpdated)
+        .send_profile_miner(&pid, MinerControl::SettingsUpdated)
         .await;
     state.publish_snapshot(&app, true).await;
     Ok(updated)
@@ -218,13 +439,14 @@ pub async fn set_prioritize_ending_soon(
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
     enabled: bool,
+    profile_id: Option<String>,
 ) -> Result<Settings, String> {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
     let updated = {
         let mut guard = state.settings.write().await;
-        let plat = match platform {
-            PlatformId::Twitch => &mut guard.twitch,
-            PlatformId::Kick => &mut guard.kick,
-        };
+        let plat = guard
+            .profile_settings_mut(&pid)
+            .ok_or_else(|| format!("Profile '{pid}' not found"))?;
         plat.prioritize_ending_soon = enabled;
         guard.sanitize();
         guard.clone()
@@ -232,21 +454,31 @@ pub async fn set_prioritize_ending_soon(
 
     state.persist_settings().await?;
     state
-        .send_miner(platform, MinerControl::SettingsUpdated)
+        .send_profile_miner(&pid, MinerControl::SettingsUpdated)
         .await;
     state.publish_snapshot(&app, true).await;
     Ok(updated)
 }
 
 #[tauri::command]
-pub async fn pause(state: State<'_, Arc<AppState>>, platform: PlatformId) -> Result<(), String> {
-    state.send_miner(platform, MinerControl::Pause).await;
+pub async fn pause(
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    profile_id: Option<String>,
+) -> Result<(), String> {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
+    state.send_profile_miner(&pid, MinerControl::Pause).await;
     Ok(())
 }
 
 #[tauri::command]
-pub async fn resume(state: State<'_, Arc<AppState>>, platform: PlatformId) -> Result<(), String> {
-    state.send_miner(platform, MinerControl::Resume).await;
+pub async fn resume(
+    state: State<'_, Arc<AppState>>,
+    platform: PlatformId,
+    profile_id: Option<String>,
+) -> Result<(), String> {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
+    state.send_profile_miner(&pid, MinerControl::Resume).await;
     Ok(())
 }
 
@@ -255,22 +487,31 @@ pub async fn switch_channel(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
-    {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
+    let is_active = {
         let mut guard = state.settings.write().await;
-        match platform {
-            PlatformId::Twitch => guard.twitch.pinned_channel = None,
-            PlatformId::Kick => guard.kick.pinned_channel = None,
+        if let Some(plat) = guard.profile_settings_mut(&pid) {
+            plat.pinned_channel = None;
         }
-    }
+        guard.sync_legacy_mirrors();
+        guard.active_profile_id(platform) == pid
+    };
     let _ = state.persist_settings().await;
     {
+        let mut map = state.profile_snapshots.write().await;
+        if let Some(snap) = map.get_mut(&pid) {
+            snap.pinned_channel = None;
+        }
+    }
+    if is_active {
         let mut snap = state.snapshot_lock(platform).write().await;
         snap.pinned_channel = None;
     }
     state.publish_snapshot(&app, true).await;
     state
-        .send_miner(platform, MinerControl::SwitchChannel)
+        .send_profile_miner(&pid, MinerControl::SwitchChannel)
         .await;
     Ok(())
 }
@@ -281,25 +522,34 @@ pub async fn pin_channel(
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
     channel_login: Option<String>,
+    profile_id: Option<String>,
 ) -> Result<Settings, String> {
-    let updated = {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
+    let (updated, is_active) = {
         let mut guard = state.settings.write().await;
-        let plat = match platform {
-            PlatformId::Twitch => &mut guard.twitch,
-            PlatformId::Kick => &mut guard.kick,
-        };
+        let plat = guard
+            .profile_settings_mut(&pid)
+            .ok_or_else(|| format!("Profile '{pid}' not found"))?;
         plat.pinned_channel = channel_login.clone();
-        guard.clone()
+        guard.sync_legacy_mirrors();
+        let active = guard.active_profile_id(platform) == pid;
+        (guard.clone(), active)
     };
 
     {
+        let mut map = state.profile_snapshots.write().await;
+        if let Some(snap) = map.get_mut(&pid) {
+            snap.pinned_channel = channel_login.clone();
+        }
+    }
+    if is_active {
         let mut snap = state.snapshot_lock(platform).write().await;
         snap.pinned_channel = channel_login.clone();
     }
     state.persist_settings().await?;
     state.publish_snapshot(&app, true).await;
     state
-        .send_miner(platform, MinerControl::PinChannel(channel_login))
+        .send_profile_miner(&pid, MinerControl::PinChannel(channel_login))
         .await;
     Ok(updated)
 }
@@ -308,8 +558,10 @@ pub async fn pin_channel(
 pub async fn retry_platform(
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
-    state.send_miner(platform, MinerControl::RetryNow).await;
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
+    state.send_profile_miner(&pid, MinerControl::RetryNow).await;
     Ok(())
 }
 
@@ -318,8 +570,10 @@ pub async fn open_drops_inventory(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
+    profile_id: Option<String>,
 ) -> Result<(), String> {
-    open_drops_inventory_window(&app, state.inner().clone(), platform)
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
+    open_drops_inventory_window_for_profile(&app, state.inner().clone(), platform, &pid)
         .await
         .map_err(|e| e.user_message())
 }
@@ -330,15 +584,21 @@ pub async fn fetch_campaign_details(
     state: State<'_, Arc<AppState>>,
     platform: PlatformId,
     campaign_id: String,
+    profile_id: Option<String>,
 ) -> Result<Campaign, String> {
+    let pid = resolve_profile_id(state.inner(), platform, profile_id).await?;
     let mut camp = {
-        let snap = state.snapshot_lock(platform).read().await;
-        snap.campaigns
-            .iter()
-            .find(|c| c.id == campaign_id)
-            .cloned()
-            .ok_or_else(|| "Campaign not found".to_string())?
-    };
+        let map = state.profile_snapshots.read().await;
+        if let Some(snap) = map.get(&pid) {
+            snap.campaigns
+                .iter()
+                .find(|c| c.id == campaign_id)
+                .cloned()
+        } else {
+            None
+        }
+    }
+    .ok_or_else(|| "Campaign not found".to_string())?;
 
     if platform != PlatformId::Twitch
         || state.mock_active.load(Ordering::Relaxed)
@@ -362,17 +622,20 @@ pub async fn fetch_campaign_details(
             if !public_drops.is_empty() {
                 camp.drops = public_drops;
                 {
-                    let mut snap = state.twitch_snapshot.write().await;
-                    if let Some(target) = snap.campaigns.iter_mut().find(|c| c.id == camp.id) {
-                        if target.drops.is_empty() {
-                            target.drops = camp.drops.clone();
+                    let mut map = state.profile_snapshots.write().await;
+                    if let Some(snap) = map.get_mut(&pid) {
+                        if let Some(target) = snap.campaigns.iter_mut().find(|c| c.id == camp.id) {
+                            if target.drops.is_empty() {
+                                target.drops = camp.drops.clone();
+                            }
+                            camp = target.clone();
                         }
-                        camp = target.clone();
                     }
                 }
+                state.sync_active_platform_snapshot(PlatformId::Twitch).await;
                 state
-                    .send_miner(
-                        PlatformId::Twitch,
+                    .send_profile_miner(
+                        &pid,
                         MinerControl::CampaignDetailsLoaded(Box::new(camp.clone())),
                     )
                     .await;
@@ -384,8 +647,9 @@ pub async fn fetch_campaign_details(
 
     let payload = {
         let _guard = state.twitch_bridge_lock.lock().await;
-        twitch_bridge_fetch_campaign_details(
+        twitch_bridge_fetch_campaign_details_for_profile(
             &app,
+            &pid,
             &camp.id,
             &camp.name,
             &camp.game.id,
@@ -398,18 +662,21 @@ pub async fn fetch_campaign_details(
     if let Some(detailed) = parse_campaign_details(&payload).map_err(|e| e.user_message())? {
         apply_campaign_details(&mut camp, detailed);
         {
-            let mut snap = state.twitch_snapshot.write().await;
-            if let Some(target) = snap.campaigns.iter_mut().find(|c| c.id == camp.id) {
-                *target = camp.clone();
-            }
-            crate::miner::engine::propagate_linked_games(&mut snap.campaigns);
-            if let Some(synced) = snap.campaigns.iter().find(|c| c.id == camp.id) {
-                camp = synced.clone();
+            let mut map = state.profile_snapshots.write().await;
+            if let Some(snap) = map.get_mut(&pid) {
+                if let Some(target) = snap.campaigns.iter_mut().find(|c| c.id == camp.id) {
+                    *target = camp.clone();
+                }
+                crate::miner::engine::propagate_linked_games(&mut snap.campaigns);
+                if let Some(synced) = snap.campaigns.iter().find(|c| c.id == camp.id) {
+                    camp = synced.clone();
+                }
             }
         }
+        state.sync_active_platform_snapshot(PlatformId::Twitch).await;
         state
-            .send_miner(
-                PlatformId::Twitch,
+            .send_profile_miner(
+                &pid,
                 MinerControl::CampaignDetailsLoaded(Box::new(camp.clone())),
             )
             .await;
@@ -519,11 +786,32 @@ pub async fn clear_app_data(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    state.send_all_miners(MinerControl::Logout).await;
+    let existing_profiles = state.settings.read().await.profiles.clone();
+    for prof in &existing_profiles {
+        if is_default_profile(&prof.id) {
+            state
+                .send_profile_miner(&prof.id, MinerControl::Logout)
+                .await;
+        } else {
+            state
+                .send_profile_miner(&prof.id, MinerControl::Shutdown)
+                .await;
+            state.unregister_miner_for_profile(&prof.id).await;
+            close_profile_windows(&app, prof.platform, &prof.id);
+        }
+        let _ = SecretStore::delete_profile_token(prof.platform, &prof.id);
+    }
     let _ = SecretStore::delete_token(PlatformId::Twitch);
     let _ = SecretStore::delete_token(PlatformId::Kick);
     WebhookDispatcher::clear_all_secrets();
     let _ = clear_webview_browsing_data(&app).await;
+    let profiles_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("."))
+        .join("Dropilot")
+        .join("WebView2-Profiles");
+    if profiles_dir.exists() {
+        let _ = fs::remove_dir_all(&profiles_dir);
+    }
 
     let disclaimer_accepted_version = state.settings.read().await.disclaimer_accepted_version;
     let fresh = Settings {
@@ -537,6 +825,8 @@ pub async fn clear_app_data(
         let mut guard = state.settings.write().await;
         *guard = fresh;
     }
+    state.sync_active_platform_snapshot(PlatformId::Twitch).await;
+    state.sync_active_platform_snapshot(PlatformId::Kick).await;
     {
         let mut hist = state.history.write().await;
         *hist = HistoryStore::default();
@@ -570,13 +860,23 @@ pub async fn open_url(state: State<'_, Arc<AppState>>, url: String) -> Result<()
     }
 
     let campaign_link_ok = {
-        let tw = state.twitch_snapshot.read().await;
-        let kk = state.kick_snapshot.read().await;
-        tw.campaigns
-            .iter()
-            .chain(kk.campaigns.iter())
+        let map = state.profile_snapshots.read().await;
+        let in_profiles = map
+            .values()
+            .flat_map(|s| s.campaigns.iter())
             .filter_map(|c| c.link_url.as_deref())
-            .any(|link| link == url)
+            .any(|link| link == url);
+        if in_profiles {
+            true
+        } else {
+            let tw = state.twitch_snapshot.read().await;
+            let kk = state.kick_snapshot.read().await;
+            tw.campaigns
+                .iter()
+                .chain(kk.campaigns.iter())
+                .filter_map(|c| c.link_url.as_deref())
+                .any(|link| link == url)
+        }
     };
 
     let allowlist_ok = campaign_link_ok || validate_url(&parsed, AllowlistKind::ExternalOpen).is_ok();

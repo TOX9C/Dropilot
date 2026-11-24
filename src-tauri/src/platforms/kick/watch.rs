@@ -13,13 +13,16 @@ use tokio::time::interval;
 use tokio_tungstenite::tungstenite::Message;
 use tracing::{debug, info, warn};
 
-use crate::auth::login_window::{close_compat_watch_window, ensure_compat_watch_window};
+use crate::auth::login_window::{
+    close_compat_watch_window_for_profile, ensure_compat_watch_window_for_profile,
+};
 use crate::net::client::AllowlistedClient;
 use crate::platforms::kick::api::{
-    kick_request_json, normalize_kick_bearer_token, KickRequest, KICK_VIEWER_TOKEN_URL,
+    kick_request_json_for_profile, normalize_kick_bearer_token, KickRequest, KICK_VIEWER_TOKEN_URL,
     KICK_VIEWER_WS_URL,
 };
 use crate::platforms::{AppError, Channel, PlatformId, WatchTickResult};
+use crate::settings::DEFAULT_KICK_PROFILE_ID;
 use crate::state::BridgeWaiters;
 
 struct ActiveKickWsTask {
@@ -65,17 +68,45 @@ impl KickWatchSession {
         channel: &Channel,
         compat_mode: bool,
     ) -> Result<WatchTickResult, AppError> {
+        self.tick_for_profile(
+            http,
+            app,
+            waiters,
+            DEFAULT_KICK_PROFILE_ID,
+            token,
+            channel,
+            compat_mode,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub async fn tick_for_profile(
+        &self,
+        http: &AllowlistedClient,
+        app: Option<&AppHandle>,
+        waiters: &BridgeWaiters,
+        profile_id: &str,
+        token: &str,
+        channel: &Channel,
+        compat_mode: bool,
+    ) -> Result<WatchTickResult, AppError> {
         if compat_mode {
             self.close_ws_only().await;
             if let Some(app_handle) = app {
-                ensure_compat_watch_window(app_handle, PlatformId::Kick, &channel.login)?;
+                ensure_compat_watch_window_for_profile(
+                    app_handle,
+                    PlatformId::Kick,
+                    profile_id,
+                    &channel.login,
+                )?;
             }
             return Ok(WatchTickResult::Watched);
         }
 
         // Default ultra-light stream-less mode: never keep a hidden Chromium video player open.
         if let Some(app_handle) = app {
-            close_compat_watch_window(app_handle, PlatformId::Kick);
+            close_compat_watch_window_for_profile(app_handle, PlatformId::Kick, profile_id);
         }
 
         let mut guard = self.ws_task.lock().await;
@@ -96,7 +127,7 @@ impl KickWatchSession {
             prev.stop();
         }
 
-        let viewer_token = fetch_viewer_token(http, app, waiters, token).await?;
+        let viewer_token = fetch_viewer_token(http, app, waiters, profile_id, token).await?;
         let ws_url = format!("{KICK_VIEWER_WS_URL}?token={viewer_token}");
         let mut extra_headers = HashMap::new();
         let bearer = normalize_kick_bearer_token(token);
@@ -232,12 +263,14 @@ async fn fetch_viewer_token(
     http: &AllowlistedClient,
     app: Option<&AppHandle>,
     waiters: &BridgeWaiters,
+    profile_id: &str,
     token: &str,
 ) -> Result<String, AppError> {
-    let payload = kick_request_json(
+    let payload = kick_request_json_for_profile(
         http,
         app,
         waiters,
+        profile_id,
         token,
         KickRequest {
             op_name: "kick_viewer_token",

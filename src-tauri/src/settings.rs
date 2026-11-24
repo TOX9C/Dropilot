@@ -5,10 +5,35 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
+use crate::platforms::PlatformId;
+
 pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub const CURRENT_DISCLAIMER_VERSION: u32 = 1;
 pub const MIN_REFRESH_MINUTES: u32 = 10;
 pub const MAX_REFRESH_MINUTES: u32 = 240;
+pub const DEFAULT_TWITCH_PROFILE_ID: &str = "default-twitch";
+pub const DEFAULT_KICK_PROFILE_ID: &str = "default-kick";
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AccountProfile {
+    pub id: String,
+    pub label: String,
+    pub platform: PlatformId,
+    #[serde(default)]
+    pub settings: PlatformSettings,
+}
+
+pub fn default_profile_id(platform: PlatformId) -> &'static str {
+    match platform {
+        PlatformId::Twitch => DEFAULT_TWITCH_PROFILE_ID,
+        PlatformId::Kick => DEFAULT_KICK_PROFILE_ID,
+    }
+}
+
+pub fn is_default_profile(profile_id: &str) -> bool {
+    profile_id == DEFAULT_TWITCH_PROFILE_ID || profile_id == DEFAULT_KICK_PROFILE_ID
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -203,6 +228,12 @@ pub struct Settings {
     pub window_bounds: Option<WindowBounds>,
     pub twitch: PlatformSettings,
     pub kick: PlatformSettings,
+    #[serde(default)]
+    pub profiles: Vec<AccountProfile>,
+    #[serde(default)]
+    pub active_twitch_profile_id: String,
+    #[serde(default)]
+    pub active_kick_profile_id: String,
 }
 
 impl Default for Settings {
@@ -232,6 +263,22 @@ impl Default for Settings {
             window_bounds: None,
             twitch: PlatformSettings::default(),
             kick: PlatformSettings::default(),
+            profiles: vec![
+                AccountProfile {
+                    id: DEFAULT_TWITCH_PROFILE_ID.to_string(),
+                    label: "Main".to_string(),
+                    platform: PlatformId::Twitch,
+                    settings: PlatformSettings::default(),
+                },
+                AccountProfile {
+                    id: DEFAULT_KICK_PROFILE_ID.to_string(),
+                    label: "Main".to_string(),
+                    platform: PlatformId::Kick,
+                    settings: PlatformSettings::default(),
+                },
+            ],
+            active_twitch_profile_id: DEFAULT_TWITCH_PROFILE_ID.to_string(),
+            active_kick_profile_id: DEFAULT_KICK_PROFILE_ID.to_string(),
         }
     }
 }
@@ -251,6 +298,119 @@ impl Settings {
             bounds.width = bounds.width.clamp(840, 3840);
             bounds.height = bounds.height.clamp(560, 2160);
         }
+
+        // Ensure at least one Twitch profile and one Kick profile always exist.
+        // When migrating from single-account settings.json (profiles empty), carry over
+        // legacy `settings.twitch` / `settings.kick` into the default profiles.
+        if !self.profiles.iter().any(|p| p.platform == PlatformId::Twitch) {
+            self.profiles.push(AccountProfile {
+                id: DEFAULT_TWITCH_PROFILE_ID.to_string(),
+                label: "Main".to_string(),
+                platform: PlatformId::Twitch,
+                settings: self.twitch.clone(),
+            });
+        }
+        if !self.profiles.iter().any(|p| p.platform == PlatformId::Kick) {
+            self.profiles.push(AccountProfile {
+                id: DEFAULT_KICK_PROFILE_ID.to_string(),
+                label: "Main".to_string(),
+                platform: PlatformId::Kick,
+                settings: self.kick.clone(),
+            });
+        }
+
+        // Deduplicate IDs and sanitize blank labels.
+        let mut seen_ids = std::collections::HashSet::new();
+        self.profiles.retain(|p| !p.id.trim().is_empty() && seen_ids.insert(p.id.clone()));
+        for prof in &mut self.profiles {
+            let trimmed = prof.label.trim();
+            if trimmed.is_empty() {
+                prof.label = if is_default_profile(&prof.id) {
+                    "Main".to_string()
+                } else {
+                    "Account".to_string()
+                };
+            } else if trimmed != prof.label {
+                prof.label = trimmed.to_string();
+            }
+        }
+
+        // Ensure active profile IDs always point to a valid profile on the matching platform.
+        if !self
+            .profiles
+            .iter()
+            .any(|p| p.platform == PlatformId::Twitch && p.id == self.active_twitch_profile_id)
+        {
+            if let Some(first) = self.profiles.iter().find(|p| p.platform == PlatformId::Twitch) {
+                self.active_twitch_profile_id = first.id.clone();
+            }
+        }
+        if !self
+            .profiles
+            .iter()
+            .any(|p| p.platform == PlatformId::Kick && p.id == self.active_kick_profile_id)
+        {
+            if let Some(first) = self.profiles.iter().find(|p| p.platform == PlatformId::Kick) {
+                self.active_kick_profile_id = first.id.clone();
+            }
+        }
+
+        self.sync_legacy_mirrors();
+    }
+
+    pub fn sync_legacy_mirrors(&mut self) {
+        if let Some(tw) = self.profile_settings(&self.active_twitch_profile_id).cloned() {
+            self.twitch = tw;
+        }
+        if let Some(kk) = self.profile_settings(&self.active_kick_profile_id).cloned() {
+            self.kick = kk;
+        }
+    }
+
+    pub fn active_profile_id(&self, platform: PlatformId) -> &str {
+        match platform {
+            PlatformId::Twitch => {
+                if self.active_twitch_profile_id.is_empty() {
+                    DEFAULT_TWITCH_PROFILE_ID
+                } else {
+                    &self.active_twitch_profile_id
+                }
+            }
+            PlatformId::Kick => {
+                if self.active_kick_profile_id.is_empty() {
+                    DEFAULT_KICK_PROFILE_ID
+                } else {
+                    &self.active_kick_profile_id
+                }
+            }
+        }
+    }
+
+    pub fn set_active_profile_id(&mut self, platform: PlatformId, profile_id: String) {
+        match platform {
+            PlatformId::Twitch => self.active_twitch_profile_id = profile_id,
+            PlatformId::Kick => self.active_kick_profile_id = profile_id,
+        }
+    }
+
+    pub fn profile_by_id(&self, profile_id: &str) -> Option<&AccountProfile> {
+        self.profiles.iter().find(|p| p.id == profile_id)
+    }
+
+    pub fn profile_by_id_mut(&mut self, profile_id: &str) -> Option<&mut AccountProfile> {
+        self.profiles.iter_mut().find(|p| p.id == profile_id)
+    }
+
+    pub fn profile_settings(&self, profile_id: &str) -> Option<&PlatformSettings> {
+        self.profiles.iter().find(|p| p.id == profile_id).map(|p| &p.settings)
+    }
+
+    pub fn profile_settings_mut(&mut self, profile_id: &str) -> Option<&mut PlatformSettings> {
+        self.profiles.iter_mut().find(|p| p.id == profile_id).map(|p| &mut p.settings)
+    }
+
+    pub fn profiles_for(&self, platform: PlatformId) -> Vec<&AccountProfile> {
+        self.profiles.iter().filter(|p| p.platform == platform).collect()
     }
 
     pub fn disclaimer_accepted(&self) -> bool {
@@ -614,5 +774,111 @@ mod tests {
         assert!(!reloaded.auto_install_updates);
 
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrates_single_account_settings_into_default_profiles() {
+        let dir = temp_dir("migrate_profiles");
+        let path = dir.join("settings.json");
+
+        let legacy_v2 = serde_json::json!({
+            "schemaVersion": CURRENT_SCHEMA_VERSION,
+            "theme": "dark",
+            "autostart": false,
+            "startMinimized": false,
+            "closeToTray": true,
+            "notifications": true,
+            "autoClaim": true,
+            "idleBehavior": "stay_idle",
+            "refreshMinutes": 30,
+            "farmUnlinked": false,
+            "compatWatchMode": false,
+            "updateCheck": true,
+            "autoInstallUpdates": true,
+            "remoteConfigEnabled": true,
+            "disclaimerAcceptedVersion": 1,
+            "logLevel": "info",
+            "mockMode": false,
+            "windowBounds": null,
+            "twitch": {
+                "enabled": true,
+                "priority": [{ "kind": "game", "gameId": "263490", "gameName": "Rust" }],
+                "farmCampaigns": ["tw-rust-1"],
+                "excludedCampaigns": ["tw-ignored"],
+                "pinnedChannel": "hJune",
+                "prioritizeEndingSoon": true
+            },
+            "kick": {
+                "enabled": false,
+                "priority": [],
+                "farmCampaigns": ["kk-1"],
+                "excludedCampaigns": [],
+                "pinnedChannel": null,
+                "prioritizeEndingSoon": false
+            }
+        });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&legacy_v2).expect("serialize legacy"),
+        )
+        .expect("write legacy");
+
+        let loaded = load_from_path(&path);
+        assert_eq!(loaded.active_profile_id(PlatformId::Twitch), DEFAULT_TWITCH_PROFILE_ID);
+        assert_eq!(loaded.active_profile_id(PlatformId::Kick), DEFAULT_KICK_PROFILE_ID);
+        assert_eq!(loaded.profiles_for(PlatformId::Twitch).len(), 1);
+        assert_eq!(loaded.profiles_for(PlatformId::Kick).len(), 1);
+
+        let tw_prof = loaded.profile_by_id(DEFAULT_TWITCH_PROFILE_ID).expect("default twitch");
+        assert_eq!(tw_prof.label, "Main");
+        assert_eq!(tw_prof.settings.farm_campaigns, vec!["tw-rust-1"]);
+        assert_eq!(tw_prof.settings.excluded_campaigns, vec!["tw-ignored"]);
+        assert_eq!(tw_prof.settings.pinned_channel.as_deref(), Some("hJune"));
+        assert!(tw_prof.settings.prioritize_ending_soon);
+        assert_eq!(tw_prof.settings.priority.len(), 1);
+
+        let kk_prof = loaded.profile_by_id(DEFAULT_KICK_PROFILE_ID).expect("default kick");
+        assert_eq!(kk_prof.label, "Main");
+        assert!(!kk_prof.settings.enabled);
+        assert_eq!(kk_prof.settings.farm_campaigns, vec!["kk-1"]);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn adding_and_removing_extra_profiles_preserves_mirrors_and_validates_active_ids() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.profiles_for(PlatformId::Twitch).len(), 1);
+
+        let alt = AccountProfile {
+            id: "twitch-alt-1".to_string(),
+            label: "Alt".to_string(),
+            platform: PlatformId::Twitch,
+            settings: PlatformSettings {
+                farm_campaigns: vec!["alt-camp".to_string()],
+                prioritize_ending_soon: true,
+                ..Default::default()
+            },
+        };
+        settings.profiles.push(alt);
+        settings.set_active_profile_id(PlatformId::Twitch, "twitch-alt-1".to_string());
+        settings.sanitize();
+
+        assert_eq!(settings.profiles_for(PlatformId::Twitch).len(), 2);
+        assert_eq!(settings.active_profile_id(PlatformId::Twitch), "twitch-alt-1");
+        assert_eq!(settings.twitch.farm_campaigns, vec!["alt-camp"]);
+        assert!(settings.twitch.prioritize_ending_soon);
+
+        // Removing the active alt profile should cleanly fall back to Main.
+        settings.profiles.retain(|p| p.id != "twitch-alt-1");
+        settings.sanitize();
+        assert_eq!(settings.active_profile_id(PlatformId::Twitch), DEFAULT_TWITCH_PROFILE_ID);
+        assert!(settings.twitch.farm_campaigns.is_empty());
+
+        // Removing the last remaining profile on a platform restores default Main automatically.
+        settings.profiles.retain(|p| p.platform != PlatformId::Kick);
+        settings.sanitize();
+        assert_eq!(settings.profiles_for(PlatformId::Kick).len(), 1);
+        assert_eq!(settings.active_profile_id(PlatformId::Kick), DEFAULT_KICK_PROFILE_ID);
     }
 }

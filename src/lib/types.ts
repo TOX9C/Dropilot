@@ -115,11 +115,26 @@ export interface RecentClaim {
   claimedAt: string;
 }
 
+export interface ProfileSnapshot {
+  profileId: string;
+  label: string;
+  platform: PlatformId;
+  snapshot: PlatformSnapshot;
+}
+
 export interface AppSnapshot {
   twitch: PlatformSnapshot;
   kick: PlatformSnapshot;
+  profiles?: ProfileSnapshot[];
   recentClaims: RecentClaim[];
   mockActive: boolean;
+}
+
+export interface AccountProfile {
+  id: string;
+  label: string;
+  platform: PlatformId;
+  settings: PlatformSettings;
 }
 
 export type PriorityItem =
@@ -265,6 +280,9 @@ export interface Settings {
   windowBounds: WindowBounds | null;
   twitch: PlatformSettings;
   kick: PlatformSettings;
+  profiles?: AccountProfile[];
+  activeTwitchProfileId?: string;
+  activeKickProfileId?: string;
 }
 
 export interface LogEntry {

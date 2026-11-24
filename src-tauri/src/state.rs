@@ -10,7 +10,9 @@ use crate::events::EventHub;
 use crate::history::{ClaimHistoryEntry, ClaimPlatform, ClaimRecordStatus, HistoryStore};
 use crate::logging::{LogBuffer, LogHandle};
 use crate::net::client::AllowlistedClient;
-use crate::platforms::{AppSnapshot, Campaign, PlatformId, PlatformSnapshot, RecentClaim};
+use crate::platforms::{
+    AppSnapshot, Campaign, PlatformId, PlatformSnapshot, ProfileSnapshot, RecentClaim,
+};
 use crate::remote_config::RemoteConfigManager;
 use crate::rewards::epic::{EpicFreeGame, EpicTracker};
 use crate::settings::{save_settings, Settings};
@@ -47,8 +49,9 @@ pub struct AppState {
     pub history: Arc<RwLock<HistoryStore>>,
     pub twitch_snapshot: Arc<RwLock<PlatformSnapshot>>,
     pub kick_snapshot: Arc<RwLock<PlatformSnapshot>>,
+    pub profile_snapshots: RwLock<HashMap<String, PlatformSnapshot>>,
     pub recent_claims: Arc<RwLock<VecDeque<RecentClaim>>>,
-    pub miner_channels: RwLock<HashMap<PlatformId, mpsc::Sender<MinerControl>>>,
+    pub profile_miners: RwLock<HashMap<String, mpsc::Sender<MinerControl>>>,
     pub kick_bridge_waiters: BridgeWaiters,
     pub twitch_bridge_lock: Arc<Mutex<()>>,
     pub allow_exit: AtomicBool,
@@ -69,6 +72,11 @@ impl AppState {
             history_store.recent_claimed(MAX_RECENT_CLAIMS).into_iter().collect();
         let remote_config = Arc::new(RemoteConfigManager::load_initial());
         let epic = Arc::new(EpicTracker::load_initial());
+        let mut initial_profile_snapshots = HashMap::new();
+        for prof in &initial_settings.profiles {
+            initial_profile_snapshots
+                .insert(prof.id.clone(), PlatformSnapshot::logged_out(prof.platform));
+        }
 
         Self {
             settings: Arc::new(RwLock::new(initial_settings)),
@@ -82,8 +90,9 @@ impl AppState {
             history: Arc::new(RwLock::new(history_store)),
             twitch_snapshot: Arc::new(RwLock::new(PlatformSnapshot::logged_out(PlatformId::Twitch))),
             kick_snapshot: Arc::new(RwLock::new(PlatformSnapshot::logged_out(PlatformId::Kick))),
+            profile_snapshots: RwLock::new(initial_profile_snapshots),
             recent_claims: Arc::new(RwLock::new(initial_claims)),
-            miner_channels: RwLock::new(HashMap::new()),
+            profile_miners: RwLock::new(HashMap::new()),
             kick_bridge_waiters: Arc::new(StdMutex::new(HashMap::new())),
             twitch_bridge_lock: Arc::new(Mutex::new(())),
             allow_exit: AtomicBool::new(false),
@@ -105,16 +114,83 @@ impl AppState {
         }
     }
 
-    pub async fn full_snapshot(&self) -> AppSnapshot {
-        let twitch = self.twitch_snapshot.read().await.clone();
-        let kick = self.kick_snapshot.read().await.clone();
+    pub async fn update_profile_snapshot(
+        &self,
+        profile_id: &str,
+        platform: PlatformId,
+        snap: PlatformSnapshot,
+    ) {
+        {
+            let mut map = self.profile_snapshots.write().await;
+            map.insert(profile_id.to_string(), snap.clone());
+        }
+        let is_active = self.settings.read().await.active_profile_id(platform) == profile_id;
+        if is_active {
+            let mut guard = self.snapshot_lock(platform).write().await;
+            *guard = snap;
+        }
+    }
+
+    pub async fn sync_active_platform_snapshot(&self, platform: PlatformId) {
+        let active_id = self.settings.read().await.active_profile_id(platform).to_string();
+        let active_snap = {
+            let map = self.profile_snapshots.read().await;
+            map.get(&active_id)
+                .cloned()
+                .unwrap_or_else(|| PlatformSnapshot::logged_out(platform))
+        };
+        let mut guard = self.snapshot_lock(platform).write().await;
+        *guard = active_snap;
+    }
+
+    pub async fn build_snapshot(&self) -> AppSnapshot {
+        let (profiles_cfg, active_tw_id, active_kk_id) = {
+            let s = self.settings.read().await;
+            (
+                s.profiles.clone(),
+                s.active_profile_id(PlatformId::Twitch).to_string(),
+                s.active_profile_id(PlatformId::Kick).to_string(),
+            )
+        };
+        let profile_map = self.profile_snapshots.read().await;
+        let profiles: Vec<ProfileSnapshot> = profiles_cfg
+            .iter()
+            .map(|prof| {
+                let snap = profile_map
+                    .get(&prof.id)
+                    .cloned()
+                    .unwrap_or_else(|| PlatformSnapshot::logged_out(prof.platform));
+                ProfileSnapshot {
+                    profile_id: prof.id.clone(),
+                    label: prof.label.clone(),
+                    platform: prof.platform,
+                    snapshot: snap,
+                }
+            })
+            .collect();
+
+        let twitch = profile_map
+            .get(&active_tw_id)
+            .cloned()
+            .unwrap_or_else(|| PlatformSnapshot::logged_out(PlatformId::Twitch));
+        let kick = profile_map
+            .get(&active_kk_id)
+            .cloned()
+            .unwrap_or_else(|| PlatformSnapshot::logged_out(PlatformId::Kick));
+        drop(profile_map);
+
         let claims = self.recent_claims.read().await.iter().cloned().collect();
         AppSnapshot {
             twitch,
             kick,
+            profiles,
             recent_claims: claims,
             mock_active: self.mock_active.load(Ordering::Relaxed),
         }
+    }
+
+    pub async fn full_snapshot(&self) -> AppSnapshot {
+        self.build_snapshot().await
     }
 
     pub async fn record_claim(&self, claim: RecentClaim) {
@@ -190,20 +266,42 @@ impl AppState {
             .dispatch_async(self.http.clone(), webhook_settings, event);
     }
 
-    pub async fn register_miner(&self, platform: PlatformId, tx: mpsc::Sender<MinerControl>) {
-        self.miner_channels.write().await.insert(platform, tx);
+    pub async fn register_miner_for_profile(
+        &self,
+        profile_id: &str,
+        tx: mpsc::Sender<MinerControl>,
+    ) {
+        self.profile_miners
+            .write()
+            .await
+            .insert(profile_id.to_string(), tx);
     }
 
-    pub async fn send_miner(&self, platform: PlatformId, cmd: MinerControl) {
-        let tx = self.miner_channels.read().await.get(&platform).cloned();
+    pub async fn unregister_miner_for_profile(&self, profile_id: &str) {
+        self.profile_miners.write().await.remove(profile_id);
+        self.profile_snapshots.write().await.remove(profile_id);
+    }
+
+    pub async fn send_profile_miner(&self, profile_id: &str, cmd: MinerControl) {
+        let tx = self.profile_miners.read().await.get(profile_id).cloned();
         if let Some(sender) = tx {
             let _ = sender.send(cmd).await;
         }
     }
 
+    pub async fn register_miner(&self, platform: PlatformId, tx: mpsc::Sender<MinerControl>) {
+        let active_id = self.settings.read().await.active_profile_id(platform).to_string();
+        self.register_miner_for_profile(&active_id, tx).await;
+    }
+
+    pub async fn send_miner(&self, platform: PlatformId, cmd: MinerControl) {
+        let active_id = self.settings.read().await.active_profile_id(platform).to_string();
+        self.send_profile_miner(&active_id, cmd).await;
+    }
+
     pub async fn send_all_miners(&self, cmd: MinerControl) {
         let senders: Vec<mpsc::Sender<MinerControl>> =
-            self.miner_channels.read().await.values().cloned().collect();
+            self.profile_miners.read().await.values().cloned().collect();
         for sender in senders {
             let _ = sender.send(cmd.clone()).await;
         }

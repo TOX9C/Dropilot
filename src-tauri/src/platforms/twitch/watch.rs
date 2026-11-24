@@ -13,13 +13,16 @@ use tokio::task::JoinHandle;
 use tokio::time::interval;
 use tracing::{debug, info, warn};
 
-use crate::auth::login_window::{close_compat_watch_window, ensure_compat_watch_window};
+use crate::auth::login_window::{
+    close_compat_watch_window_for_profile, ensure_compat_watch_window_for_profile,
+};
 use crate::net::client::AllowlistedClient;
 use crate::platforms::twitch::gql::{
     execute_persisted_gql, fetch_channel_live_status, ops, validate_oauth_token,
     TWITCH_USHER_HLS_BASE,
 };
 use crate::platforms::{AppError, Channel, PlatformId, WatchTickResult};
+use crate::settings::DEFAULT_TWITCH_PROFILE_ID;
 
 const DEFAULT_SPADE_URL: &str = "https://spade.twitch.tv/track";
 const SPADE_CACHE_TTL: Duration = Duration::from_secs(6 * 3600);
@@ -81,17 +84,42 @@ impl TwitchWatchSession {
         channel: &Channel,
         compat_mode: bool,
     ) -> Result<WatchTickResult, AppError> {
+        self.tick_for_profile(
+            http,
+            app,
+            DEFAULT_TWITCH_PROFILE_ID,
+            auth_token,
+            channel,
+            compat_mode,
+        )
+        .await
+    }
+
+    pub async fn tick_for_profile(
+        &self,
+        http: &Arc<AllowlistedClient>,
+        app: Option<&AppHandle>,
+        profile_id: &str,
+        auth_token: &str,
+        channel: &Channel,
+        compat_mode: bool,
+    ) -> Result<WatchTickResult, AppError> {
         if compat_mode {
             self.close().await;
             if let Some(app_handle) = app {
-                ensure_compat_watch_window(app_handle, PlatformId::Twitch, &channel.login)?;
+                ensure_compat_watch_window_for_profile(
+                    app_handle,
+                    PlatformId::Twitch,
+                    profile_id,
+                    &channel.login,
+                )?;
             }
             return Ok(WatchTickResult::Watched);
         }
 
         // Default ultra-light stream-less mode: never keep a hidden Chromium video player open.
         if let Some(app_handle) = app {
-            close_compat_watch_window(app_handle, PlatformId::Twitch);
+            close_compat_watch_window_for_profile(app_handle, PlatformId::Twitch, profile_id);
         }
 
         let mut guard = self.task.lock().await;

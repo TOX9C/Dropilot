@@ -37,7 +37,7 @@
     computeUpNextQueue,
     epicGameArtCandidates,
   } from '../lib/selectors';
-  import { activeRoute, epicFeed, notifyUi, sessionHistory, sessionMinutes } from '../lib/stores';
+  import { activeRoute, appSettings, epicFeed, notifyUi, sessionHistory, sessionMinutes } from '../lib/stores';
   import type {
     AppSnapshot,
     Campaign,
@@ -46,6 +46,7 @@
     LogEntry,
     PlatformId,
     PlatformSnapshot,
+    ProfileSnapshot,
     Settings,
   } from '../lib/types';
 
@@ -60,7 +61,40 @@
   const stats = $derived(computeDashboardStats(snapshot, $sessionMinutes, $slowNowMs));
   const upNext = $derived(computeUpNextQueue(snapshot, settings, $slowNowMs, 6));
   const endingSoon = $derived(computeEndingSoon(snapshot, $slowNowMs));
-  const cards = $derived([snapshot.twitch, snapshot.kick]);
+  const cards = $derived<ProfileSnapshot[]>(
+    snapshot.profiles && snapshot.profiles.length > 0
+      ? snapshot.profiles
+      : [
+          {
+            profileId: settings.activeTwitchProfileId ?? 'default-twitch',
+            label: 'Main',
+            platform: 'twitch',
+            snapshot: snapshot.twitch,
+          },
+          {
+            profileId: settings.activeKickProfileId ?? 'default-kick',
+            label: 'Main',
+            platform: 'kick',
+            snapshot: snapshot.kick,
+          },
+        ],
+  );
+  const multiTwitch = $derived(cards.filter((c) => c.platform === 'twitch').length > 1);
+  const multiKick = $derived(cards.filter((c) => c.platform === 'kick').length > 1);
+
+  async function openProfilePlatform(platform: PlatformId, profileId: string) {
+    try {
+      const currentActive =
+        platform === 'twitch' ? settings.activeTwitchProfileId : settings.activeKickProfileId;
+      if (profileId && currentActive !== profileId) {
+        const updated = await api.setActiveProfile(platform, profileId);
+        appSettings.set(updated);
+      }
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+    activeRoute.set(platform);
+  }
   const epicFreeNow = $derived(
     ($epicFeed?.games ?? []).filter((g) => g.status === 'active' && !g.claimed),
   );
@@ -136,10 +170,12 @@
       <span class="cm-right">ACTIONS</span>
     </div>
 
-    {#each cards as platSnap (platSnap.platform)}
+    {#each cards as card (card.profileId)}
+      {@const platSnap = card.snapshot}
       {@const camp = findActiveCampaign(platSnap)}
       {@const drop = findActiveDrop(platSnap, camp)}
       {@const platName = platSnap.platform === 'twitch' ? 'TWITCH' : 'KICK'}
+      {@const showProfileLabel = card.platform === 'twitch' ? multiTwitch : multiKick}
       {@const isMining = platSnap.state === 'Mining'}
       {@const liveProg = platSnap.watching
         ? computeLiveCampaignProgress(camp, drop?.id ?? null, isMining, platSnap.watchingSince, platSnap.progressSyncedAt, $nowMs)
@@ -149,10 +185,21 @@
       <div class="cm-row">
         <div class="cm-plat">
           <span class="plat-dot dot-{platSnap.platform}" aria-hidden="true"></span>
-          <button type="button" class="cm-plat-link" onclick={() => activeRoute.set(platSnap.platform)}>
-            <strong>{platName}</strong>
+          <button
+            type="button"
+            class="cm-plat-link"
+            onclick={() => openProfilePlatform(platSnap.platform, card.profileId)}
+          >
+            <span class="cm-plat-title">
+              <strong>{platName}</strong>
+              {#if showProfileLabel}
+                <span class="cm-prof-tag">{card.label}</span>
+              {/if}
+            </span>
             {#if platSnap.account}
               <span class="cm-acct">@{platSnap.account.login}</span>
+            {:else if showProfileLabel}
+              <span class="cm-acct">{card.label}</span>
             {/if}
           </button>
         </div>
@@ -207,10 +254,17 @@
           </div>
 
           <div class="cm-actions">
-            <Button variant="secondary" size="sm" onclick={() => platSnap.state === 'Paused' ? api.resume(platSnap.platform) : api.pause(platSnap.platform)}>
+            <Button
+              variant="secondary"
+              size="sm"
+              onclick={() =>
+                platSnap.state === 'Paused'
+                  ? api.resume(platSnap.platform, card.profileId)
+                  : api.pause(platSnap.platform, card.profileId)}
+            >
               {platSnap.state === 'Paused' ? 'Resume' : 'Pause'}
             </Button>
-            <Button variant="ghost" size="sm" onclick={() => api.switchChannel(platSnap.platform)}>Switch</Button>
+            <Button variant="ghost" size="sm" onclick={() => api.switchChannel(platSnap.platform, card.profileId)}>Switch</Button>
             <Button variant="ghost" size="sm" onclick={() => openChannelUrl(platSnap.platform, platSnap.watching!.login)} ariaLabel="Open stream">
               <ExternalLink size={12} />
             </Button>
@@ -244,7 +298,7 @@
             <StatusPill state={platSnap.state} compact />
             <span class="cm-idle-reason truncate">
               {#if platSnap.state === 'LoggedOut'}
-                Not signed in — connect {platSnap.platform === 'twitch' ? 'Twitch' : 'Kick'} to track and farm drops
+                Not signed in — connect {platSnap.platform === 'twitch' ? 'Twitch' : 'Kick'}{showProfileLabel ? ` (${card.label})` : ''} to track and farm drops
               {:else}
                 {platSnap.lastError ?? platSnap.stateReason ?? 'Standing by for eligible live channels'}
               {/if}
@@ -256,10 +310,10 @@
 
           <div class="cm-actions">
             {#if platSnap.state === 'LoggedOut'}
-              <Button variant="primary" size="sm" onclick={() => api.login(platSnap.platform)}>Log in</Button>
+              <Button variant="primary" size="sm" onclick={() => api.login(platSnap.platform, card.profileId)}>Log in</Button>
             {:else}
-              <Button variant="secondary" size="sm" onclick={() => api.retryPlatform(platSnap.platform)}>Retry</Button>
-              <Button variant="ghost" size="sm" onclick={() => activeRoute.set(platSnap.platform)}>Open</Button>
+              <Button variant="secondary" size="sm" onclick={() => api.retryPlatform(platSnap.platform, card.profileId)}>Retry</Button>
+              <Button variant="ghost" size="sm" onclick={() => openProfilePlatform(platSnap.platform, card.profileId)}>Open</Button>
             {/if}
           </div>
         {/if}
@@ -529,6 +583,25 @@
   }
 
   .cm-plat-link:hover strong { color: var(--accent-text); }
+
+  .cm-plat-title {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 100%;
+  }
+
+  .cm-prof-tag {
+    font-family: var(--font-mono);
+    font-size: 9.5px;
+    font-weight: 600;
+    padding: 0 4px;
+    border-radius: 2px;
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
 
   .cm-acct {
     font-family: var(--font-mono);

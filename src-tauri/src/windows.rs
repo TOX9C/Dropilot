@@ -4,7 +4,9 @@ use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Theme, WebviewUrl, WebviewWindowBuilder};
 use tracing::{info, warn};
 
-use crate::settings::{ThemeMode, WindowBounds};
+use crate::settings::{
+    is_default_profile, ThemeMode, WindowBounds,
+};
 use crate::state::AppState;
 
 /// Auxiliary WebView2 window labels that must stay alive if open when `"main"` is
@@ -20,6 +22,15 @@ pub const AUX_WEBVIEW_LABELS: &[&str] = &[
     "epic-claim",
     "compat-watch-twitch",
     "compat-watch-kick",
+];
+
+pub const AUX_WEBVIEW_PREFIXES: &[&str] = &[
+    "login-",
+    "inventory-",
+    "kick-bridge",
+    "twitch-bridge",
+    "epic-claim",
+    "compat-watch-",
 ];
 
 static LAST_MAIN_BOUNDS: Mutex<Option<WindowBounds>> = Mutex::new(None);
@@ -81,7 +92,41 @@ pub fn webview_data_dir() -> PathBuf {
         .join("WebView2")
 }
 
-/// Returns `true` if any auxiliary/login/bridge label in `AUX_WEBVIEW_LABELS` is reported open.
+pub fn sanitize_profile_id_for_fs(profile_id: &str) -> String {
+    let cleaned: String = profile_id
+        .chars()
+        .filter(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '_')
+        .collect();
+    if cleaned.is_empty() {
+        "profile".to_string()
+    } else {
+        cleaned
+    }
+}
+
+/// Isolated WebView2 user-data directory for a specific account profile.
+/// Default profiles reuse `webview_data_dir()` to preserve existing cookies;
+/// additional profiles get their own isolated directory under `WebView2-Profiles`.
+pub fn profile_webview_data_dir(profile_id: &str) -> PathBuf {
+    if is_default_profile(profile_id) {
+        return webview_data_dir();
+    }
+    dirs::data_local_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("Dropilot")
+        .join("WebView2-Profiles")
+        .join(sanitize_profile_id_for_fs(profile_id))
+}
+
+/// Returns `true` if `label` identifies an auxiliary/login/bridge/inventory/compat WebView2 window.
+pub fn is_aux_webview_label(label: &str) -> bool {
+    AUX_WEBVIEW_LABELS.contains(&label)
+        || AUX_WEBVIEW_PREFIXES
+            .iter()
+            .any(|prefix| label.starts_with(prefix))
+}
+
+/// Returns `true` if any auxiliary/login/bridge label matching `is_aux_webview_label` is reported open.
 pub fn any_aux_label_active<F>(exists: F) -> bool
 where
     F: Fn(&str) -> bool,
@@ -91,7 +136,9 @@ where
 
 /// Returns `true` when any login, bridge, inventory, Epic claim, or compat-watch WebView2 window is open.
 pub fn has_active_aux_webview(app: &AppHandle) -> bool {
-    any_aux_label_active(|label| app.get_webview_window(label).is_some())
+    app.webview_windows()
+        .keys()
+        .any(|label| is_aux_webview_label(label))
 }
 
 /// Stores validated non-minimized `"main"` window bounds in memory for restore after minimize-to-tray.
@@ -442,17 +489,14 @@ pub fn capture_bounds_sync(window: &tauri::Window) -> Option<WindowBounds> {
 
 pub fn apply_window_theme(app: &AppHandle, mode: ThemeMode) {
     let resolved = resolve_tauri_theme(mode);
-    for label in [
-        "main",
-        "login-twitch",
-        "login-kick",
-        "inventory-twitch",
-        "inventory-kick",
-        "epic-claim",
-    ] {
-        if let Some(win) = app.get_webview_window(label) {
+    for (label, win) in app.webview_windows() {
+        if label == "main"
+            || label.starts_with("login-")
+            || label.starts_with("inventory-")
+            || label == "epic-claim"
+        {
             if let Err(err) = win.set_theme(resolved) {
-                warn!(window = label, error = %err, "Failed updating window theme");
+                warn!(window = %label, error = %err, "Failed updating window theme");
             }
         }
     }
@@ -487,13 +531,54 @@ mod tests {
     fn aux_guard_detects_active_aux_windows_and_ignores_main() {
         assert!(!any_aux_label_active(|label| label == "main"));
         assert!(!any_aux_label_active(|_| false));
+        assert!(!is_aux_webview_label("main"));
 
         for label in AUX_WEBVIEW_LABELS {
             assert!(
                 any_aux_label_active(|candidate| candidate == *label),
                 "Aux guard should return true when {label} is active"
             );
+            assert!(
+                is_aux_webview_label(label),
+                "Prefix guard should match {label}"
+            );
         }
+
+        for profile_label in [
+            "login-twitch-alt1",
+            "login-kick-alt2",
+            "inventory-twitch-alt1",
+            "kick-bridge-alt2",
+            "twitch-bridge-alt1",
+            "compat-watch-twitch-alt1",
+            "compat-watch-kick-alt2",
+        ] {
+            assert!(
+                is_aux_webview_label(profile_label),
+                "Prefix guard should match multi-account window {profile_label}"
+            );
+        }
+    }
+
+    #[test]
+    fn profile_webview_data_dir_preserves_default_and_isolates_extra_profiles() {
+        let base = webview_data_dir();
+        assert_eq!(
+            profile_webview_data_dir(crate::settings::DEFAULT_TWITCH_PROFILE_ID),
+            base
+        );
+        assert_eq!(
+            profile_webview_data_dir(crate::settings::DEFAULT_KICK_PROFILE_ID),
+            base
+        );
+
+        let alt = profile_webview_data_dir("twitch-alt-1");
+        assert_ne!(alt, base);
+        assert!(alt.ends_with("twitch-alt-1"));
+        assert!(alt
+            .parent()
+            .and_then(|p| p.file_name())
+            .is_some_and(|n| n == "WebView2-Profiles"));
     }
 
     #[test]

@@ -11,7 +11,8 @@ use tokio::time::{sleep, Instant};
 use tracing::{error, info, warn};
 
 use crate::auth::login_window::{
-    close_compat_watch_window, close_kick_bridge_window, close_twitch_bridge_window,
+    close_compat_watch_window_for_profile, close_kick_bridge_window_for_profile,
+    close_twitch_bridge_window_for_profile,
 };
 use crate::history::{ClaimHistoryEntry, ClaimRecordStatus};
 use crate::miner::scheduler::{
@@ -25,13 +26,18 @@ use crate::miner::selector::{
 };
 use crate::net::backoff::Backoff;
 use crate::platforms::kick::models::is_kick_fallback_case_id;
+use crate::platforms::kick::KickPlatform;
+#[cfg(feature = "mock")]
+use crate::platforms::mock::MockPlatform;
 use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::{GAME_LINKED_ID_PREFIX, GAME_LINKED_NAME_PREFIX};
+use crate::platforms::twitch::TwitchPlatform;
 use crate::platforms::{
     Account, AppError, Campaign, CampaignStatus, Channel, Drop, DropProgress, MinerState, Platform,
     PlatformId, PlatformSnapshot, RecentClaim, WatchTickResult,
 };
 use crate::secrets::SecretStore;
+use crate::settings::is_default_profile;
 use crate::state::{AppState, MinerControl};
 use crate::tray::update_tray_from_state;
 use crate::webhooks::WebhookEvent;
@@ -53,8 +59,39 @@ impl PlatformBackend {
     }
 }
 
-pub fn spawn_miner_supervisor(
+pub fn build_platform_backend(
+    profile_id: &str,
     platform_id: PlatformId,
+    app: &AppHandle,
+    state: &Arc<AppState>,
+) -> PlatformBackend {
+    let real: Arc<dyn Platform> = match platform_id {
+        PlatformId::Twitch => Arc::new(TwitchPlatform::new_for_profile(
+            profile_id.to_string(),
+            state.http.clone(),
+            Some(app.clone()),
+            state.twitch_bridge_lock.clone(),
+        )),
+        PlatformId::Kick => Arc::new(KickPlatform::new_for_profile(
+            profile_id.to_string(),
+            state.http.clone(),
+            Some(app.clone()),
+            state.kick_bridge_waiters.clone(),
+        )),
+    };
+
+    #[cfg(feature = "mock")]
+    let mock = Some(Arc::new(MockPlatform::new(platform_id)) as Arc<dyn Platform>);
+    #[cfg(not(feature = "mock"))]
+    let mock = None;
+
+    PlatformBackend { real, mock }
+}
+
+pub fn spawn_miner_supervisor(
+    profile_id: String,
+    platform_id: PlatformId,
+    startup_delay_ms: u64,
     app: AppHandle,
     state: Arc<AppState>,
     backend: PlatformBackend,
@@ -62,8 +99,21 @@ pub fn spawn_miner_supervisor(
     let (tx, mut rx) = mpsc::channel::<MinerControl>(32);
 
     tauri::async_runtime::spawn(async move {
+        if startup_delay_ms > 0 {
+            tokio::select! {
+                _ = sleep(Duration::from_millis(startup_delay_ms)) => {}
+                cmd = rx.recv() => {
+                    if matches!(cmd, None | Some(MinerControl::Shutdown)) {
+                        info!(platform = platform_id.as_str(), profile_id = %profile_id, "Miner stopped cleanly before start");
+                        return;
+                    }
+                }
+            }
+        }
+
         loop {
             let result = run_miner_loop(
+                &profile_id,
                 platform_id,
                 app.clone(),
                 state.clone(),
@@ -74,16 +124,17 @@ pub fn spawn_miner_supervisor(
 
             match result {
                 Ok(ExitReason::Shutdown) => {
-                    info!(platform = platform_id.as_str(), "Miner stopped cleanly");
+                    info!(platform = platform_id.as_str(), profile_id = %profile_id, "Miner stopped cleanly");
                     break;
                 }
                 Ok(ExitReason::Restart) => {
-                    warn!(platform = platform_id.as_str(), "Restarting miner loop");
+                    warn!(platform = platform_id.as_str(), profile_id = %profile_id, "Restarting miner loop");
                     sleep(Duration::from_secs(3)).await;
                 }
                 Err(err) => {
                     error!(
                         platform = platform_id.as_str(),
+                        profile_id = %profile_id,
                         error = %err,
                         "Miner supervisor caught fatal error; restarting in 5s"
                     );
@@ -230,14 +281,22 @@ impl RuntimeContext {
     }
 }
 
-async fn clear_pinned_channel(state: &AppState, platform: PlatformId) {
+async fn clear_pinned_channel(state: &AppState, profile_id: &str, platform: PlatformId) {
     let changed = {
         let mut guard = state.settings.write().await;
-        let plat = match platform {
-            PlatformId::Twitch => &mut guard.twitch,
-            PlatformId::Kick => &mut guard.kick,
+        let cleared = if let Some(plat) = guard.profile_settings_mut(profile_id) {
+            plat.pinned_channel.take().is_some()
+        } else {
+            let plat = match platform {
+                PlatformId::Twitch => &mut guard.twitch,
+                PlatformId::Kick => &mut guard.kick,
+            };
+            plat.pinned_channel.take().is_some()
         };
-        plat.pinned_channel.take().is_some()
+        if cleared {
+            guard.sync_legacy_mirrors();
+        }
+        cleared
     };
     if changed {
         let _ = state.persist_settings().await;
@@ -245,6 +304,7 @@ async fn clear_pinned_channel(state: &AppState, platform: PlatformId) {
 }
 
 async fn run_miner_loop(
+    profile_id: &str,
     platform_id: PlatformId,
     app: AppHandle,
     state: Arc<AppState>,
@@ -254,15 +314,15 @@ async fn run_miner_loop(
     let mut ctx = RuntimeContext::new();
 
     // Load initial token from Credential Manager (or mock session when mock mode is active).
-    load_initial_token(platform_id, &state, &backend, &mut ctx).await;
-    sync_snapshot(&app, &state, platform_id, &ctx, true).await;
+    load_initial_token(profile_id, platform_id, &state, &backend, &mut ctx).await;
+    sync_snapshot(&app, &state, profile_id, platform_id, &ctx, true).await;
 
     loop {
         // Check if we need to reload token when switching between real and mock mode.
         let is_mock = state.mock_active.load(Ordering::Relaxed);
         if is_mock && ctx.token.is_none() {
-            load_initial_token(platform_id, &state, &backend, &mut ctx).await;
-            sync_snapshot(&app, &state, platform_id, &ctx, true).await;
+            load_initial_token(profile_id, platform_id, &state, &backend, &mut ctx).await;
+            sync_snapshot(&app, &state, profile_id, platform_id, &ctx, true).await;
         }
 
         // Wait either for a MinerControl command or the next step tick.
@@ -273,15 +333,15 @@ async fn run_miner_loop(
                 let Some(cmd) = maybe_cmd else {
                     return Ok(ExitReason::Restart);
                 };
-                match handle_control(platform_id, &app, &state, &backend, &mut ctx, cmd).await {
+                match handle_control(profile_id, platform_id, &app, &state, &backend, &mut ctx, cmd).await {
                     ControlOutcome::Continue => {}
                     ControlOutcome::Shutdown => return Ok(ExitReason::Shutdown),
                 }
-                sync_snapshot(&app, &state, platform_id, &ctx, true).await;
+                sync_snapshot(&app, &state, profile_id, platform_id, &ctx, true).await;
             }
             _ = sleep(wait_dur) => {
-                step_miner(platform_id, &app, &state, &backend, &mut ctx).await;
-                sync_snapshot(&app, &state, platform_id, &ctx, false).await;
+                step_miner(profile_id, platform_id, &app, &state, &backend, &mut ctx).await;
+                sync_snapshot(&app, &state, profile_id, platform_id, &ctx, false).await;
             }
         }
     }
@@ -293,6 +353,7 @@ enum ControlOutcome {
 }
 
 async fn load_initial_token(
+    profile_id: &str,
     platform_id: PlatformId,
     state: &AppState,
     backend: &PlatformBackend,
@@ -308,7 +369,7 @@ async fn load_initial_token(
         return;
     }
 
-    match SecretStore::load_token(platform_id) {
+    match SecretStore::load_profile_token(platform_id, profile_id) {
         Ok(Some(secret)) => {
             let tok = secret.expose().to_string();
             match backend.active(state).validate_session(&tok).await {
@@ -317,10 +378,14 @@ async fn load_initial_token(
                     ctx.account = Some(acct);
                     ctx.state = MinerState::Idle;
                     ctx.state_reason = Some("Loading campaigns...".to_string());
-                    info!(platform = platform_id.as_str(), "Session restored from Credential Manager");
+                    info!(
+                        platform = platform_id.as_str(),
+                        profile_id,
+                        "Session restored from Credential Manager"
+                    );
                 }
                 Err(AppError::Auth(_)) => {
-                    let _ = SecretStore::delete_token(platform_id);
+                    let _ = SecretStore::delete_profile_token(platform_id, profile_id);
                     ctx.reset_session("Session expired; please log in again");
                 }
                 Err(err) => {
@@ -334,13 +399,19 @@ async fn load_initial_token(
             ctx.reset_session("Not logged in");
         }
         Err(err) => {
-            warn!(platform = platform_id.as_str(), error = %err, "Failed reading Credential Manager");
+            warn!(
+                platform = platform_id.as_str(),
+                profile_id,
+                error = %err,
+                "Failed reading Credential Manager"
+            );
             ctx.reset_session("Not logged in");
         }
     }
 }
 
 async fn handle_control(
+    profile_id: &str,
     platform_id: PlatformId,
     app: &AppHandle,
     state: &AppState,
@@ -351,10 +422,10 @@ async fn handle_control(
     match cmd {
         MinerControl::Shutdown => {
             backend.active(state).stop_watching().await;
-            close_compat_watch_window(app, platform_id);
+            close_compat_watch_window_for_profile(app, platform_id, profile_id);
             match platform_id {
-                PlatformId::Twitch => close_twitch_bridge_window(app),
-                PlatformId::Kick => close_kick_bridge_window(app),
+                PlatformId::Twitch => close_twitch_bridge_window_for_profile(app, profile_id),
+                PlatformId::Kick => close_kick_bridge_window_for_profile(app, profile_id),
             }
             return ControlOutcome::Shutdown;
         }
@@ -362,27 +433,27 @@ async fn handle_control(
             ctx.paused = false;
             ctx.last_error = None;
             ctx.backoff.reset();
-            load_initial_token(platform_id, state, backend, ctx).await;
+            load_initial_token(profile_id, platform_id, state, backend, ctx).await;
             ctx.last_campaign_fetch = None;
             ctx.retry_not_before = None;
-            step_miner(platform_id, app, state, backend, ctx).await;
+            step_miner(profile_id, platform_id, app, state, backend, ctx).await;
         }
         MinerControl::Logout => {
             let plat = backend.active(state);
             let _ = plat.logout(ctx.token.as_deref()).await;
             if !state.mock_active.load(Ordering::Relaxed) {
-                let _ = SecretStore::delete_token(platform_id);
+                let _ = SecretStore::delete_profile_token(platform_id, profile_id);
             }
             ctx.paused = false;
             ctx.last_error = None;
             ctx.reset_session("Logged out");
-            info!(platform = platform_id.as_str(), "Logged out");
+            info!(platform = platform_id.as_str(), profile_id, "Logged out");
         }
         MinerControl::Pause => {
             backend.active(state).stop_watching().await;
-            close_compat_watch_window(app, platform_id);
+            close_compat_watch_window_for_profile(app, platform_id, profile_id);
             if platform_id == PlatformId::Kick {
-                close_kick_bridge_window(app);
+                close_kick_bridge_window_for_profile(app, profile_id);
             }
             ctx.paused = true;
             ctx.watching = None;
@@ -390,7 +461,7 @@ async fn handle_control(
             ctx.state = MinerState::Paused;
             ctx.state_reason = Some("Paused by user".to_string());
             ctx.next_action_at = None;
-            info!(platform = platform_id.as_str(), "Mining paused");
+            info!(platform = platform_id.as_str(), profile_id, "Mining paused");
         }
         MinerControl::Resume => {
             ctx.paused = false;
@@ -401,12 +472,12 @@ async fn handle_control(
             if ctx.token.is_some() {
                 ctx.state = MinerState::Idle;
                 ctx.state_reason = Some("Resuming...".to_string());
-                step_miner(platform_id, app, state, backend, ctx).await;
+                step_miner(profile_id, platform_id, app, state, backend, ctx).await;
             }
-            info!(platform = platform_id.as_str(), "Mining resumed");
+            info!(platform = platform_id.as_str(), profile_id, "Mining resumed");
         }
         MinerControl::SwitchChannel => {
-            clear_pinned_channel(state, platform_id).await;
+            clear_pinned_channel(state, profile_id, platform_id).await;
             if ctx.token.is_some() && !ctx.paused {
                 if let Some(ref current) = ctx.watching {
                     let current_login = current.login.clone();
@@ -418,18 +489,23 @@ async fn handle_control(
                 }
                 ctx.watching = None;
                 ctx.last_voluntary_switch = Some(Utc::now());
-                step_miner(platform_id, app, state, backend, ctx).await;
+                step_miner(profile_id, platform_id, app, state, backend, ctx).await;
             }
         }
         MinerControl::PinChannel(pin) => {
             if let Some(ref pin_login) = pin {
-                info!(platform = platform_id.as_str(), channel = %pin_login, "Pinned channel updated");
+                info!(
+                    platform = platform_id.as_str(),
+                    profile_id,
+                    channel = %pin_login,
+                    "Pinned channel updated"
+                );
                 ctx.avoid_channels_until
                     .remove(&pin_login.to_ascii_lowercase());
             }
             ctx.last_voluntary_switch = None;
             if ctx.token.is_some() && !ctx.paused {
-                step_miner(platform_id, app, state, backend, ctx).await;
+                step_miner(profile_id, platform_id, app, state, backend, ctx).await;
             }
         }
         MinerControl::RetryNow => {
@@ -440,7 +516,7 @@ async fn handle_control(
             ctx.backoff.reset();
             backend.active(state).reset_progress_sync_cooldown();
             if ctx.token.is_some() && !ctx.paused {
-                step_miner(platform_id, app, state, backend, ctx).await;
+                step_miner(profile_id, platform_id, app, state, backend, ctx).await;
             }
         }
         MinerControl::SettingsUpdated => {
@@ -454,13 +530,13 @@ async fn handle_control(
             let is_mock = state.mock_active.load(Ordering::Relaxed);
             if is_mock && ctx.token.as_deref() != Some("mock-session") {
                 ctx.reset_session("Switching to mock mode");
-                load_initial_token(platform_id, state, backend, ctx).await;
+                load_initial_token(profile_id, platform_id, state, backend, ctx).await;
             } else if !is_mock && ctx.token.as_deref() == Some("mock-session") {
                 ctx.reset_session("Switching to live mode");
-                load_initial_token(platform_id, state, backend, ctx).await;
+                load_initial_token(profile_id, platform_id, state, backend, ctx).await;
             }
             if ctx.token.is_some() && !ctx.paused {
-                step_miner(platform_id, app, state, backend, ctx).await;
+                step_miner(profile_id, platform_id, app, state, backend, ctx).await;
             }
         }
         MinerControl::RefreshNow => {
@@ -476,7 +552,7 @@ async fn handle_control(
             }
             backend.active(state).reset_progress_sync_cooldown();
             if ctx.token.is_some() && !ctx.paused {
-                step_miner(platform_id, app, state, backend, ctx).await;
+                step_miner(profile_id, platform_id, app, state, backend, ctx).await;
             }
         }
         MinerControl::CampaignDetailsLoaded(detailed) => {
@@ -524,6 +600,7 @@ fn compute_next_wake_delay(
 }
 
 async fn step_miner(
+    profile_id: &str,
     platform_id: PlatformId,
     app: &AppHandle,
     state: &AppState,
@@ -531,10 +608,13 @@ async fn step_miner(
     ctx: &mut RuntimeContext,
 ) {
     let settings = state.settings.read().await.clone();
-    let plat_settings = match platform_id {
-        PlatformId::Twitch => settings.twitch.clone(),
-        PlatformId::Kick => settings.kick.clone(),
-    };
+    let plat_settings = settings
+        .profile_settings(profile_id)
+        .cloned()
+        .unwrap_or_else(|| match platform_id {
+            PlatformId::Twitch => settings.twitch.clone(),
+            PlatformId::Kick => settings.kick.clone(),
+        });
 
     if !plat_settings.enabled {
         ctx.watching = None;
@@ -563,7 +643,7 @@ async fn step_miner(
     if !platform_remotely_enabled && !state.mock_active.load(Ordering::Relaxed) {
         if ctx.watching.is_some() {
             backend.active(state).stop_watching().await;
-            close_compat_watch_window(app, platform_id);
+            close_compat_watch_window_for_profile(app, platform_id, profile_id);
             ctx.watching = None;
             ctx.watching_since = None;
         }
@@ -579,11 +659,11 @@ async fn step_miner(
     if is_in_quiet_hours_now(&settings.schedule) {
         if ctx.watching.is_some() {
             backend.active(state).stop_watching().await;
-            close_compat_watch_window(app, platform_id);
+            close_compat_watch_window_for_profile(app, platform_id, profile_id);
             if platform_id == PlatformId::Kick {
-                close_kick_bridge_window(app);
+                close_kick_bridge_window_for_profile(app, profile_id);
             } else {
-                close_twitch_bridge_window(app);
+                close_twitch_bridge_window_for_profile(app, profile_id);
             }
             ctx.watching = None;
             ctx.watching_since = None;
@@ -638,7 +718,7 @@ async fn step_miner(
                 ctx.backoff.reset();
             }
             Err(err) => {
-                handle_platform_error(platform_id, app, state, ctx, err).await;
+                handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
                 return;
             }
         }
@@ -679,7 +759,7 @@ async fn step_miner(
                 ctx.backoff.reset();
             }
             Err(err) => {
-                handle_platform_error(platform_id, app, state, ctx, err).await;
+                handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
                 return;
             }
         }
@@ -719,7 +799,7 @@ async fn step_miner(
                 }
             }
             Err(err) => {
-                handle_platform_error(platform_id, app, state, ctx, err).await;
+                handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
                 return;
             }
         }
@@ -733,7 +813,7 @@ async fn step_miner(
     if let Some(ref cur_id) = ctx.current_campaign_id {
         if !ctx.campaigns.iter().any(|c| &c.id == cur_id) {
             plat.stop_watching().await;
-            close_compat_watch_window(app, platform_id);
+            close_compat_watch_window_for_profile(app, platform_id, profile_id);
             ctx.watching = None;
             ctx.watching_since = None;
             ctx.current_campaign_id = None;
@@ -744,7 +824,17 @@ async fn step_miner(
 
     // 4. Auto-claim any claimable drops.
     if settings.auto_claim {
-        claim_ready_drops(platform_id, app, state, &plat, &token, ctx, settings.notifications).await;
+        claim_ready_drops(
+            profile_id,
+            platform_id,
+            app,
+            state,
+            &plat,
+            &token,
+            ctx,
+            settings.notifications,
+        )
+        .await;
     }
 
     // 5. Build ordered priority queue of eligible campaigns.
@@ -758,7 +848,7 @@ async fn step_miner(
 
     if ordered_queue.is_empty() {
         plat.stop_watching().await;
-        close_compat_watch_window(app, platform_id);
+        close_compat_watch_window_for_profile(app, platform_id, profile_id);
         ctx.watching = None;
         ctx.watching_since = None;
         ctx.current_campaign_id = None;
@@ -797,6 +887,7 @@ async fn step_miner(
                         {
                             info!(
                                 platform = platform_id.as_str(),
+                                profile_id,
                                 channel = %updated.login,
                                 campaign = %current_camp.name,
                                 "Channel is no longer participating in active drop campaign"
@@ -812,7 +903,7 @@ async fn step_miner(
                     current_ch.is_live = false;
                 }
                 Err(err) => {
-                    handle_platform_error(platform_id, app, state, ctx, err).await;
+                    handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
                     return;
                 }
             }
@@ -869,7 +960,7 @@ async fn step_miner(
                             Ok(candidates) => {
                                 // Switching to a different campaign always resets channel selection to Auto.
                                 if let Some(best) = select_best_channel(hi_camp, &candidates, None).cloned() {
-                                    clear_pinned_channel(state, platform_id).await;
+                                    clear_pinned_channel(state, profile_id, platform_id).await;
                                     info!(
                                         platform = platform_id.as_str(),
                                         reason = %reason,
@@ -950,7 +1041,7 @@ async fn step_miner(
                 "Finding participating stream for {} ({})",
                 cand_camp.name, cand_camp.game.name
             ));
-            sync_snapshot(app, state, platform_id, ctx, false).await;
+            sync_snapshot(app, state, profile_id, platform_id, ctx, false).await;
 
             match plat.find_candidate_channels(&token, cand_camp).await {
                 Ok(candidates) => {
@@ -982,7 +1073,7 @@ async fn step_miner(
                     if let Some(best) = select_best_channel(cand_camp, pool, effective_pin).cloned()
                     {
                         if !same_campaign {
-                            clear_pinned_channel(state, platform_id).await;
+                            clear_pinned_channel(state, profile_id, platform_id).await;
                         }
                         info!(
                             platform = platform_id.as_str(),
@@ -1045,7 +1136,7 @@ async fn step_miner(
                     last_empty_name = Some(cand_camp.game.name.clone());
                 }
                 Err(err) => {
-                    handle_platform_error(platform_id, app, state, ctx, err).await;
+                    handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
                     return;
                 }
             }
@@ -1053,7 +1144,7 @@ async fn step_miner(
 
         if ctx.watching.is_none() {
             plat.stop_watching().await;
-            close_compat_watch_window(app, platform_id);
+            close_compat_watch_window_for_profile(app, platform_id, profile_id);
             ctx.watching_since = None;
             ctx.current_campaign_id = None;
             ctx.current_drop_id = None;
@@ -1169,14 +1260,16 @@ async fn step_miner(
                     ctx.candidates.clear();
                 }
                 Err(err) => {
-                    handle_platform_error(platform_id, app, state, ctx, err).await;
+                    handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
                 }
             }
         }
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn claim_ready_drops(
+    profile_id: &str,
     platform_id: PlatformId,
     app: &AppHandle,
     state: &AppState,
@@ -1204,7 +1297,7 @@ async fn claim_ready_drops(
     }
 
     ctx.state = MinerState::Claiming;
-    sync_snapshot(app, state, platform_id, ctx, false).await;
+    sync_snapshot(app, state, profile_id, platform_id, ctx, false).await;
 
     for (camp_id, game_name, camp_name, drop) in to_claim {
         let Some(camp_clone) = ctx.campaigns.iter().find(|c| c.id == camp_id).cloned() else {
@@ -1217,6 +1310,11 @@ async fn claim_ready_drops(
             .filter(|s| !s.is_empty())
             .unwrap_or(&drop.name)
             .to_string();
+        let claim_id = if is_default_profile(profile_id) {
+            format!("{}-{}", camp_id, drop.id)
+        } else {
+            format!("{}-{}-{}", profile_id, camp_id, drop.id)
+        };
         match plat.claim(token, &camp_clone, &drop).await {
             Ok(claim_res) => {
                 let final_drop_name = match claim_res
@@ -1237,6 +1335,7 @@ async fn claim_ready_drops(
 
                 info!(
                     platform = platform_id.as_str(),
+                    profile_id,
                     drop = %final_drop_name,
                     game = %game_name,
                     "Claimed drop"
@@ -1273,7 +1372,7 @@ async fn claim_ready_drops(
                 }
                 state
                     .record_claim(RecentClaim {
-                        id: format!("{}-{}", camp_id, drop.id),
+                        id: claim_id,
                         platform: platform_id,
                         game_name: game_name.clone(),
                         campaign_name: camp_name.clone(),
@@ -1315,6 +1414,7 @@ async fn claim_ready_drops(
             Err(AppError::Blocked(msg)) => {
                 warn!(
                     platform = platform_id.as_str(),
+                    profile_id,
                     drop = %display_drop_name,
                     reason = %msg,
                     "Claim needs manual action in official window"
@@ -1327,7 +1427,7 @@ async fn claim_ready_drops(
                 let reward_img = drop.rewards.first().and_then(|r| r.image_url.clone());
                 state
                     .record_manual_claim(ClaimHistoryEntry {
-                        id: format!("{}-{}", camp_id, drop.id),
+                        id: claim_id,
                         platform: platform_id.into(),
                         game_name: game_name.clone(),
                         campaign_name: camp_name.clone(),
@@ -1363,6 +1463,7 @@ async fn claim_ready_drops(
             Err(err) => {
                 warn!(
                     platform = platform_id.as_str(),
+                    profile_id,
                     drop = %display_drop_name,
                     error = %err,
                     "Claim attempt failed"
@@ -1370,10 +1471,11 @@ async fn claim_ready_drops(
             }
         }
     }
-    sync_snapshot(app, state, platform_id, ctx, true).await;
+    sync_snapshot(app, state, profile_id, platform_id, ctx, true).await;
 }
 
 async fn handle_platform_error(
+    profile_id: &str,
     platform_id: PlatformId,
     app: &AppHandle,
     state: &AppState,
@@ -1382,9 +1484,14 @@ async fn handle_platform_error(
 ) {
     match err {
         AppError::Auth(msg) => {
-            warn!(platform = platform_id.as_str(), reason = %msg, "Authentication invalid or expired");
+            warn!(
+                platform = platform_id.as_str(),
+                profile_id,
+                reason = %msg,
+                "Authentication invalid or expired"
+            );
             if !state.mock_active.load(Ordering::Relaxed) {
-                let _ = SecretStore::delete_token(platform_id);
+                let _ = SecretStore::delete_profile_token(platform_id, profile_id);
             }
             ctx.reset_session("Session expired; please log in again");
             ctx.last_error = Some(format!("Session expired ({msg})"));
@@ -1659,22 +1766,25 @@ fn active_drop_for(campaign: &Campaign) -> Option<&Drop> {
 async fn sync_snapshot(
     app: &AppHandle,
     state: &AppState,
+    profile_id: &str,
     platform_id: PlatformId,
     ctx: &RuntimeContext,
     force_emit: bool,
 ) {
     let pinned_channel = {
         let guard = state.settings.read().await;
-        match platform_id {
-            PlatformId::Twitch => guard.twitch.pinned_channel.clone(),
-            PlatformId::Kick => guard.kick.pinned_channel.clone(),
-        }
+        guard
+            .profile_settings(profile_id)
+            .and_then(|p| p.pinned_channel.clone())
+            .or_else(|| match platform_id {
+                PlatformId::Twitch => guard.twitch.pinned_channel.clone(),
+                PlatformId::Kick => guard.kick.pinned_channel.clone(),
+            })
     };
     let snap = ctx.to_snapshot(platform_id, pinned_channel);
-    {
-        let mut guard = state.snapshot_lock(platform_id).write().await;
-        *guard = snap;
-    }
+    state
+        .update_profile_snapshot(profile_id, platform_id, snap)
+        .await;
     state.publish_snapshot(app, force_emit).await;
     update_tray_from_state(app, state).await;
 }

@@ -5,9 +5,7 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Manager, Wry};
 use tracing::warn;
 
-use crate::auth::login_window::{
-    close_epic_claim_window, close_kick_bridge_window, close_twitch_bridge_window,
-};
+use crate::auth::login_window::close_all_aux_windows;
 use crate::platforms::{MinerState, PlatformId, PlatformSnapshot};
 use crate::state::{AppState, MinerControl};
 use crate::windows::ensure_main_window;
@@ -83,9 +81,16 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
                 }
                 "toggle-pause" => {
                     tauri::async_runtime::spawn(async move {
-                        let tw_paused = st.twitch_snapshot.read().await.state == MinerState::Paused;
-                        let kk_paused = st.kick_snapshot.read().await.state == MinerState::Paused;
-                        if tw_paused && kk_paused {
+                        let all_paused = {
+                            let map = st.profile_snapshots.read().await;
+                            if map.is_empty() {
+                                st.twitch_snapshot.read().await.state == MinerState::Paused
+                                    && st.kick_snapshot.read().await.state == MinerState::Paused
+                            } else {
+                                map.values().all(|s| s.state == MinerState::Paused)
+                            }
+                        };
+                        if all_paused {
                             st.send_all_miners(MinerControl::Resume).await;
                         } else {
                             st.send_all_miners(MinerControl::Pause).await;
@@ -96,9 +101,7 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
                     st.allow_exit.store(true, std::sync::atomic::Ordering::SeqCst);
                     tauri::async_runtime::spawn(async move {
                         st.send_all_miners(MinerControl::Shutdown).await;
-                        close_kick_bridge_window(&app_c);
-                        close_twitch_bridge_window(&app_c);
-                        close_epic_claim_window(&app_c);
+                        close_all_aux_windows(&app_c);
                         app_c.exit(0);
                     });
                 }
@@ -141,7 +144,14 @@ pub async fn update_tray_from_state(app: &AppHandle, state: &AppState) {
     let tw_line = format_platform_status(&tw);
     let kk_line = format_platform_status(&kk);
     let tooltip = format!("{tw_line} · {kk_line}");
-    let all_paused = tw.state == MinerState::Paused && kk.state == MinerState::Paused;
+    let all_paused = {
+        let map = state.profile_snapshots.read().await;
+        if map.is_empty() {
+            tw.state == MinerState::Paused && kk.state == MinerState::Paused
+        } else {
+            map.values().all(|s| s.state == MinerState::Paused)
+        }
+    };
 
     if let Some(tray_state) = app.try_state::<TrayState>() {
         if let Ok(handles) = tray_state.0.lock() {

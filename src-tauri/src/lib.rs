@@ -23,18 +23,11 @@ use std::sync::Arc;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tracing::{info, warn};
 
-use crate::auth::login_window::{
-    close_epic_claim_window, close_kick_bridge_window, close_twitch_bridge_window,
-};
+use crate::auth::login_window::close_all_aux_windows;
 use crate::events::EventHub;
 use crate::logging::{init_logging, LogBuffer};
-use crate::miner::engine::{spawn_miner_supervisor, PlatformBackend};
+use crate::miner::engine::{build_platform_backend, spawn_miner_supervisor};
 use crate::net::client::AllowlistedClient;
-use crate::platforms::kick::KickPlatform;
-#[cfg(feature = "mock")]
-use crate::platforms::mock::MockPlatform;
-use crate::platforms::twitch::TwitchPlatform;
-use crate::platforms::PlatformId;
 use crate::settings::{load_settings, save_settings};
 use crate::state::{AppState, MinerControl};
 use crate::tray::setup_tray;
@@ -49,9 +42,18 @@ pub fn run() {
     migrate_legacy_webview_dir();
     let mut settings = load_settings();
     // Always start on Auto channel by default instead of carrying over stale pins from prior sessions.
-    if settings.twitch.pinned_channel.is_some() || settings.kick.pinned_channel.is_some() {
+    let had_pins = settings.twitch.pinned_channel.is_some()
+        || settings.kick.pinned_channel.is_some()
+        || settings
+            .profiles
+            .iter()
+            .any(|p| p.settings.pinned_channel.is_some());
+    if had_pins {
         settings.twitch.pinned_channel = None;
         settings.kick.pinned_channel = None;
+        for prof in &mut settings.profiles {
+            prof.settings.pinned_channel = None;
+        }
         let _ = save_settings(&settings);
     }
     let log_buffer = LogBuffer::new();
@@ -99,6 +101,10 @@ pub fn run() {
         .manage(app_state.clone())
         .invoke_handler(tauri::generate_handler![
             commands::get_snapshot,
+            commands::add_account_profile,
+            commands::remove_account_profile,
+            commands::set_active_profile,
+            commands::rename_account_profile,
             commands::login,
             commands::logout,
             commands::set_campaign_farm,
@@ -171,50 +177,33 @@ pub fn run() {
                 state_for_setup.clone(),
             );
 
-            // Spawn platform miner tasks.
-            let twitch_real = Arc::new(TwitchPlatform::new(
-                state_for_setup.http.clone(),
-                Some(app_handle.clone()),
-                state_for_setup.twitch_bridge_lock.clone(),
-            ));
-            let kick_real = Arc::new(KickPlatform::new(
-                state_for_setup.http.clone(),
-                Some(app_handle.clone()),
-                state_for_setup.kick_bridge_waiters.clone(),
-            ));
-
-            #[cfg(feature = "mock")]
-            let (tw_mock, kk_mock) = (
-                Some(Arc::new(MockPlatform::new(PlatformId::Twitch)) as Arc<dyn platforms::Platform>),
-                Some(Arc::new(MockPlatform::new(PlatformId::Kick)) as Arc<dyn platforms::Platform>),
-            );
-            #[cfg(not(feature = "mock"))]
-            let (tw_mock, kk_mock) = (None, None);
-
-            let tw_tx = spawn_miner_supervisor(
-                PlatformId::Twitch,
-                app_handle.clone(),
-                state_for_setup.clone(),
-                PlatformBackend {
-                    real: twitch_real,
-                    mock: tw_mock,
-                },
-            );
-            let kk_tx = spawn_miner_supervisor(
-                PlatformId::Kick,
-                app_handle.clone(),
-                state_for_setup.clone(),
-                PlatformBackend {
-                    real: kick_real,
-                    mock: kk_mock,
-                },
-            );
+            // Spawn platform miner tasks for every configured profile with staggered startup.
+            let initial_profiles = settings.profiles.clone();
+            let mut spawned_miners = Vec::with_capacity(initial_profiles.len());
+            for (idx, profile) in initial_profiles.iter().enumerate() {
+                let backend = build_platform_backend(
+                    &profile.id,
+                    profile.platform,
+                    &app_handle,
+                    &state_for_setup,
+                );
+                let tx = spawn_miner_supervisor(
+                    profile.id.clone(),
+                    profile.platform,
+                    (idx as u64) * 350,
+                    app_handle.clone(),
+                    state_for_setup.clone(),
+                    backend,
+                );
+                spawned_miners.push((profile.id.clone(), tx));
+            }
 
             let reg_state = state_for_setup.clone();
             let win_app = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                reg_state.register_miner(PlatformId::Twitch, tw_tx).await;
-                reg_state.register_miner(PlatformId::Kick, kk_tx).await;
+                for (profile_id, tx) in spawned_miners {
+                    reg_state.register_miner_for_profile(&profile_id, tx).await;
+                }
                 if !start_minimized {
                     if let Err(err) = ensure_main_window(&win_app, &reg_state).await {
                         warn!(error = %err, "Failed opening initial main window");
@@ -313,9 +302,7 @@ pub fn run() {
                             st.events.reset_cache().await;
                             st.allow_exit.store(true, Ordering::SeqCst);
                             st.send_all_miners(MinerControl::Shutdown).await;
-                            close_kick_bridge_window(&app_c);
-                            close_twitch_bridge_window(&app_c);
-                            close_epic_claim_window(&app_c);
+                            close_all_aux_windows(&app_c);
                             app_c.exit(0);
                         });
                     }

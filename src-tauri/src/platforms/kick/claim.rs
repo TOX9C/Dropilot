@@ -4,12 +4,13 @@ use tauri::AppHandle;
 
 use crate::net::client::AllowlistedClient;
 use crate::platforms::kick::api::{
-    kick_request_json, KickRequest, KICK_CLAIM_URL, KICK_GAMIFICATION_CHALLENGES_URL,
+    kick_request_json_for_profile, KickRequest, KICK_CLAIM_URL, KICK_GAMIFICATION_CHALLENGES_URL,
 };
 use crate::platforms::kick::models::{
     is_kick_fallback_case_id, normalize_kick_image_url, KICK_GAMIFICATION_PREFIX,
 };
 use crate::platforms::{AppError, Campaign, ClaimResult, Drop};
+use crate::settings::DEFAULT_KICK_PROFILE_ID;
 use crate::state::BridgeWaiters;
 
 const REWARD_CONTAINER_KEYS: &[&str] = &[
@@ -291,6 +292,27 @@ pub async fn claim_drop(
     campaign: &Campaign,
     drop: &Drop,
 ) -> Result<ClaimResult, AppError> {
+    claim_drop_for_profile(
+        http,
+        app,
+        waiters,
+        DEFAULT_KICK_PROFILE_ID,
+        token,
+        campaign,
+        drop,
+    )
+    .await
+}
+
+pub async fn claim_drop_for_profile(
+    http: &AllowlistedClient,
+    app: Option<&AppHandle>,
+    waiters: &BridgeWaiters,
+    profile_id: &str,
+    token: &str,
+    campaign: &Campaign,
+    drop: &Drop,
+) -> Result<ClaimResult, AppError> {
     if is_kick_fallback_case_id(&campaign.id) {
         return Err(AppError::Blocked(format!(
             "Open Kick Rewards to open your {}",
@@ -301,10 +323,11 @@ pub async fn claim_drop(
     if let Some(challenge_id) = campaign.id.strip_prefix(KICK_GAMIFICATION_PREFIX) {
         let claim_url = format!("{KICK_GAMIFICATION_CHALLENGES_URL}/{challenge_id}/claim");
         let empty = json!({});
-        let res = kick_request_json(
+        let res = kick_request_json_for_profile(
             http,
             app,
             waiters,
+            profile_id,
             token,
             KickRequest {
                 op_name: "kick_claim_challenge",
@@ -338,10 +361,11 @@ pub async fn claim_drop(
         "campaign_id": campaign.id
     });
 
-    let payload = kick_request_json(
+    let payload = kick_request_json_for_profile(
         http,
         app,
         waiters,
+        profile_id,
         token,
         KickRequest {
             op_name: "kick_claim_drop",

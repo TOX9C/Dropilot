@@ -213,9 +213,20 @@ pub struct RecentClaim {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ProfileSnapshot {
+    pub profile_id: String,
+    pub label: String,
+    pub platform: PlatformId,
+    pub snapshot: PlatformSnapshot,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AppSnapshot {
     pub twitch: PlatformSnapshot,
     pub kick: PlatformSnapshot,
+    #[serde(default)]
+    pub profiles: Vec<ProfileSnapshot>,
     pub recent_claims: Vec<RecentClaim>,
     pub mock_active: bool,
 }

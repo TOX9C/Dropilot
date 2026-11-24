@@ -52,13 +52,14 @@
     'settings',
   ];
 
-  const allPaused = $derived(
-    Boolean(
-      $appSnapshot &&
-        $appSnapshot.twitch.state === 'Paused' &&
-        $appSnapshot.kick.state === 'Paused',
-    ),
-  );
+  const allPaused = $derived.by(() => {
+    const snap = $appSnapshot;
+    if (!snap) return false;
+    if (snap.profiles && snap.profiles.length > 0) {
+      return snap.profiles.every((p) => p.snapshot.state === 'Paused');
+    }
+    return snap.twitch.state === 'Paused' && snap.kick.state === 'Paused';
+  });
   const nextCheckIso = $derived($appSnapshot ? earliestNextActionAt($appSnapshot) : null);
 
   function applyDomTheme(
@@ -112,7 +113,14 @@
 
   async function handleTogglePauseAll() {
     try {
-      if (allPaused) {
+      const profiles = $appSnapshot?.profiles;
+      if (profiles && profiles.length > 0) {
+        await Promise.all(
+          profiles.map((p) =>
+            allPaused ? api.resume(p.platform, p.profileId) : api.pause(p.platform, p.profileId),
+          ),
+        );
+      } else if (allPaused) {
         await Promise.all([api.resume('twitch'), api.resume('kick')]);
       } else {
         await Promise.all([api.pause('twitch'), api.pause('kick')]);
@@ -124,7 +132,12 @@
 
   async function handleRefreshAll() {
     try {
-      await Promise.all([api.retryPlatform('twitch'), api.retryPlatform('kick')]);
+      const profiles = $appSnapshot?.profiles;
+      if (profiles && profiles.length > 0) {
+        await Promise.all(profiles.map((p) => api.retryPlatform(p.platform, p.profileId)));
+      } else {
+        await Promise.all([api.retryPlatform('twitch'), api.retryPlatform('kick')]);
+      }
       notifyUi('Refreshed Twitch and Kick');
     } catch (err) {
       notifyUi(String(err), 'error');
@@ -156,19 +169,34 @@
       if ($activeRoute === 'twitch' || $activeRoute === 'kick') {
         void api.retryPlatform($activeRoute);
       } else {
-        void Promise.all([api.retryPlatform('twitch'), api.retryPlatform('kick')]);
+        const profiles = $appSnapshot?.profiles;
+        if (profiles && profiles.length > 0) {
+          void Promise.all(profiles.map((p) => api.retryPlatform(p.platform, p.profileId)));
+        } else {
+          void Promise.all([api.retryPlatform('twitch'), api.retryPlatform('kick')]);
+        }
       }
       notifyUi('Refreshed');
     } else if (lower === 'p') {
       ev.preventDefault();
       const snap = $appSnapshot;
       if (!snap) return;
-      const paused = snap.twitch.state === 'Paused' && snap.kick.state === 'Paused';
-      void Promise.all(
-        paused
-          ? [api.resume('twitch'), api.resume('kick')]
-          : [api.pause('twitch'), api.pause('kick')],
-      );
+      const profiles = snap.profiles;
+      if (profiles && profiles.length > 0) {
+        const paused = profiles.every((p) => p.snapshot.state === 'Paused');
+        void Promise.all(
+          profiles.map((p) =>
+            paused ? api.resume(p.platform, p.profileId) : api.pause(p.platform, p.profileId),
+          ),
+        );
+      } else {
+        const paused = snap.twitch.state === 'Paused' && snap.kick.state === 'Paused';
+        void Promise.all(
+          paused
+            ? [api.resume('twitch'), api.resume('kick')]
+            : [api.pause('twitch'), api.pause('kick')],
+        );
+      }
     }
   }
 </script>

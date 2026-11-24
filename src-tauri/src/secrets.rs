@@ -3,6 +3,7 @@ use std::fmt;
 use keyring::Entry;
 
 use crate::platforms::{AppError, PlatformId};
+use crate::settings::{DEFAULT_KICK_PROFILE_ID, DEFAULT_TWITCH_PROFILE_ID};
 
 const SERVICE_NAME: &str = "Dropilot";
 const LEGACY_SERVICE_NAME: &str = "DropPilot";
@@ -117,11 +118,60 @@ impl SecretStore {
             ))),
         }
     }
+
+    fn is_legacy_default_profile(platform: PlatformId, profile_id: &str) -> bool {
+        matches!(
+            (platform, profile_id),
+            (PlatformId::Twitch, DEFAULT_TWITCH_PROFILE_ID)
+                | (PlatformId::Kick, DEFAULT_KICK_PROFILE_ID)
+        )
+    }
+
+    pub fn profile_secret_key(platform: PlatformId, profile_id: &str) -> String {
+        if Self::is_legacy_default_profile(platform, profile_id) {
+            platform.as_str().to_string()
+        } else {
+            format!("{}:{profile_id}", platform.as_str())
+        }
+    }
+
+    pub fn save_profile_token(
+        platform: PlatformId,
+        profile_id: &str,
+        token: &str,
+    ) -> Result<(), AppError> {
+        if Self::is_legacy_default_profile(platform, profile_id) {
+            Self::save_token(platform, token)
+        } else {
+            Self::save_named_secret(&Self::profile_secret_key(platform, profile_id), token)
+        }
+    }
+
+    pub fn load_profile_token(
+        platform: PlatformId,
+        profile_id: &str,
+    ) -> Result<Option<SecretToken>, AppError> {
+        if Self::is_legacy_default_profile(platform, profile_id) {
+            Self::load_token(platform)
+        } else {
+            Self::load_named_secret(&Self::profile_secret_key(platform, profile_id))
+        }
+    }
+
+    pub fn delete_profile_token(platform: PlatformId, profile_id: &str) -> Result<(), AppError> {
+        if Self::is_legacy_default_profile(platform, profile_id) {
+            Self::delete_token(platform)
+        } else {
+            Self::delete_named_secret(&Self::profile_secret_key(platform, profile_id))
+        }
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::SecretToken;
+    use super::{SecretStore, SecretToken};
+    use crate::platforms::PlatformId;
+    use crate::settings::{DEFAULT_KICK_PROFILE_ID, DEFAULT_TWITCH_PROFILE_ID};
 
     #[test]
     fn debug_representation_never_exposes_secret() {
@@ -129,5 +179,25 @@ mod tests {
         let formatted = format!("{tok:?}");
         assert!(!formatted.contains("super_secret_oauth_token"));
         assert!(formatted.contains("REDACTED"));
+    }
+
+    #[test]
+    fn profile_secret_keys_preserve_legacy_defaults_and_scope_extras() {
+        assert_eq!(
+            SecretStore::profile_secret_key(PlatformId::Twitch, DEFAULT_TWITCH_PROFILE_ID),
+            "twitch"
+        );
+        assert_eq!(
+            SecretStore::profile_secret_key(PlatformId::Kick, DEFAULT_KICK_PROFILE_ID),
+            "kick"
+        );
+        assert_eq!(
+            SecretStore::profile_secret_key(PlatformId::Twitch, "twitch-alt-1"),
+            "twitch:twitch-alt-1"
+        );
+        assert_eq!(
+            SecretStore::profile_secret_key(PlatformId::Kick, "kick-alt-2"),
+            "kick:kick-alt-2"
+        );
     }
 }

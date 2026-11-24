@@ -12,6 +12,8 @@
   import Monitor from 'lucide-svelte/icons/monitor';
   import Moon from 'lucide-svelte/icons/moon';
   import Palette from 'lucide-svelte/icons/palette';
+  import Pencil from 'lucide-svelte/icons/pencil';
+  import Plus from 'lucide-svelte/icons/plus';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Send from 'lucide-svelte/icons/send';
   import Shield from 'lucide-svelte/icons/shield';
@@ -43,6 +45,8 @@
     AppSnapshot,
     FontFamily,
     FontScale,
+    PlatformId,
+    ProfileSnapshot,
     Settings,
     ThemeMode,
     WebhookSecretsStatus,
@@ -69,6 +73,101 @@
   let savingWebhook = $state(false);
   let testingDiscord = $state(false);
   let webhookFeedback = $state<{ ok: boolean; text: string } | null>(null);
+  let addingPlatform = $state<PlatformId | null>(null);
+  let newProfileLabel = $state('');
+  let savingProfile = $state(false);
+  let renamingProfileId = $state<string | null>(null);
+  let renameValue = $state('');
+
+  const profileCards = $derived<ProfileSnapshot[]>(
+    snapshot.profiles && snapshot.profiles.length > 0
+      ? snapshot.profiles
+      : [
+          {
+            profileId: settings.activeTwitchProfileId ?? 'default-twitch',
+            label: 'Main',
+            platform: 'twitch',
+            snapshot: snapshot.twitch,
+          },
+          {
+            profileId: settings.activeKickProfileId ?? 'default-kick',
+            label: 'Main',
+            platform: 'kick',
+            snapshot: snapshot.kick,
+          },
+        ],
+  );
+  const twitchProfileCount = $derived(
+    profileCards.filter((p) => p.platform === 'twitch').length,
+  );
+  const kickProfileCount = $derived(
+    profileCards.filter((p) => p.platform === 'kick').length,
+  );
+
+  function isActiveProfileCard(card: ProfileSnapshot): boolean {
+    return card.platform === 'twitch'
+      ? card.profileId === (settings.activeTwitchProfileId ?? 'default-twitch')
+      : card.profileId === (settings.activeKickProfileId ?? 'default-kick');
+  }
+
+  function isDefaultProfileId(profileId: string): boolean {
+    return profileId === 'default-twitch' || profileId === 'default-kick';
+  }
+
+  async function handleAddProfile(ev: SubmitEvent) {
+    ev.preventDefault();
+    if (!addingPlatform || savingProfile) return;
+    savingProfile = true;
+    const plat = addingPlatform;
+    try {
+      const updated = await api.addAccountProfile(plat, newProfileLabel.trim());
+      appSettings.set(updated);
+      addingPlatform = null;
+      newProfileLabel = '';
+      notifyUi(`Added ${plat === 'twitch' ? 'Twitch' : 'Kick'} account`);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    } finally {
+      savingProfile = false;
+    }
+  }
+
+  async function handleRemoveProfile(card: ProfileSnapshot) {
+    try {
+      const updated = await api.removeAccountProfile(card.profileId);
+      appSettings.set(updated);
+      notifyUi(`Removed ${card.platform === 'twitch' ? 'Twitch' : 'Kick'} account "${card.label}"`);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
+
+  async function handleSetActiveProfile(card: ProfileSnapshot) {
+    try {
+      const updated = await api.setActiveProfile(card.platform, card.profileId);
+      appSettings.set(updated);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
+
+  async function handleRenameProfile(ev: SubmitEvent) {
+    ev.preventDefault();
+    if (!renamingProfileId) return;
+    const clean = renameValue.trim();
+    if (!clean) {
+      notifyUi('Account label cannot be empty', 'error');
+      return;
+    }
+    try {
+      const updated = await api.renameAccountProfile(renamingProfileId, clean);
+      appSettings.set(updated);
+      renamingProfileId = null;
+      renameValue = '';
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
 
   const timeOptions: SelectOption[] = Array.from({ length: 48 }, (_, idx) => {
     const mins = idx * 30;
@@ -269,25 +368,113 @@
 
   <!-- Connected Accounts Top Strip -->
   <section class="accounts-wrap" aria-label="Connected accounts">
+    <div class="accounts-bar">
+      <div class="accounts-bar-title">
+        <span class="acct-kicker tabular">ACCOUNTS // ISOLATED PROFILES</span>
+        <span class="acct-count tabular">{twitchProfileCount} Twitch · {kickProfileCount} Kick</span>
+      </div>
+      <div class="accounts-bar-actions">
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={() => {
+            addingPlatform = 'twitch';
+            newProfileLabel = '';
+          }}
+        >
+          <Plus size={12} />
+          <span>Add Twitch</span>
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
+          onclick={() => {
+            addingPlatform = 'kick';
+            newProfileLabel = '';
+          }}
+        >
+          <Plus size={12} />
+          <span>Add Kick</span>
+        </Button>
+      </div>
+    </div>
+
+    {#if addingPlatform}
+      <form class="card add-profile-bar" onsubmit={handleAddProfile}>
+        <span class="plat-dot dot-{addingPlatform}" aria-hidden="true"></span>
+        <span class="add-prof-title">
+          New {addingPlatform === 'twitch' ? 'Twitch' : 'Kick'} account
+        </span>
+        <input
+          type="text"
+          class="secret-input add-prof-input"
+          bind:value={newProfileLabel}
+          placeholder="Label (e.g. Alt, Drops #2)"
+          maxlength={24}
+          onkeydown={(e) => e.key === 'Escape' && (addingPlatform = null)}
+        />
+        <Button type="submit" variant="primary" size="sm" disabled={savingProfile}>
+          {savingProfile ? 'Adding...' : 'Create profile'}
+        </Button>
+        <Button type="button" variant="ghost" size="sm" onclick={() => (addingPlatform = null)}>
+          Cancel
+        </Button>
+      </form>
+    {/if}
+
     <div class="accounts-grid">
-      {#each [snapshot.twitch, snapshot.kick] as platSnap (platSnap.platform)}
-        {@const isTwitch = platSnap.platform === 'twitch'}
+      {#each profileCards as card (card.profileId)}
+        {@const platSnap = card.snapshot}
+        {@const isTwitch = card.platform === 'twitch'}
         {@const label = isTwitch ? 'Twitch' : 'Kick'}
+        {@const platCount = isTwitch ? twitchProfileCount : kickProfileCount}
+        {@const isActive = isActiveProfileCard(card)}
+        {@const isDefault = isDefaultProfileId(card.profileId)}
         {@const browserUrl = isTwitch
           ? 'https://www.twitch.tv/drops/campaigns'
           : 'https://kick.com/drops/campaigns'}
-        <div class="card acct-card">
+        <div class="card acct-card" class:acct-card-active={platCount > 1 && isActive}>
           <div class="acct-left">
             <Monogram
               src={platSnap.account?.avatarUrl}
-              name={platSnap.account?.displayName ?? label}
+              name={platSnap.account?.displayName ?? `${label} ${card.label}`}
               width={34}
               height={34}
             />
             <div class="acct-meta">
               <div class="acct-top">
-                <span class="plat-dot dot-{platSnap.platform}" aria-hidden="true"></span>
+                <span class="plat-dot dot-{card.platform}" aria-hidden="true"></span>
                 <strong>{label}</strong>
+                {#if renamingProfileId === card.profileId}
+                  <form class="rename-inline" onsubmit={handleRenameProfile}>
+                    <input
+                      type="text"
+                      class="rename-input"
+                      bind:value={renameValue}
+                      maxlength={24}
+                      aria-label="Account label"
+                      onkeydown={(e) => e.key === 'Escape' && (renamingProfileId = null)}
+                    />
+                    <Button type="submit" variant="primary" size="sm">Save</Button>
+                  </form>
+                {:else}
+                  <Badge tone="neutral">{card.label}</Badge>
+                  <button
+                    type="button"
+                    class="rename-btn"
+                    title="Rename profile"
+                    aria-label={`Rename ${card.label}`}
+                    onclick={() => {
+                      renamingProfileId = card.profileId;
+                      renameValue = card.label;
+                    }}
+                  >
+                    <Pencil size={11} />
+                  </button>
+                {/if}
+                {#if platCount > 1 && isActive}
+                  <Badge tone="accent">Active</Badge>
+                {/if}
                 <StatusPill state={platSnap.state} compact />
               </div>
               <span class="acct-sub">
@@ -297,9 +484,24 @@
                   Not connected — sign in via Dropilot's isolated window
                 {/if}
               </span>
+              <span class="acct-iso tabular">
+                {isDefault
+                  ? 'Isolated WebView2 · Default session'
+                  : `Isolated WebView2 · WebView2-Profiles/${card.profileId}`}
+              </span>
             </div>
           </div>
           <div class="acct-action">
+            {#if platCount > 1 && !isActive}
+              <Button
+                variant="ghost"
+                size="sm"
+                title={`Switch active ${label} view to ${card.label}`}
+                onclick={() => handleSetActiveProfile(card)}
+              >
+                Use
+              </Button>
+            {/if}
             <Button
               variant="ghost"
               size="sm"
@@ -310,7 +512,11 @@
               <span>Browser</span>
             </Button>
             {#if platSnap.account}
-              <Button variant="secondary" size="sm" onclick={() => api.logout(platSnap.platform)}>
+              <Button
+                variant="secondary"
+                size="sm"
+                onclick={() => api.logout(card.platform, card.profileId)}
+              >
                 <LogOut size={13} />
                 <span>Log out</span>
               </Button>
@@ -318,13 +524,26 @@
               <Button
                 variant="primary"
                 size="sm"
-                title={`Opens Dropilot's isolated ${label} sign-in window (required for Drops sync; saved once in Windows Credential Manager)`}
-                onclick={() => api.login(platSnap.platform)}
+                title={`Opens Dropilot's isolated ${label} sign-in window (${card.label})`}
+                onclick={() => api.login(card.platform, card.profileId)}
               >
                 <LogIn size={13} />
                 <span>Log in</span>
               </Button>
             {/if}
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={platCount <= 1}
+              ariaLabel={`Remove ${label} account ${card.label}`}
+              title={platCount <= 1
+                ? `At least one ${label} account must remain configured`
+                : `Remove ${label} account "${card.label}" and delete its isolated session`}
+              onclick={() => handleRemoveProfile(card)}
+            >
+              <Trash2 size={13} />
+              <span>Remove</span>
+            </Button>
           </div>
         </div>
       {/each}
@@ -333,7 +552,7 @@
     <div class="session-info-bar">
       <Info size={13} />
       <span>
-        <strong>Isolated session sign-in:</strong> Dropilot opens a dedicated sign-in window instead of reading your Chrome, Edge, or Firefox profiles. This isolated session is required for Twitch &amp; Kick Drops sync and integrity checks, and your token is saved securely in Windows Credential Manager so you only sign in once.
+        <strong>Isolated session sign-in:</strong> Dropilot opens a dedicated WebView2 session per account instead of reading your Chrome, Edge, or Firefox profiles. Additional accounts use isolated folders under <code>WebView2-Profiles</code> and separate Windows Credential Manager entries so multiple Twitch &amp; Kick accounts farm simultaneously.
       </span>
     </div>
   </section>
@@ -1060,23 +1279,122 @@
     gap: 8px;
   }
 
+  .accounts-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .accounts-bar-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+  }
+
+  .acct-kicker {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    letter-spacing: 0.08em;
+    color: var(--text-faint);
+  }
+
+  .acct-count {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .accounts-bar-actions {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .add-profile-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+  }
+
+  .add-prof-title {
+    font-size: var(--text-sm);
+    font-weight: 600;
+  }
+
+  .add-prof-input {
+    max-width: 220px;
+  }
+
   .accounts-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--grid-gap, 14px);
   }
 
-  @media (max-width: 780px) {
+  @media (max-width: 960px) {
     .accounts-grid {
       grid-template-columns: 1fr;
     }
   }
 
+  .acct-card-active {
+    border-color: var(--accent);
+  }
+
   .acct-action {
     display: inline-flex;
+    flex-wrap: wrap;
     align-items: center;
+    justify-content: flex-end;
     gap: 6px;
     flex-shrink: 0;
+  }
+
+  .acct-iso {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--text-faint);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .rename-btn {
+    border: none;
+    background: transparent;
+    color: var(--text-faint);
+    padding: 2px;
+    border-radius: 2px;
+    display: inline-flex;
+    align-items: center;
+  }
+
+  .rename-btn:hover {
+    color: var(--text);
+    background: var(--surface-2);
+  }
+
+  .rename-inline {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+  }
+
+  .rename-input {
+    height: 22px;
+    width: 110px;
+    padding: 0 6px;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--accent);
+    background: var(--bg);
+    color: var(--text);
+    font-family: var(--font-mono);
+    font-size: 11px;
   }
 
   .session-info-bar {
