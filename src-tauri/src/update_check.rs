@@ -7,7 +7,9 @@ use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
 use tracing::{info, warn};
 
-use crate::auth::login_window::{close_kick_bridge_window, close_twitch_bridge_window};
+use crate::auth::login_window::{
+    close_epic_claim_window, close_kick_bridge_window, close_twitch_bridge_window,
+};
 use crate::net::allowlist::{UPDATE_CHECK_HOST, UPDATE_CHECK_PATH};
 use crate::net::client::AllowlistedClient;
 use crate::platforms::AppError;
@@ -155,6 +157,7 @@ pub async fn install_signed_update(
     state.send_all_miners(MinerControl::Shutdown).await;
     close_kick_bridge_window(app);
     close_twitch_bridge_window(app);
+    close_epic_claim_window(app);
 
     app.restart();
 }

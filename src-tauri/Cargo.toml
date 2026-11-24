@@ -1,6 +1,6 @@
 [package]
 name = "dropilot"
-version = "0.2.1"
+version = "0.2.2"
 description = "Lightweight Windows desktop app that automatically farms Twitch Drops and Kick Drops for your own logged-in accounts."
 authors = ["Dropilot Contributors"]
 license = "MIT"
@@ -48,7 +48,14 @@ url = "2.5"
 [target.'cfg(windows)'.dependencies]
 webview2-com = "0.39"
 windows = { version = "0.62", features = ["Win32_System_Com"] }
-windows-sys = { version = "0.59", features = ["Win32_UI_WindowsAndMessaging"] }
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_System_JobObjects",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
 
 [profile.release]
 opt-level = "s"

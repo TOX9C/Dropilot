@@ -23,7 +23,9 @@ use std::sync::Arc;
 use tauri::{Manager, RunEvent, WindowEvent};
 use tracing::{info, warn};
 
-use crate::auth::login_window::{close_kick_bridge_window, close_twitch_bridge_window};
+use crate::auth::login_window::{
+    close_epic_claim_window, close_kick_bridge_window, close_twitch_bridge_window,
+};
 use crate::events::EventHub;
 use crate::logging::{init_logging, LogBuffer};
 use crate::miner::engine::{spawn_miner_supervisor, PlatformBackend};
@@ -53,6 +55,7 @@ pub fn run() {
     }
     let log_buffer = LogBuffer::new();
     let log_handle = init_logging(settings.log_level, log_buffer.clone()).ok();
+    windows::configure_windows_process_group();
 
     let http = match AllowlistedClient::new() {
         Ok(client) => Arc::new(client),
@@ -260,10 +263,14 @@ pub fn run() {
                         if !close_to_tray {
                             st.allow_exit.store(true, Ordering::SeqCst);
                             st.send_all_miners(MinerControl::Shutdown).await;
+                            close_kick_bridge_window(&app_c);
+                            close_twitch_bridge_window(&app_c);
+                            close_epic_claim_window(&app_c);
                             app_c.exit(0);
                         } else {
                             close_kick_bridge_window(&app_c);
                             close_twitch_bridge_window(&app_c);
+                            close_epic_claim_window(&app_c);
                             info!("Main window closed to tray; WebView2 destroyed to save RAM");
                         }
                     });

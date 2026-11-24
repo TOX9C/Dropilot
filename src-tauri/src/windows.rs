@@ -64,6 +64,83 @@ pub fn webview_data_dir() -> PathBuf {
         .join("WebView2")
 }
 
+/// Configures Windows process identity (`AppUserModelID`) and assigns Dropilot to an
+/// anonymous Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so all child
+/// `msedgewebview2.exe` processes terminate automatically when Dropilot exits or crashes.
+#[cfg(windows)]
+pub fn configure_windows_process_group() {
+    use std::sync::OnceLock;
+    use tracing::info;
+    use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+        SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    static PROCESS_JOB_HANDLE: OnceLock<isize> = OnceLock::new();
+
+    let app_id: Vec<u16> = "io.dropilot.app\0".encode_utf16().collect();
+    let hr = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
+    if hr < 0 {
+        warn!(hresult = hr, "Failed setting Windows AppUserModelID");
+    }
+
+    if PROCESS_JOB_HANDLE.get().is_some() {
+        return;
+    }
+
+    unsafe {
+        let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+        if job.is_null() {
+            warn!(
+                error = GetLastError(),
+                "Failed creating Windows Job Object for WebView2 subprocess cleanup"
+            );
+            return;
+        }
+
+        let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
+        limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+
+        let ok = SetInformationJobObject(
+            job,
+            JobObjectExtendedLimitInformation,
+            &limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION as *const std::ffi::c_void,
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        );
+        if ok == 0 {
+            warn!(
+                error = GetLastError(),
+                "Failed configuring KILL_ON_JOB_CLOSE on Windows Job Object"
+            );
+            CloseHandle(job);
+            return;
+        }
+
+        if AssignProcessToJobObject(job, GetCurrentProcess()) == 0 {
+            warn!(
+                error = GetLastError(),
+                "Could not assign Dropilot to Job Object (process may already be in a restricted nested job)"
+            );
+            CloseHandle(job);
+            return;
+        }
+
+        if PROCESS_JOB_HANDLE.set(job as isize).is_err() {
+            CloseHandle(job);
+            return;
+        }
+
+        info!("Configured Windows AppUserModelID and KILL_ON_JOB_CLOSE Job Object");
+    }
+}
+
+#[cfg(not(windows))]
+pub fn configure_windows_process_group() {}
+
 /// One-time migration of the isolated Twitch/Kick WebView2 session folder from legacy `DropPilot`
 /// to `Dropilot` so existing logged-in browser sessions carry over automatically.
 pub fn migrate_legacy_webview_dir() {
@@ -228,7 +305,14 @@ pub fn capture_bounds_sync(window: &tauri::Window) -> Option<WindowBounds> {
 
 pub fn apply_window_theme(app: &AppHandle, mode: ThemeMode) {
     let resolved = resolve_tauri_theme(mode);
-    for label in ["main", "login-twitch", "login-kick", "inventory-twitch", "inventory-kick"] {
+    for label in [
+        "main",
+        "login-twitch",
+        "login-kick",
+        "inventory-twitch",
+        "inventory-kick",
+        "epic-claim",
+    ] {
         if let Some(win) = app.get_webview_window(label) {
             if let Err(err) = win.set_theme(resolved) {
                 warn!(window = label, error = %err, "Failed updating window theme");

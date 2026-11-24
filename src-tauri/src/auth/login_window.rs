@@ -343,6 +343,21 @@ fn platform_token_cookie_name(platform: PlatformId) -> &'static str {
     }
 }
 
+fn attach_main_owner<'a>(
+    app: &'a AppHandle,
+    builder: WebviewWindowBuilder<'a, tauri::Wry, AppHandle>,
+) -> WebviewWindowBuilder<'a, tauri::Wry, AppHandle> {
+    #[cfg(windows)]
+    if let Some(main_win) = app.get_webview_window("main") {
+        if let Ok(hwnd) = main_win.hwnd() {
+            return builder.owner_raw(hwnd);
+        }
+    }
+    #[cfg(not(windows))]
+    let _ = app;
+    builder
+}
+
 pub async fn open_login_window(
     app: &AppHandle,
     state: Arc<AppState>,
@@ -371,6 +386,7 @@ pub async fn open_login_window(
         .data_directory(webview_data_dir())
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation));
+    builder = attach_main_owner(app, builder);
 
     if platform == PlatformId::Twitch {
         builder = builder.initialization_script(TWITCH_OPEN_LOGIN_MODAL_SCRIPT);
@@ -470,14 +486,15 @@ pub async fn open_drops_inventory_window(
     let theme = state.settings.read().await.theme;
     let title = format!("{} Drops Inventory — Dropilot", platform.display_name());
 
-    WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
+    let builder = WebviewWindowBuilder::new(app, label, WebviewUrl::External(parsed))
         .title(&title)
         .inner_size(980.0, 720.0)
         .center()
         .theme(resolve_tauri_theme(theme))
         .data_directory(webview_data_dir())
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
-        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation))
+        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::LoginNavigation));
+    attach_main_owner(app, builder)
         .build()
         .map_err(|e| AppError::Internal(format!("Failed opening drops inventory window: {e}")))?;
 
@@ -506,18 +523,25 @@ pub async fn open_epic_claim_window(
     let theme = state.settings.read().await.theme;
     let title = format!("Claim {} — Epic Games · Dropilot", game_title);
 
-    WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(parsed))
+    let builder = WebviewWindowBuilder::new(app, LABEL, WebviewUrl::External(parsed))
         .title(&title)
         .inner_size(1100.0, 780.0)
         .center()
         .theme(resolve_tauri_theme(theme))
         .data_directory(webview_data_dir())
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
-        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::EpicCheckout))
+        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::EpicCheckout));
+    attach_main_owner(app, builder)
         .build()
         .map_err(|e| AppError::Internal(format!("Failed opening Epic Games claim window: {e}")))?;
 
     Ok(())
+}
+
+pub fn close_epic_claim_window(app: &AppHandle) {
+    if let Some(win) = app.get_webview_window("epic-claim") {
+        let _ = win.close();
+    }
 }
 
 pub async fn clear_webview_browsing_data(app: &AppHandle) -> Result<(), AppError> {

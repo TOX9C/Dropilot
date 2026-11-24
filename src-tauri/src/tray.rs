@@ -5,6 +5,9 @@ use tauri::tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, Tray
 use tauri::{AppHandle, Manager, Wry};
 use tracing::warn;
 
+use crate::auth::login_window::{
+    close_epic_claim_window, close_kick_bridge_window, close_twitch_bridge_window,
+};
 use crate::platforms::{MinerState, PlatformId, PlatformSnapshot};
 use crate::state::{AppState, MinerControl};
 use crate::windows::ensure_main_window;
@@ -93,6 +96,9 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
                     st.allow_exit.store(true, std::sync::atomic::Ordering::SeqCst);
                     tauri::async_runtime::spawn(async move {
                         st.send_all_miners(MinerControl::Shutdown).await;
+                        close_kick_bridge_window(&app_c);
+                        close_twitch_bridge_window(&app_c);
+                        close_epic_claim_window(&app_c);
                         app_c.exit(0);
                     });
                 }
