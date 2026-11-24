@@ -106,6 +106,19 @@ impl WebhookDispatcher {
         if host != "discord.com" {
             let _ = parsed.set_host(Some("discord.com"));
         }
+        // Strip accidental /slack or /github compatibility suffixes so Discord executes native
+        // JSON payloads instead of silently ignoring embeds with 204.
+        let path_owned = parsed.path().to_string();
+        let rest = path_owned
+            .strip_prefix("/api/webhooks/")
+            .or_else(|| path_owned.strip_prefix("/api/v10/webhooks/"))
+            .or_else(|| path_owned.strip_prefix("/api/v9/webhooks/"));
+        if let Some(rest) = rest {
+            let parts: Vec<&str> = rest.split('/').filter(|s| !s.is_empty()).collect();
+            if parts.len() >= 2 {
+                parsed.set_path(&format!("/api/webhooks/{}/{}", parts[0], parts[1]));
+            }
+        }
         Ok(parsed.to_string())
     }
 
@@ -231,22 +244,55 @@ impl WebhookDispatcher {
         http: &AllowlistedClient,
         channel: WebhookChannel,
         telegram_chat_id: &str,
-    ) -> Result<(), String> {
+    ) -> Result<String, String> {
         let event = WebhookEvent::TestPing;
         match channel {
             WebhookChannel::Discord => {
                 let url = SecretStore::load_named_secret(WEBHOOK_DISCORD_SECRET_KEY)
                     .map_err(|e| e.user_message())?
                     .ok_or_else(|| "Save a Discord webhook URL first".to_string())?;
-                let target_url = Self::normalize_discord_url(url.expose())?;
+                let normalized = Self::normalize_discord_url(url.expose())?;
+                let mut wait_url = Url::parse(&normalized)
+                    .map_err(|_| "Invalid Discord webhook URL".to_string())?;
+                if !wait_url.query_pairs().any(|(k, _)| k == "wait") {
+                    wait_url.query_pairs_mut().append_pair("wait", "true");
+                }
                 let payload = build_discord_payload(&event);
                 match http
-                    .post_webhook_json("discord_webhook_test", &target_url, &payload)
+                    .post_webhook_json("discord_webhook_test", wait_url.as_str(), &payload)
                     .await
                 {
-                    Ok(_) => {
-                        info!("Delivered Discord test webhook notification");
-                        Ok(())
+                    Ok((status, body)) => {
+                        let parsed: Option<Value> = serde_json::from_str(&body).ok();
+                        let msg_id = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("id"))
+                            .and_then(|v| v.as_str());
+                        let channel_id = parsed
+                            .as_ref()
+                            .and_then(|v| v.get("channel_id"))
+                            .and_then(|v| v.as_str());
+                        if let Some(mid) = msg_id {
+                            let cid = channel_id.unwrap_or("unknown");
+                            info!(
+                                status = status.as_u16(),
+                                channel_id = cid,
+                                message_id = mid,
+                                "Delivered Discord test webhook notification"
+                            );
+                            Ok(format!(
+                                "Test posted to Discord channel {cid} (msg {mid})"
+                            ))
+                        } else {
+                            warn!(
+                                status = status.as_u16(),
+                                "Discord webhook returned 2xx without creating a message (check webhook URL / channel type)"
+                            );
+                            Err(format!(
+                                "Discord returned HTTP {} without a created message ID — verify the webhook URL belongs to a text channel (not /slack or /github).",
+                                status.as_u16()
+                            ))
+                        }
                     }
                     Err(e) => {
                         warn!(error = %e, "Discord test webhook failed");
@@ -268,9 +314,18 @@ impl WebhookDispatcher {
                     .post_webhook_json("telegram_webhook_test", &url, &payload)
                     .await
                 {
-                    Ok(_) => {
+                    Ok((_status, body)) => {
+                        if let Ok(val) = serde_json::from_str::<Value>(&body) {
+                            if val.get("ok").and_then(|v| v.as_bool()) == Some(false) {
+                                let desc = val
+                                    .get("description")
+                                    .and_then(|v| v.as_str())
+                                    .unwrap_or("Telegram rejected request");
+                                return Err(format!("Telegram error: {desc}"));
+                            }
+                        }
                         info!("Delivered Telegram test webhook notification");
-                        Ok(())
+                        Ok("Test Telegram notification sent".to_string())
                     }
                     Err(e) => {
                         warn!(error = %e, "Telegram test webhook failed");
@@ -284,7 +339,7 @@ impl WebhookDispatcher {
 
 fn build_discord_payload(event: &WebhookEvent) -> Value {
     let ts = Utc::now().to_rfc3339_opts(SecondsFormat::Secs, true);
-    let embed = match event {
+    let (content, embed) = match event {
         WebhookEvent::DropClaimed {
             platform,
             game_name,
@@ -306,46 +361,72 @@ fn build_discord_payload(event: &WebhookEvent) -> Value {
             if let Some(img) = reward_image_url.as_deref().filter(|s| s.starts_with("https://")) {
                 obj["thumbnail"] = json!({ "url": img });
             }
-            obj
+            (
+                format!(
+                    "Drop claimed on {}: **{}** ({})",
+                    platform.display_name(),
+                    drop_name,
+                    game_name
+                ),
+                obj,
+            )
         }
         WebhookEvent::ActionRequired {
             platform,
             title,
             detail,
             ..
-        } => json!({
-            "title": format!("Action Required · {}", platform.display_name()),
-            "description": format!("**{}**\n{}", title, detail),
-            "color": 0xf59e0b,
-            "footer": { "text": "Dropilot Auto Drops" },
-            "timestamp": ts
-        }),
+        } => (
+            format!("Action required on {}: {}", platform.display_name(), title),
+            json!({
+                "title": format!("Action Required · {}", platform.display_name()),
+                "description": format!("**{}**\n{}", title, detail),
+                "color": 0xf59e0b,
+                "footer": { "text": "Dropilot Auto Drops" },
+                "timestamp": ts
+            }),
+        ),
         WebhookEvent::CampaignCompleted {
             platform,
             game_name,
             campaign_name,
             drops_count,
-        } => json!({
-            "title": format!("Campaign Completed · {}", platform.display_name()),
-            "description": format!("All **{}** rewards claimed for **{}**!", drops_count, game_name),
-            "color": 0x06b6d4,
-            "fields": [
-                { "name": "Campaign", "value": campaign_name, "inline": false }
-            ],
-            "footer": { "text": "Dropilot Auto Drops" },
-            "timestamp": ts
-        }),
-        WebhookEvent::TestPing => json!({
-            "title": "Dropilot Webhook Connected",
-            "description": "Test notification succeeded! You will receive drop claims and security alerts here.",
-            "color": 0x06b6d4,
-            "footer": { "text": format!("Dropilot v{}", env!("CARGO_PKG_VERSION")) },
-            "timestamp": ts
-        }),
+        } => (
+            format!(
+                "Campaign completed on {}: **{}** ({} rewards)",
+                platform.display_name(),
+                game_name,
+                drops_count
+            ),
+            json!({
+                "title": format!("Campaign Completed · {}", platform.display_name()),
+                "description": format!("All **{}** rewards claimed for **{}**!", drops_count, game_name),
+                "color": 0xe5a93b,
+                "fields": [
+                    { "name": "Campaign", "value": campaign_name, "inline": false }
+                ],
+                "footer": { "text": "Dropilot Auto Drops" },
+                "timestamp": ts
+            }),
+        ),
+        WebhookEvent::TestPing => (
+            format!(
+                "Dropilot v{} webhook connected — test notification succeeded.",
+                env!("CARGO_PKG_VERSION")
+            ),
+            json!({
+                "title": "Dropilot Webhook Connected",
+                "description": "Test notification succeeded! You will receive drop claims and security alerts here.",
+                "color": 0xe5a93b,
+                "footer": { "text": format!("Dropilot v{}", env!("CARGO_PKG_VERSION")) },
+                "timestamp": ts
+            }),
+        ),
     };
 
     json!({
         "username": "Dropilot",
+        "content": content,
         "embeds": [embed]
     })
 }
@@ -459,5 +540,22 @@ mod tests {
         };
         assert!(dispatcher.should_send_event(&settings, &ev));
         assert!(!dispatcher.should_send_event(&settings, &ev));
+    }
+
+    #[test]
+    fn normalizes_discord_webhook_domains_and_suffixes() {
+        let u1 = WebhookDispatcher::normalize_discord_url(
+            "https://discordapp.com/api/webhooks/123456789/abc_TOKEN/slack?thread_id=999",
+        )
+        .expect("normalized");
+        assert_eq!(
+            u1,
+            "https://discord.com/api/webhooks/123456789/abc_TOKEN?thread_id=999"
+        );
+        let u2 = WebhookDispatcher::normalize_discord_url(
+            "https://ptb.discord.com/api/v10/webhooks/123456789/abc_TOKEN/github",
+        )
+        .expect("normalized");
+        assert_eq!(u2, "https://discord.com/api/webhooks/123456789/abc_TOKEN");
     }
 }

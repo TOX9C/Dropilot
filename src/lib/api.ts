@@ -541,10 +541,14 @@ export const api = {
       }),
     ),
   testWebhook: (channel: WebhookChannel, telegramChatId?: string) =>
-    call<void>('test_webhook', {
-      channel,
-      telegramChatId: telegramChatId ?? null,
-    }),
+    call<string>(
+      'test_webhook',
+      {
+        channel,
+        telegramChatId: telegramChatId ?? null,
+      },
+      () => `Test ${channel === 'discord' ? 'Discord' : 'Telegram'} notification sent`,
+    ),
   getHistoryStats: () =>
     call<HistoryStats>('get_history_stats', undefined, () => ({
       totalClaims: previewSnapshot.recentClaims.length,

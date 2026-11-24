@@ -348,6 +348,12 @@ pub async fn fetch_channel_live_status(
 
 /// Queries `DropsHighlightService_AvailableDrops` in a single batch for the given Twitch
 /// broadcaster IDs and returns a map of `channel_id -> active viewerDropCampaign IDs`.
+///
+/// Always queries unauthenticated first because Twitch's `viewerDropCampaigns` field is
+/// viewer-scoped when an OAuth token is attached and can return empty arrays (`[]`) with
+/// HTTP 200 when viewer-specific highlight filters or integrity checks suppress banners.
+/// Falls back to a lightweight plain GraphQL batch query if the persisted hash returns empty
+/// or fails, and optionally checks the authenticated view if public lookup finds no campaigns.
 pub async fn fetch_channels_available_drop_campaign_ids(
     http: &AllowlistedClient,
     token: Option<&str>,
@@ -363,35 +369,11 @@ pub async fn fetch_channels_available_drop_campaign_ids(
         return Ok(HashMap::new());
     }
 
-    let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(valid_ids.len());
-
-    for chunk in valid_ids.chunks(25) {
-        let vars: Vec<Value> = chunk
-            .iter()
-            .map(|cid| json!({ "channelID": cid }))
-            .collect();
-
-        let items = match execute_persisted_gql_batch_opt(
-            http,
-            token,
-            ops::DROPS_HIGHLIGHT_AVAILABLE_DROPS,
-            &vars,
-        )
-        .await
-        {
-            Ok(v) => v,
-            Err(AppError::Blocked(_)) if token.is_some() => {
-                execute_persisted_gql_batch_opt(
-                    http,
-                    None,
-                    ops::DROPS_HIGHLIGHT_AVAILABLE_DROPS,
-                    &vars,
-                )
-                .await?
-            }
-            Err(err) => return Err(err),
-        };
-
+    fn merge_items(
+        result: &mut HashMap<String, Vec<String>>,
+        chunk: &[String],
+        items: &[Value],
+    ) {
         for (idx, item) in items.iter().enumerate() {
             let chan = item.pointer("/data/channel");
             let cid = chan
@@ -402,16 +384,114 @@ pub async fn fetch_channels_available_drop_campaign_ids(
             let Some(cid) = cid else {
                 continue;
             };
-            let camp_ids: Vec<String> = chan
+            let entry = result.entry(cid).or_default();
+            if let Some(arr) = chan
                 .and_then(|c| c.get("viewerDropCampaigns"))
-                .and_then(|arr| arr.as_array())
-                .map(|arr| {
-                    arr.iter()
-                        .filter_map(|c| c.get("id").and_then(|v| v.as_str()).map(str::to_string))
-                        .collect()
+                .and_then(|v| v.as_array())
+            {
+                for camp in arr {
+                    if let Some(id) = camp.get("id").and_then(|v| v.as_str()) {
+                        if !entry.iter().any(|existing| existing == id) {
+                            entry.push(id.to_string());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn query_plain_batch(
+        http: &AllowlistedClient,
+        token: Option<&str>,
+        chunk: &[String],
+    ) -> Result<Vec<Value>, AppError> {
+        const PLAIN_QUERY: &str =
+            "query($id: ID!) { channel(id: $id) { id viewerDropCampaigns { id } } }";
+        let headers = build_twitch_headers(token)?;
+        let batch_payload = Value::Array(
+            chunk
+                .iter()
+                .map(|cid| {
+                    json!({
+                        "query": PLAIN_QUERY,
+                        "variables": { "id": cid }
+                    })
                 })
-                .unwrap_or_default();
-            result.insert(cid, camp_ids);
+                .collect(),
+        );
+        let resp = http
+            .request_platform(
+                PlatformId::Twitch,
+                "ChannelAvailableDropsPlain",
+                Method::POST,
+                TWITCH_GQL_URL,
+                headers,
+                Some(&batch_payload),
+            )
+            .await?;
+        if let Some(err) = map_gql_http_status("ChannelAvailableDropsPlain", resp.status, &resp.body)
+        {
+            return Err(err);
+        }
+        let items: Vec<Value> = serde_json::from_str(&resp.body).map_err(|e| {
+            AppError::PlatformChanged(format!(
+                "Invalid JSON batch from ChannelAvailableDropsPlain: {e}"
+            ))
+        })?;
+        for item in &items {
+            check_gql_errors("ChannelAvailableDropsPlain", item)?;
+        }
+        Ok(items)
+    }
+
+    let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(valid_ids.len());
+
+    for chunk in valid_ids.chunks(25) {
+        let vars: Vec<Value> = chunk
+            .iter()
+            .map(|cid| json!({ "channelID": cid }))
+            .collect();
+
+        // 1. Prefer unauthenticated persisted query — returns public active drop campaigns on
+        //    each channel without viewer-level dismissal/integrity soft-filtering.
+        let mut chunk_has_any = false;
+        if let Ok(items) = execute_persisted_gql_batch_opt(
+            http,
+            None,
+            ops::DROPS_HIGHLIGHT_AVAILABLE_DROPS,
+            &vars,
+        )
+        .await
+        {
+            merge_items(&mut result, chunk, &items);
+            chunk_has_any = chunk
+                .iter()
+                .any(|cid| result.get(cid).map(|v| !v.is_empty()).unwrap_or(false));
+        }
+
+        // 2. Fallback to lightweight plain GQL batch (immune to persisted hash rotation).
+        if !chunk_has_any {
+            if let Ok(items) = query_plain_batch(http, None, chunk).await {
+                merge_items(&mut result, chunk, &items);
+                chunk_has_any = chunk
+                    .iter()
+                    .any(|cid| result.get(cid).map(|v| !v.is_empty()).unwrap_or(false));
+            }
+        }
+
+        // 3. If still empty and we have a user token, check authenticated view (e.g. account-gated
+        //    campaigns) and merge any IDs returned.
+        if !chunk_has_any && token.is_some() {
+            if let Ok(items) = execute_persisted_gql_batch_opt(
+                http,
+                token,
+                ops::DROPS_HIGHLIGHT_AVAILABLE_DROPS,
+                &vars,
+            )
+            .await
+            {
+                merge_items(&mut result, chunk, &items);
+            }
         }
     }
 

@@ -95,13 +95,33 @@ impl TwitchPlatform {
                     })
                     .collect();
                 participating.sort_by_key(|a| std::cmp::Reverse(a.viewer_count));
-                tracing::info!(
-                    game = %campaign.game.name,
-                    campaign = %campaign.name,
-                    candidates = total,
-                    participating = participating.len(),
-                    "Verified Twitch participating channels for drop campaign"
-                );
+                if participating.is_empty() {
+                    let channels_with_drops = avail_map.values().filter(|v| !v.is_empty()).count();
+                    let sample_ids: Vec<&str> = avail_map
+                        .values()
+                        .flatten()
+                        .map(String::as_str)
+                        .take(5)
+                        .collect();
+                    tracing::info!(
+                        game = %campaign.game.name,
+                        campaign = %campaign.name,
+                        campaign_id = %campaign.id,
+                        candidates = total,
+                        channels_with_drops,
+                        sample_campaign_ids = ?sample_ids,
+                        participating = 0,
+                        "Verified Twitch participating channels for drop campaign"
+                    );
+                } else {
+                    tracing::info!(
+                        game = %campaign.game.name,
+                        campaign = %campaign.name,
+                        candidates = total,
+                        participating = participating.len(),
+                        "Verified Twitch participating channels for drop campaign"
+                    );
+                }
                 participating
             }
             Ok(_) => Vec::new(),

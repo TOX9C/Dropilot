@@ -430,7 +430,7 @@ impl AllowlistedClient {
         op_name: &str,
         raw_url: &str,
         payload: &serde_json::Value,
-    ) -> Result<StatusCode, AppError> {
+    ) -> Result<(StatusCode, String), AppError> {
         let parsed = Url::parse(raw_url)
             .map_err(|e| AppError::Internal(format!("Invalid webhook URL: {}", redact(&e.to_string()))))?;
         validate_url(&parsed, AllowlistKind::Webhook)?;
@@ -454,6 +454,7 @@ impl AllowlistedClient {
 
         let status = resp.status();
         let headers = resp.headers().clone();
+        let body = resp.text().await.unwrap_or_default();
         debug!(
             op = op_name,
             status = status.as_u16(),
@@ -469,22 +470,18 @@ impl AllowlistedClient {
         }
 
         if !status.is_success() {
-            let body_snippet = resp
-                .text()
-                .await
-                .ok()
-                .map(|b| redact(b.trim()))
-                .filter(|b| !b.is_empty())
-                .map(|b| b.chars().take(200).collect::<String>());
-            let detail = match body_snippet {
-                Some(snippet) => format!("{op_name} returned HTTP {}: {snippet}", status.as_u16()),
-                None => format!("{op_name} returned HTTP {}", status.as_u16()),
+            let trimmed = redact(body.trim());
+            let detail = if trimmed.is_empty() {
+                format!("{op_name} returned HTTP {}", status.as_u16())
+            } else {
+                let snippet: String = trimmed.chars().take(200).collect();
+                format!("{op_name} returned HTTP {}: {snippet}", status.as_u16())
             };
             warn!(op = op_name, status = status.as_u16(), detail = %detail, "Webhook request failed");
             return Err(AppError::Network(detail));
         }
 
-        Ok(status)
+        Ok((status, body))
     }
 
     pub async fn connect_ws(

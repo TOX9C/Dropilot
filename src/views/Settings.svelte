@@ -226,11 +226,12 @@
         discordUrlInput = '';
         await savePatch((d) => (d.webhooks.discordEnabled = true));
       }
-      await api.testWebhook(
+      const resultMsg = await api.testWebhook(
         channel,
         channel === 'telegram' ? telegramChatIdInput.trim() : undefined,
       );
-      const okMsg = `Test ${channel === 'discord' ? 'Discord' : 'Telegram'} notification sent`;
+      const okMsg =
+        resultMsg || `Test ${channel === 'discord' ? 'Discord' : 'Telegram'} notification sent`;
       webhookFeedback = { channel, ok: true, text: okMsg };
       notifyUi(okMsg);
     } catch (err) {

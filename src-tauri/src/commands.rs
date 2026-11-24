@@ -663,7 +663,7 @@ pub async fn test_webhook(
     state: State<'_, Arc<AppState>>,
     channel: WebhookChannel,
     telegram_chat_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<String, String> {
     let chat_id = match telegram_chat_id {
         Some(id) if !id.trim().is_empty() => id,
         _ => state.settings.read().await.webhooks.telegram_chat_id.clone(),
