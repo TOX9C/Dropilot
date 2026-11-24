@@ -218,6 +218,10 @@ pub fn build_twitch_headers_for_profile(
     let (cid_name, cid_val) = parse_header_name_value("Client-ID", &client_id)?;
     headers.insert(cid_name, cid_val);
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert("Accept", HeaderValue::from_static("*/*"));
+    headers.insert("Accept-Language", HeaderValue::from_static("en-US"));
+    headers.insert("Pragma", HeaderValue::from_static("no-cache"));
+    headers.insert("Cache-Control", HeaderValue::from_static("no-cache"));
     headers.insert(ORIGIN, HeaderValue::from_static("https://www.twitch.tv"));
     headers.insert(REFERER, HeaderValue::from_static("https://www.twitch.tv/"));
 
@@ -243,15 +247,6 @@ pub fn build_twitch_headers_for_profile(
     headers.insert(sess_name, sess_val);
 
     if let Some(ref ctx) = integrity_ctx {
-        if let Some(ref ver) = ctx.client_version {
-            if !ver.trim().is_empty() {
-                if let Ok((ver_name, ver_val)) =
-                    parse_header_name_value("Client-Version", ver.trim())
-                {
-                    headers.insert(ver_name, ver_val);
-                }
-            }
-        }
         if let Ok((int_name, int_val)) =
             parse_header_name_value("Client-Integrity", ctx.client_integrity.trim())
         {
@@ -952,9 +947,22 @@ mod tests {
             headers_a.get("client-integrity").and_then(|v| v.to_str().ok()),
             Some("v4.public.fake-token")
         );
+        assert!(!headers_a.contains_key("client-version"));
         assert_eq!(
-            headers_a.get("client-version").and_then(|v| v.to_str().ok()),
-            Some("ver-123")
+            headers_a.get("accept").and_then(|v| v.to_str().ok()),
+            Some("*/*")
+        );
+        assert_eq!(
+            headers_a.get("accept-language").and_then(|v| v.to_str().ok()),
+            Some("en-US")
+        );
+        assert_eq!(
+            headers_a.get("pragma").and_then(|v| v.to_str().ok()),
+            Some("no-cache")
+        );
+        assert_eq!(
+            headers_a.get("cache-control").and_then(|v| v.to_str().ok()),
+            Some("no-cache")
         );
         assert_eq!(
             headers_a.get("client-session-id").and_then(|v| v.to_str().ok()),

@@ -187,6 +187,22 @@ const COMPAT_WATCH_SCRIPT: &str = r##"
   if (window.__dpCompatWatchInstalled) return;
   window.__dpCompatWatchInstalled = true;
 
+  // Keep Twitch/Kick convinced the tab is always visible and foregrounded even when
+  // the compat-watch window is hidden (visible(false)), so drop heartbeats never pause.
+  try {
+    Object.defineProperty(document, "hidden", {
+      configurable: true,
+      get: function () { return false; }
+    });
+    Object.defineProperty(document, "visibilityState", {
+      configurable: true,
+      get: function () { return "visible"; }
+    });
+    document.addEventListener("visibilitychange", function (e) {
+      e.stopImmediatePropagation();
+    }, true);
+  } catch (_) {}
+
   // Prefer lowest video quality & unmuted player state inside the DOM.
   // Audio is muted natively at the WebView2 tab level (ICoreWebView2_8::SetIsMuted(true))
   // so the user hears zero sound while Twitch/Kick still credit drop watch time.
@@ -234,6 +250,20 @@ const COMPAT_WATCH_SCRIPT: &str = r##"
 
   function keepPlaybackAlive() {
     clickGates();
+    try {
+      const collapseBtn = document.querySelector('[data-a-target="right-column__toggle-collapse-btn"]');
+      if (collapseBtn instanceof HTMLElement) {
+        const expanded = collapseBtn.getAttribute("aria-expanded");
+        if (expanded === "true" || document.querySelector('[data-a-target="chat-scroller"]')) {
+          collapseBtn.click();
+        }
+      } else {
+        const rightCol = document.querySelector('.right-column, [data-a-target="right-column-chat-bar"]');
+        if (rightCol instanceof HTMLElement && rightCol.style.display !== "none") {
+          rightCol.style.display = "none";
+        }
+      }
+    } catch (_) {}
     try {
       const videos = document.querySelectorAll("video");
       videos.forEach(function (video) {

@@ -63,6 +63,7 @@ pub const UI_WEBVIEW_BROWSER_ARGS: &str = concat!(
 /// (login, inventory, and rare fallback bridges). Keeps GPU intact for official login/security checks
 /// and disables occluded-window throttling so short-lived hidden bridges render React pages promptly.
 pub const PLATFORM_WEBVIEW_BROWSER_ARGS: &str = concat!(
+    "--autoplay-policy=no-user-gesture-required ",
     "--disable-extensions ",
     "--disable-background-networking ",
     "--disable-background-timer-throttling ",

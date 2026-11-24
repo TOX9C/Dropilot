@@ -175,6 +175,8 @@ struct RuntimeContext {
     last_voluntary_switch: Option<DateTime<Utc>>,
     last_seen_total_minutes: u32,
     progress_baseline_initialized: bool,
+    confirmed_progress_at: Option<DateTime<Utc>>,
+    auto_compat_fallback: bool,
     backoff: Backoff,
     retry_not_before: Option<Instant>,
     paused: bool,
@@ -208,6 +210,8 @@ impl RuntimeContext {
             last_voluntary_switch: None,
             last_seen_total_minutes: 0,
             progress_baseline_initialized: false,
+            confirmed_progress_at: None,
+            auto_compat_fallback: false,
             backoff: Backoff::new(),
             retry_not_before: None,
             paused: false,
@@ -241,6 +245,8 @@ impl RuntimeContext {
         self.next_action_at = None;
         self.last_seen_total_minutes = 0;
         self.progress_baseline_initialized = false;
+        self.confirmed_progress_at = None;
+        self.auto_compat_fallback = false;
         self.backoff.reset();
     }
 
@@ -423,6 +429,8 @@ async fn handle_control(
         MinerControl::Shutdown => {
             backend.active(state).stop_watching().await;
             close_compat_watch_window_for_profile(app, platform_id, profile_id);
+            ctx.auto_compat_fallback = false;
+            ctx.confirmed_progress_at = None;
             match platform_id {
                 PlatformId::Twitch => close_twitch_bridge_window_for_profile(app, profile_id),
                 PlatformId::Kick => close_kick_bridge_window_for_profile(app, profile_id),
@@ -458,6 +466,8 @@ async fn handle_control(
             ctx.paused = true;
             ctx.watching = None;
             ctx.watching_since = None;
+            ctx.auto_compat_fallback = false;
+            ctx.confirmed_progress_at = None;
             ctx.state = MinerState::Paused;
             ctx.state_reason = Some("Paused by user".to_string());
             ctx.next_action_at = None;
@@ -617,7 +627,14 @@ async fn step_miner(
         });
 
     if !plat_settings.enabled {
+        if ctx.watching.is_some() || ctx.auto_compat_fallback {
+            backend.active(state).stop_watching().await;
+            close_compat_watch_window_for_profile(app, platform_id, profile_id);
+        }
         ctx.watching = None;
+        ctx.watching_since = None;
+        ctx.auto_compat_fallback = false;
+        ctx.confirmed_progress_at = None;
         ctx.state = MinerState::Paused;
         ctx.state_reason = Some("Platform disabled in settings".to_string());
         return;
@@ -667,6 +684,8 @@ async fn step_miner(
             }
             ctx.watching = None;
             ctx.watching_since = None;
+            ctx.auto_compat_fallback = false;
+            ctx.confirmed_progress_at = None;
             ctx.current_campaign_id = None;
             ctx.current_drop_id = None;
         }
@@ -798,6 +817,7 @@ async fn step_miner(
                     state.record_watch_minutes(delta).await;
                     ctx.last_seen_total_minutes = total_mins;
                     ctx.last_progress_advance = Utc::now();
+                    ctx.confirmed_progress_at = Some(Utc::now());
                 } else if !ctx.progress_baseline_initialized {
                     ctx.last_seen_total_minutes = total_mins;
                     ctx.progress_baseline_initialized = true;
@@ -869,6 +889,8 @@ async fn step_miner(
         close_compat_watch_window_for_profile(app, platform_id, profile_id);
         ctx.watching = None;
         ctx.watching_since = None;
+        ctx.auto_compat_fallback = false;
+        ctx.confirmed_progress_at = None;
         ctx.current_campaign_id = None;
         ctx.current_drop_id = None;
         ctx.state = MinerState::Idle;
@@ -883,6 +905,27 @@ async fn step_miner(
 
     // 6. Check current watching state & switch rules.
     if let Some(mut current_ch) = ctx.watching.clone() {
+        if should_escalate_to_compat_player(
+            platform_id,
+            is_mock,
+            settings.compat_watch_mode,
+            ctx.auto_compat_fallback,
+            ctx.watching_since,
+            ctx.confirmed_progress_at,
+            now,
+        ) {
+            ctx.auto_compat_fallback = true;
+            ctx.last_progress_advance = now;
+            ctx.last_watch_tick = None;
+            plat.reset_progress_sync_cooldown();
+            info!(
+                platform = platform_id.as_str(),
+                profile_id,
+                channel = %current_ch.login,
+                "Twitch lightweight watcher saw 0 confirmed drop progress after 3m; switching to hidden muted Compatibility Player (160p30) for reliable drop credit"
+            );
+        }
+
         let current_camp = ctx
             .current_campaign_id
             .as_deref()
@@ -1164,6 +1207,8 @@ async fn step_miner(
             plat.stop_watching().await;
             close_compat_watch_window_for_profile(app, platform_id, profile_id);
             ctx.watching_since = None;
+            ctx.auto_compat_fallback = false;
+            ctx.confirmed_progress_at = None;
             ctx.current_campaign_id = None;
             ctx.current_drop_id = None;
             ctx.candidates.clear();
@@ -1203,20 +1248,29 @@ async fn step_miner(
             .map(|t| t.elapsed() >= tick_interval)
             .unwrap_or(true);
 
+        let effective_compat_mode = settings.compat_watch_mode || ctx.auto_compat_fallback;
+
         ctx.state = MinerState::Mining;
         ctx.current_campaign_id = Some(active_camp.id.clone());
         ctx.current_drop_id = active_drop_for(&active_camp).map(|d| d.id.clone());
-        ctx.state_reason = Some(format!(
-            "Watching {} ({})",
-            channel.display_name, active_camp.game.name
-        ));
+        ctx.state_reason = Some(if effective_compat_mode && platform_id == PlatformId::Twitch {
+            format!(
+                "Watching {} ({}) [Compatibility Player]",
+                channel.display_name, active_camp.game.name
+            )
+        } else {
+            format!(
+                "Watching {} ({})",
+                channel.display_name, active_camp.game.name
+            )
+        });
         ctx.last_error = None;
         ctx.next_action_at =
             Some(Utc::now() + ChronoDuration::from_std(tick_interval).unwrap_or_default());
 
         if should_tick {
             match plat
-                .watch_tick(&token, channel, settings.compat_watch_mode)
+                .watch_tick(&token, channel, effective_compat_mode)
                 .await
             {
                 Ok(WatchTickResult::Watched) => {
@@ -1766,6 +1820,29 @@ fn apply_progress(campaigns: &mut [Campaign], progress_list: &[DropProgress]) {
     propagate_linked_games(campaigns);
 }
 
+const AUTO_COMPAT_ESCALATION_SECS: i64 = 180;
+
+fn should_escalate_to_compat_player(
+    platform_id: PlatformId,
+    is_mock: bool,
+    compat_watch_mode: bool,
+    auto_compat_fallback: bool,
+    watching_since: Option<DateTime<Utc>>,
+    confirmed_progress_at: Option<DateTime<Utc>>,
+    now: DateTime<Utc>,
+) -> bool {
+    if platform_id != PlatformId::Twitch || is_mock || compat_watch_mode || auto_compat_fallback {
+        return false;
+    }
+    let Some(since) = watching_since else {
+        return false;
+    };
+    if (now - since).num_seconds() < AUTO_COMPAT_ESCALATION_SECS {
+        return false;
+    }
+    confirmed_progress_at.map(|at| at < since).unwrap_or(true)
+}
+
 fn total_watched_minutes(campaigns: &[Campaign]) -> u32 {
     campaigns
         .iter()
@@ -1984,5 +2061,102 @@ mod tests {
         assert!(campaigns[0].drops[0].claimed);
         assert!(!campaigns[0].drops[0].claimable);
         assert!(!campaigns[0].drops[0].needs_manual_claim);
+    }
+
+    #[test]
+    fn auto_compat_escalation_triggers_after_180s_without_progress_and_resets_on_logout() {
+        let now = Utc::now();
+        let since_179 = Some(now - ChronoDuration::seconds(179));
+        let since_180 = Some(now - ChronoDuration::seconds(180));
+
+        // Not yet 180s -> false.
+        assert!(!should_escalate_to_compat_player(
+            PlatformId::Twitch,
+            false,
+            false,
+            false,
+            since_179,
+            None,
+            now,
+        ));
+
+        // 180s elapsed with 0 confirmed progress -> true.
+        assert!(should_escalate_to_compat_player(
+            PlatformId::Twitch,
+            false,
+            false,
+            false,
+            since_180,
+            None,
+            now,
+        ));
+
+        // Confirmed progress from an earlier watch before `since` -> still escalates.
+        assert!(should_escalate_to_compat_player(
+            PlatformId::Twitch,
+            false,
+            false,
+            false,
+            since_180,
+            Some(now - ChronoDuration::seconds(300)),
+            now,
+        ));
+
+        // Confirmed progress after `since` -> does not escalate.
+        assert!(!should_escalate_to_compat_player(
+            PlatformId::Twitch,
+            false,
+            false,
+            false,
+            since_180,
+            Some(now - ChronoDuration::seconds(60)),
+            now,
+        ));
+
+        // Already in compat mode, already escalated, mock mode, or Kick -> false.
+        assert!(!should_escalate_to_compat_player(
+            PlatformId::Twitch,
+            false,
+            true,
+            false,
+            since_180,
+            None,
+            now,
+        ));
+        assert!(!should_escalate_to_compat_player(
+            PlatformId::Twitch,
+            false,
+            false,
+            true,
+            since_180,
+            None,
+            now,
+        ));
+        assert!(!should_escalate_to_compat_player(
+            PlatformId::Twitch,
+            true,
+            false,
+            false,
+            since_180,
+            None,
+            now,
+        ));
+        assert!(!should_escalate_to_compat_player(
+            PlatformId::Kick,
+            false,
+            false,
+            false,
+            since_180,
+            None,
+            now,
+        ));
+
+        // RuntimeContext::reset_session clears auto_compat_fallback and confirmed_progress_at.
+        let mut ctx = RuntimeContext::new();
+        ctx.auto_compat_fallback = true;
+        ctx.confirmed_progress_at = Some(now);
+        ctx.reset_session("Logged out");
+        assert!(!ctx.auto_compat_fallback);
+        assert!(ctx.confirmed_progress_at.is_none());
     }
 }

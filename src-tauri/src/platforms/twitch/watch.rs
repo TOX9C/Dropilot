@@ -262,8 +262,9 @@ impl TwitchWatchSession {
             }
         };
 
+        let mut logged_spade_ok = false;
         if let (Some(uid), Some(ref info)) = (user_id_opt, &broadcast_info) {
-            if let Err(err) = send_spade_minute_watched(
+            match send_spade_minute_watched(
                 http,
                 &spade_url,
                 uid,
@@ -272,19 +273,29 @@ impl TwitchWatchSession {
             )
             .await
             {
-                warn!(
-                    channel = %channel.login,
-                    spade_url = %spade_url,
-                    error = %err,
-                    "Initial Twitch Spade minute-watched beacon failed"
-                );
-            } else {
-                debug!(
-                    channel = %channel.login,
-                    broadcast_id = %info.broadcast_id,
-                    game_id = %info.game_id,
-                    "Sent initial Twitch Spade minute-watched beacon"
-                );
+                Err(err) => {
+                    warn!(
+                        channel = %channel.login,
+                        spade_url = %spade_url,
+                        error = %err,
+                        "Initial Twitch Spade minute-watched beacon failed"
+                    );
+                }
+                Ok(status) => {
+                    logged_spade_ok = true;
+                    let spade_host = url::Url::parse(&spade_url)
+                        .ok()
+                        .and_then(|u| u.host_str().map(str::to_string))
+                        .unwrap_or_else(|| spade_url.clone());
+                    info!(
+                        channel = %channel.login,
+                        spade_host = %spade_host,
+                        status,
+                        broadcast_id = %info.broadcast_id,
+                        game_id = %info.game_id,
+                        "Sent initial Twitch Spade minute-watched beacon"
+                    );
+                }
             }
         }
 
@@ -317,6 +328,8 @@ impl TwitchWatchSession {
             let mut variant_fetched_at = Instant::now();
             let mut last_spade_at = Instant::now();
             let mut consecutive_hls_failures: u32 = 0;
+            let mut logged_first_periodic_hls = false;
+            let mut logged_spade_ok_task = logged_spade_ok;
             let mut ticker = interval(Duration::from_secs(HLS_WATCH_INTERVAL_SECS));
             // Skip immediate first tick since we just ran the initial cycle above.
             ticker.tick().await;
@@ -376,11 +389,20 @@ impl TwitchWatchSession {
                 {
                     Ok(CycleOutcome::Watched(n)) => {
                         consecutive_hls_failures = 0;
-                        debug!(
-                            channel = %channel_owned.login,
-                            chunks = n,
-                            "Sent lightweight Twitch HLS HEAD watch heartbeat"
-                        );
+                        if !logged_first_periodic_hls {
+                            logged_first_periodic_hls = true;
+                            info!(
+                                channel = %channel_owned.login,
+                                chunks = n,
+                                "Completed first periodic Twitch HLS HEAD watch cycle"
+                            );
+                        } else {
+                            debug!(
+                                channel = %channel_owned.login,
+                                chunks = n,
+                                "Sent lightweight Twitch HLS HEAD watch heartbeat"
+                            );
+                        }
                     }
                     Ok(CycleOutcome::RefreshNeeded) => {
                         match fetch_hls_variant_url(
@@ -517,7 +539,7 @@ impl TwitchWatchSession {
                     }
 
                     if let (Some(uid), Some(ref info)) = (user_id_opt, &broadcast_info) {
-                        if let Err(err) = send_spade_minute_watched(
+                        match send_spade_minute_watched(
                             &http_task,
                             &spade_url,
                             uid,
@@ -526,18 +548,37 @@ impl TwitchWatchSession {
                         )
                         .await
                         {
-                            warn!(
-                                channel = %channel_owned.login,
-                                spade_url = %spade_url,
-                                error = %err,
-                                "Twitch Spade minute-watched beacon failed"
-                            );
-                        } else {
-                            debug!(
-                                channel = %channel_owned.login,
-                                broadcast_id = %info.broadcast_id,
-                                "Sent Twitch Spade minute-watched beacon"
-                            );
+                            Err(err) => {
+                                warn!(
+                                    channel = %channel_owned.login,
+                                    spade_url = %spade_url,
+                                    error = %err,
+                                    "Twitch Spade minute-watched beacon failed"
+                                );
+                            }
+                            Ok(status) => {
+                                if !logged_spade_ok_task {
+                                    logged_spade_ok_task = true;
+                                    let spade_host = url::Url::parse(&spade_url)
+                                        .ok()
+                                        .and_then(|u| u.host_str().map(str::to_string))
+                                        .unwrap_or_else(|| spade_url.clone());
+                                    info!(
+                                        channel = %channel_owned.login,
+                                        spade_host = %spade_host,
+                                        status,
+                                        broadcast_id = %info.broadcast_id,
+                                        "Sent Twitch Spade minute-watched beacon"
+                                    );
+                                } else {
+                                    debug!(
+                                        channel = %channel_owned.login,
+                                        status,
+                                        broadcast_id = %info.broadcast_id,
+                                        "Sent Twitch Spade minute-watched beacon"
+                                    );
+                                }
+                            }
                         }
                     }
                 }
@@ -1001,8 +1042,7 @@ async fn send_hls_head_cycle(
 }
 
 fn extract_lowest_variant_url(master_m3u8: &str) -> Option<String> {
-    let mut pending_bw: Option<(bool, u64)> = None;
-    let mut best_video: Option<(u64, String)> = None;
+    let mut pending_bw: Option<u64> = None;
     let mut best_any: Option<(u64, String)> = None;
     let mut last_url: Option<String> = None;
 
@@ -1012,7 +1052,6 @@ fn extract_lowest_variant_url(master_m3u8: &str) -> Option<String> {
             continue;
         }
         if let Some(attrs) = line.strip_prefix("#EXT-X-STREAM-INF:") {
-            let is_audio_only = attrs.contains("audio_only");
             let bw = attrs
                 .split(',')
                 .find_map(|part| {
@@ -1021,14 +1060,11 @@ fn extract_lowest_variant_url(master_m3u8: &str) -> Option<String> {
                         .and_then(|v| v.parse::<u64>().ok())
                 })
                 .unwrap_or(u64::MAX - 1);
-            pending_bw = Some((is_audio_only, bw));
+            pending_bw = Some(bw);
         } else if !line.starts_with('#') && line.starts_with("https://") {
             let url = line.to_string();
             last_url = Some(url.clone());
-            if let Some((is_audio_only, bw)) = pending_bw.take() {
-                if !is_audio_only && best_video.as_ref().map(|(b, _)| bw < *b).unwrap_or(true) {
-                    best_video = Some((bw, url.clone()));
-                }
+            if let Some(bw) = pending_bw.take() {
                 if best_any.as_ref().map(|(b, _)| bw < *b).unwrap_or(true) {
                     best_any = Some((bw, url));
                 }
@@ -1036,10 +1072,7 @@ fn extract_lowest_variant_url(master_m3u8: &str) -> Option<String> {
         }
     }
 
-    best_video
-        .or(best_any)
-        .map(|(_, url)| url)
-        .or(last_url)
+    best_any.map(|(_, url)| url).or(last_url)
 }
 
 fn is_twitch_segment_host(host: &str) -> bool {
@@ -1206,7 +1239,7 @@ async fn send_spade_minute_watched(
     user_id: u64,
     info: &BroadcastInfo,
     channel_login: &str,
-) -> Result<(), AppError> {
+) -> Result<u16, AppError> {
     let client_time = Utc::now().to_rfc3339_opts(SecondsFormat::Millis, true);
     let payload = build_spade_minute_watched_payload(user_id, info, channel_login, &client_time)
         .to_string();
@@ -1246,7 +1279,7 @@ async fn send_spade_minute_watched(
                 resp.status.as_u16()
             )));
         }
-        return Ok(());
+        return Ok(resp.status.as_u16());
     }
 }
 
@@ -1364,7 +1397,7 @@ https://euc11.playlist.ttvnw.net/v1/playlist/audio.m3u8
 ";
         assert_eq!(
             extract_lowest_variant_url(master).as_deref(),
-            Some("https://euc11.playlist.ttvnw.net/v1/playlist/low.m3u8")
+            Some("https://euc11.playlist.ttvnw.net/v1/playlist/audio.m3u8")
         );
 
         let media = "\

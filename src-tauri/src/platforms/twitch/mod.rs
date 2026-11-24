@@ -36,7 +36,7 @@ use crate::platforms::{
 };
 
 const TWITCH_DROPS_TAG_ID: &str = "c2542d6d-cd10-4532-919b-3dcc9f54d5bf";
-const TWITCH_INVENTORY_BRIDGE_COOLDOWN: Duration = Duration::from_secs(10 * 60);
+const TWITCH_INVENTORY_BRIDGE_COOLDOWN: Duration = Duration::from_secs(210);
 
 pub struct TwitchPlatform {
     profile_id: String,
@@ -46,6 +46,7 @@ pub struct TwitchPlatform {
     watch: TwitchWatchSession,
     last_watched_channel: StdMutex<Option<(String, String)>>,
     last_inventory_bridge_at: StdMutex<Option<Instant>>,
+    last_logged_progress: StdMutex<HashMap<String, u32>>,
     hydrated_drops: StdMutex<HashMap<String, Vec<Drop>>>,
 }
 
@@ -72,8 +73,30 @@ impl TwitchPlatform {
             watch: TwitchWatchSession::new(),
             last_watched_channel: StdMutex::new(None),
             last_inventory_bridge_at: StdMutex::new(None),
+            last_logged_progress: StdMutex::new(HashMap::new()),
             hydrated_drops: StdMutex::new(HashMap::new()),
         }
+    }
+
+    fn log_progress_if_changed(&self, source: &str, channel: Option<&str>, prog: &DropProgress) {
+        if prog.current_minutes == 0 {
+            return;
+        }
+        let Ok(mut guard) = self.last_logged_progress.lock() else {
+            return;
+        };
+        let prev = guard.get(&prog.drop_id).copied();
+        if prev == Some(prog.current_minutes) {
+            return;
+        }
+        guard.insert(prog.drop_id.clone(), prog.current_minutes);
+        tracing::info!(
+            source,
+            channel = channel.unwrap_or("-"),
+            drop_id = %prog.drop_id,
+            current_minutes = prog.current_minutes,
+            "Confirmed Twitch drop progress"
+        );
     }
 
     async fn filter_participating_channels(
@@ -416,7 +439,7 @@ impl Platform for TwitchPlatform {
             Ok(val) => {
                 let mut progress_list = parse_inventory_progress(&val)?;
                 if let Some((ref ch_id, ref ch_login)) = watched {
-                    if let Ok(sess_val) = execute_persisted_gql_for_profile(
+                    match execute_persisted_gql_for_profile(
                         &self.http,
                         &self.profile_id,
                         token,
@@ -428,23 +451,41 @@ impl Platform for TwitchPlatform {
                     )
                     .await
                     {
-                        if let Some((prog, _completed)) =
-                            parse_drop_current_session_progress(&sess_val)
-                        {
-                            if let Some(existing) =
-                                progress_list.iter_mut().find(|p| p.drop_id == prog.drop_id)
+                        Ok(sess_val) => {
+                            if let Some((prog, _completed)) =
+                                parse_drop_current_session_progress(&sess_val)
                             {
-                                existing.current_minutes =
-                                    existing.current_minutes.max(prog.current_minutes);
-                                existing.claimed |= prog.claimed;
-                                if existing.instance_id.is_none() {
-                                    existing.instance_id = prog.instance_id;
+                                self.log_progress_if_changed("DropCurrentSessionContext", Some(ch_login), &prog);
+                                if let Some(existing) =
+                                    progress_list.iter_mut().find(|p| p.drop_id == prog.drop_id)
+                                {
+                                    existing.current_minutes =
+                                        existing.current_minutes.max(prog.current_minutes);
+                                    existing.claimed |= prog.claimed;
+                                    if existing.instance_id.is_none() {
+                                        existing.instance_id = prog.instance_id;
+                                    }
+                                } else {
+                                    progress_list.push(prog);
                                 }
                             } else {
-                                progress_list.push(prog);
+                                tracing::debug!(
+                                    channel = %ch_login,
+                                    "Twitch DropCurrentSessionContext returned no active drop progress"
+                                );
                             }
                         }
+                        Err(err) => {
+                            tracing::warn!(
+                                channel = %ch_login,
+                                error = %err,
+                                "Twitch DropCurrentSessionContext request failed"
+                            );
+                        }
                     }
+                }
+                for prog in &progress_list {
+                    self.log_progress_if_changed("Inventory", None, prog);
                 }
                 return Ok(progress_list);
             }
@@ -486,14 +527,20 @@ impl Platform for TwitchPlatform {
             {
                 Ok(sess_val) => {
                     if let Some((prog, completed)) = parse_drop_current_session_progress(&sess_val) {
+                        self.log_progress_if_changed("DropCurrentSessionContext", Some(ch_login), &prog);
                         if !completed && !bridge_due {
                             return Ok(vec![prog]);
                         }
                         completed_needs_claim = completed;
+                    } else {
+                        tracing::debug!(
+                            channel = %ch_login,
+                            "Twitch DropCurrentSessionContext returned no active drop progress"
+                        );
                     }
                 }
                 Err(err) => {
-                    tracing::debug!(
+                    tracing::warn!(
                         channel = %ch_login,
                         error = %err,
                         "Twitch DropCurrentSessionContext request failed"
@@ -529,7 +576,11 @@ impl Platform for TwitchPlatform {
             *g = Some(Instant::now());
         }
 
-        parse_inventory_progress(&payload)
+        let list = parse_inventory_progress(&payload)?;
+        for prog in &list {
+            self.log_progress_if_changed("InventoryBridge", None, prog);
+        }
+        Ok(list)
     }
 
     async fn find_candidate_channels(
@@ -901,6 +952,9 @@ impl Platform for TwitchPlatform {
         if let Ok(mut g) = self.last_inventory_bridge_at.lock() {
             *g = None;
         }
+        if let Ok(mut g) = self.last_logged_progress.lock() {
+            g.clear();
+        }
     }
 
     fn cached_campaign_drops(&self, campaign_id: &str) -> Option<Vec<Drop>> {
@@ -951,6 +1005,9 @@ impl Platform for TwitchPlatform {
         }
         if let Ok(mut g) = self.last_inventory_bridge_at.lock() {
             *g = None;
+        }
+        if let Ok(mut g) = self.last_logged_progress.lock() {
+            g.clear();
         }
         if let Some(ref app_handle) = self.app {
             close_compat_watch_window_for_profile(app_handle, PlatformId::Twitch, &self.profile_id);

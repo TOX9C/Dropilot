@@ -304,6 +304,10 @@ impl AllowlistedClient {
             .http_platform
             .get(parsed)
             .header(USER_AGENT, ua)
+            .header("Accept", "*/*")
+            .header("Accept-Language", "en-US")
+            .header("Pragma", "no-cache")
+            .header("Cache-Control", "no-cache")
             .header("Origin", "https://www.twitch.tv")
             .header("Referer", "https://www.twitch.tv/")
             .send()
@@ -341,6 +345,10 @@ impl AllowlistedClient {
             .http_platform
             .head(parsed)
             .header(USER_AGENT, ua)
+            .header("Accept", "*/*")
+            .header("Accept-Language", "en-US")
+            .header("Pragma", "no-cache")
+            .header("Cache-Control", "no-cache")
             .header("Origin", "https://www.twitch.tv")
             .header("Referer", "https://www.twitch.tv/")
             .send()
