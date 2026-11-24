@@ -28,6 +28,8 @@
     {width}
     {height}
     loading="lazy"
+    decoding="async"
+    referrerpolicy="no-referrer"
     class="mono-img"
     class:rounded
     style="width:{width}px;height:{height}px"

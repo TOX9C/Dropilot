@@ -4,11 +4,23 @@ import type {
   CampaignFilter,
   CampaignSort,
   Drop,
+  EpicFreeGame,
   Game,
   PlatformId,
   PriorityItem,
   Settings,
 } from './types';
+
+export function epicGameArtCandidates(
+  game: Pick<EpicFreeGame, 'bannerUrl' | 'boxArtUrl'>,
+): string[] {
+  const out: string[] = [];
+  if (game.bannerUrl) out.push(game.bannerUrl);
+  if (game.boxArtUrl && game.boxArtUrl !== game.bannerUrl) {
+    out.push(game.boxArtUrl);
+  }
+  return out;
+}
 
 export function priorityItemMatchesGame(
   item: PriorityItem,

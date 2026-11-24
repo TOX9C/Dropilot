@@ -12,6 +12,7 @@
   import Button from '../components/Button.svelte';
   import CustomSelect, { type SelectOption } from '../components/CustomSelect.svelte';
   import Modal from '../components/Modal.svelte';
+  import Monogram from '../components/Monogram.svelte';
   import StatTile from '../components/StatTile.svelte';
   import { api } from '../lib/api';
   import { formatExactDateTime, formatMinutes } from '../lib/format';
@@ -269,7 +270,15 @@
               <span class="plat-dot dot-{item.platform}" aria-hidden="true"></span>
               <span>{item.platform.toUpperCase()}</span>
             </span>
-            <span class="ct-drop truncate">{item.dropName}</span>
+            <span class="ct-drop">
+              <Monogram
+                src={item.rewardImageUrl}
+                name={item.dropName || item.gameName}
+                width={22}
+                height={22}
+              />
+              <span class="truncate">{item.dropName}</span>
+            </span>
             <span class="ct-game truncate">{item.gameName} · <span class="camp-sub">{item.campaignName}</span></span>
             <span class="ct-right">
               {#if item.status === 'manual_required'}
@@ -563,7 +572,14 @@
 
   .ct-time { color: var(--text-faint); font-size: 11px; }
   .ct-plat { display: inline-flex; align-items: center; gap: 5px; font-family: var(--font-mono); font-size: 10.5px; color: var(--text-muted); }
-  .ct-drop { font-weight: 600; color: var(--text); }
+  .ct-drop {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    font-weight: 600;
+    color: var(--text);
+  }
   .ct-game { color: var(--text-muted); }
   .ct-right { text-align: right; }
 </style>

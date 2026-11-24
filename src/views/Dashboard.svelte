@@ -12,6 +12,7 @@
   import Button from '../components/Button.svelte';
   import Checklist from '../components/Checklist.svelte';
   import Countdown from '../components/Countdown.svelte';
+  import Monogram from '../components/Monogram.svelte';
   import ProgressBar from '../components/ProgressBar.svelte';
   import SectionHeader from '../components/SectionHeader.svelte';
   import Sparkline from '../components/Sparkline.svelte';
@@ -34,12 +35,14 @@
     computeEndingSoon,
     computeLiveCampaignProgress,
     computeUpNextQueue,
+    epicGameArtCandidates,
   } from '../lib/selectors';
   import { activeRoute, epicFeed, notifyUi, sessionHistory, sessionMinutes } from '../lib/stores';
   import type {
     AppSnapshot,
     Campaign,
     Drop,
+    EpicFreeGame,
     LogEntry,
     PlatformId,
     PlatformSnapshot,
@@ -61,6 +64,23 @@
   const epicFreeNow = $derived(
     ($epicFeed?.games ?? []).filter((g) => g.status === 'active' && !g.claimed),
   );
+
+  let epicThumbStage = $state<Record<string, number>>({});
+
+  $effect(() => {
+    void $epicFeed?.fetchedAt;
+    epicThumbStage = {};
+  });
+
+  function currentEpicThumb(game: EpicFreeGame): string | null {
+    const candidates = epicGameArtCandidates(game);
+    const stage = epicThumbStage[game.id] ?? 0;
+    return candidates[stage] ?? null;
+  }
+
+  function advanceEpicThumb(gameId: string) {
+    epicThumbStage = { ...epicThumbStage, [gameId]: (epicThumbStage[gameId] ?? 0) + 1 };
+  }
 
   async function quickClaimEpic(gameId: string) {
     try {
@@ -261,15 +281,20 @@
       </div>
       <div class="epic-banner-list">
         {#each epicFreeNow as game (game.id)}
+          {@const thumbUrl = currentEpicThumb(game)}
           <div class="epic-banner-row">
-            {#if game.bannerUrl || game.boxArtUrl}
+            {#if thumbUrl}
               <img
-                src={game.bannerUrl || game.boxArtUrl || ''}
+                src={thumbUrl}
                 alt={game.title}
                 class="epic-thumb"
                 loading="lazy"
                 decoding="async"
+                referrerpolicy="no-referrer"
+                onerror={() => advanceEpicThumb(game.id)}
               />
+            {:else}
+              <Monogram src={null} name={game.title} width={76} height={43} />
             {/if}
             <div class="epic-banner-info">
               <strong class="epic-banner-name truncate">{game.title}</strong>
@@ -835,13 +860,14 @@
   }
 
   .epic-thumb {
-    width: 64px;
-    height: 36px;
+    width: 76px;
+    height: 43px;
     border-radius: var(--radius-xs);
     object-fit: cover;
+    object-position: center;
     flex-shrink: 0;
     border: 1px solid var(--border);
-    background: var(--surface-1);
+    background: var(--surface);
   }
 
   .epic-banner-info {

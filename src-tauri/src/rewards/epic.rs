@@ -529,6 +529,34 @@ fn looks_like_hex_guid(s: &str) -> bool {
     s.len() == 32 && s.chars().all(|c| c.is_ascii_hexdigit())
 }
 
+fn normalize_epic_image_url(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    if let Some(rest) = trimmed.strip_prefix("https://") {
+        if rest.is_empty() {
+            return None;
+        }
+        return Some(trimmed.to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix("http://") {
+        let host = rest
+            .split(['/', '?', '#', ':'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase();
+        if host == "epicgames.com"
+            || host.ends_with(".epicgames.com")
+            || host == "unrealengine.com"
+            || host.ends_with(".unrealengine.com")
+        {
+            return Some(format!("https://{rest}"));
+        }
+    }
+    None
+}
+
 fn extract_epic_images(el: &Value) -> (Option<String>, Option<String>) {
     let Some(images) = el.get("keyImages").and_then(|v| v.as_array()) else {
         return (None, None);
@@ -537,30 +565,53 @@ fn extract_epic_images(el: &Value) -> (Option<String>, Option<String>) {
     let pick = |types: &[&str]| -> Option<String> {
         for wanted in types {
             for img in images {
-                let kind = img.get("type").and_then(|v| v.as_str()).unwrap_or_default();
-                let url = img.get("url").and_then(|v| v.as_str()).unwrap_or_default();
-                if kind.eq_ignore_ascii_case(wanted) && url.starts_with("https://") {
-                    return Some(url.to_string());
+                let kind = img
+                    .get("type")
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .trim();
+                if !kind.eq_ignore_ascii_case(wanted) {
+                    continue;
+                }
+                if let Some(url) = img
+                    .get("url")
+                    .and_then(|v| v.as_str())
+                    .and_then(normalize_epic_image_url)
+                {
+                    return Some(url);
                 }
             }
         }
         None
     };
 
+    let first_https = || -> Option<String> {
+        images.iter().find_map(|img| {
+            img.get("url")
+                .and_then(|v| v.as_str())
+                .and_then(normalize_epic_image_url)
+        })
+    };
+
     let tall = pick(&[
         "OfferImageTall",
         "DieselStoreFrontTall",
+        "CodeRedemption_340x440",
         "Thumbnail",
         "VaultClosed",
         "OfferImageWide",
         "DieselStoreFrontWide",
-    ]);
+    ])
+    .or_else(first_https);
     let wide = pick(&[
         "OfferImageWide",
         "DieselStoreFrontWide",
         "featuredMedia",
+        "GalleryImage",
         "OfferImageTall",
-    ]);
+        "Thumbnail",
+    ])
+    .or_else(first_https);
     (tall, wide)
 }
 
@@ -717,6 +768,58 @@ mod tests {
         assert_eq!(
             games[1].store_url,
             "https://store.epicgames.com/en-US/bundles/firestone-pack"
+        );
+    }
+
+    #[test]
+    fn extracts_unrealengine_cdn_normalizes_http_and_falls_back_in_key_images() {
+        let lisa_el = json!({
+            "keyImages": [
+                { "type": "DieselGameBox", "url": "com.epicgames.video://trailer-123" },
+                { "type": "CodeRedemption_340x440", "url": "  http://cdn1.epicgames.com/lisa-340x440.jpg  " },
+                { "type": "OfferImageWide", "url": "https://cdn2.unrealengine.com/lisa-wide.jpg" }
+            ]
+        });
+        let (tall, wide) = extract_epic_images(&lisa_el);
+        assert_eq!(
+            tall.as_deref(),
+            Some("https://cdn1.epicgames.com/lisa-340x440.jpg")
+        );
+        assert_eq!(
+            wide.as_deref(),
+            Some("https://cdn2.unrealengine.com/lisa-wide.jpg")
+        );
+
+        let fallback_el = json!({
+            "keyImages": [
+                { "type": "VaultTeaser", "url": "" },
+                { "type": "Video", "url": "com.epicgames.video://abc" },
+                { "type": "CustomPromoArt", "url": "http://cdn2.unrealengine.com/promo-art.png" }
+            ]
+        });
+        let (fb_tall, fb_wide) = extract_epic_images(&fallback_el);
+        assert_eq!(
+            fb_tall.as_deref(),
+            Some("https://cdn2.unrealengine.com/promo-art.png")
+        );
+        assert_eq!(
+            fb_wide.as_deref(),
+            Some("https://cdn2.unrealengine.com/promo-art.png")
+        );
+
+        let gallery_el = json!({
+            "keyImages": [
+                { "type": "GalleryImage", "url": "https://cdn2.unrealengine.com/gallery-1.jpg" }
+            ]
+        });
+        let (g_tall, g_wide) = extract_epic_images(&gallery_el);
+        assert_eq!(
+            g_tall.as_deref(),
+            Some("https://cdn2.unrealengine.com/gallery-1.jpg")
+        );
+        assert_eq!(
+            g_wide.as_deref(),
+            Some("https://cdn2.unrealengine.com/gallery-1.jpg")
         );
     }
 }

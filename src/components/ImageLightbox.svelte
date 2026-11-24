@@ -53,6 +53,7 @@
             {src}
             alt={title}
             decoding="async"
+            referrerpolicy="no-referrer"
             onerror={() => (imgFailed = true)}
           />
         {:else}

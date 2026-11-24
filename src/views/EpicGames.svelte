@@ -20,13 +20,29 @@
     formatRelativeTime,
     formatStartsIn,
   } from '../lib/format';
+  import { epicGameArtCandidates } from '../lib/selectors';
   import { epicFeed, notifyUi, openLightbox } from '../lib/stores';
   import type { EpicFreeGame } from '../lib/types';
 
   let loading = $state(false);
   let claimingId = $state<string | null>(null);
   let togglingId = $state<string | null>(null);
-  let brokenImages = $state<Record<string, boolean>>({});
+  let artStage = $state<Record<string, number>>({});
+
+  $effect(() => {
+    void $epicFeed?.fetchedAt;
+    artStage = {};
+  });
+
+  function currentArtUrl(game: EpicFreeGame): string | null {
+    const candidates = epicGameArtCandidates(game);
+    const stage = artStage[game.id] ?? 0;
+    return candidates[stage] ?? null;
+  }
+
+  function advanceArtStage(gameId: string) {
+    artStage = { ...artStage, [gameId]: (artStage[gameId] ?? 0) + 1 };
+  }
 
   async function loadEpic(force = false) {
     loading = true;
@@ -95,6 +111,40 @@
     }
   }
 </script>
+
+{#snippet gameBanner(game: EpicFreeGame, lightboxSubtitle: string)}
+  {@const artUrl = currentArtUrl(game)}
+  {#if artUrl}
+    <button
+      type="button"
+      class="banner-btn has-art"
+      title="Click to view full artwork"
+      aria-label={`View full artwork for ${game.title}`}
+      onclick={() => {
+        openLightbox({
+          src: artUrl,
+          title: game.title,
+          subtitle: lightboxSubtitle,
+        });
+      }}
+    >
+      <img
+        class="banner-img"
+        src={artUrl}
+        alt={game.title}
+        loading="lazy"
+        decoding="async"
+        referrerpolicy="no-referrer"
+        onerror={() => advanceArtStage(game.id)}
+      />
+      <span class="zoom-badge" aria-hidden="true"><Maximize2 size={12} /></span>
+    </button>
+  {:else}
+    <div class="banner-btn banner-fallback" aria-hidden="true">
+      <Monogram src={null} name={game.title} width={56} height={56} />
+    </div>
+  {/if}
+{/snippet}
 
 <div class="page epic-page">
   <header class="page-header">
@@ -194,66 +244,34 @@
         <div class="epic-grid">
           {#each activeGames as game (game.id)}
             {@const endInfo = formatEndCountdown(game.endsAt, $slowNowMs)}
-            {@const artUrl = game.boxArtUrl ?? game.bannerUrl}
-            {@const showImg = Boolean(artUrl && !brokenImages[game.id])}
+            {@const lightboxSub = `${game.seller} · ${game.originalPrice !== 'Free' ? `Usually ${game.originalPrice}` : 'Free on Epic Games Store'}`}
             <article class="card epic-card" class:is-claimed={game.claimed}>
-              <div class="card-top">
-                <button
-                  type="button"
-                  class="poster-btn"
-                  title="Click to view full artwork"
-                  onclick={() => {
-                    const previewUrl = game.bannerUrl ?? game.boxArtUrl;
-                    if (previewUrl) {
-                      openLightbox({
-                        src: previewUrl,
-                        title: game.title,
-                        subtitle: `${game.seller} · ${game.originalPrice !== 'Free' ? `Usually ${game.originalPrice}` : 'Free on Epic Games Store'}`,
-                      });
-                    }
-                  }}
-                >
-                  {#if showImg}
-                    <img
-                      class="poster-img"
-                      src={artUrl!}
-                      alt={game.title}
-                      loading="lazy"
-                      onerror={() => {
-                        brokenImages = { ...brokenImages, [game.id]: true };
-                      }}
-                    />
+              {@render gameBanner(game, lightboxSub)}
+
+              <div class="card-meta">
+                <div class="price-row">
+                  {#if game.claimed}
+                    <Badge tone="success"><Check size={10} /> CLAIMED</Badge>
                   {:else}
-                    <Monogram src={null} name={game.title} width={72} height={96} />
+                    <Badge tone="accent">FREE NOW</Badge>
                   {/if}
-                  <span class="zoom-badge" aria-hidden="true"><Maximize2 size={11} /></span>
-                </button>
-
-                <div class="card-meta">
-                  <div class="price-row">
-                    {#if game.claimed}
-                      <Badge tone="success"><Check size={10} /> CLAIMED</Badge>
-                    {:else}
-                      <Badge tone="accent">FREE NOW</Badge>
-                    {/if}
-                    {#if game.originalPrice && game.originalPrice !== 'Free'}
-                      <span class="orig-price tabular">{game.originalPrice}</span>
-                    {/if}
-                  </div>
-
-                  <h2 class="game-title" title={game.title}>{game.title}</h2>
-                  <span class="game-seller">{game.seller}</span>
-
-                  {#if game.description}
-                    <p class="game-desc">{game.description}</p>
+                  {#if game.originalPrice && game.originalPrice !== 'Free'}
+                    <span class="orig-price tabular">{game.originalPrice}</span>
                   {/if}
+                </div>
 
-                  <div class="countdown-row tabular" title={`Ends ${formatExactDateTime(game.endsAt)}`}>
-                    <Badge tone={endInfo.tone}>
-                      <Clock size={10} />
-                      <span>{endInfo.ended ? 'Ended' : `Ends in ${endInfo.text}`}</span>
-                    </Badge>
-                  </div>
+                <h2 class="game-title" title={game.title}>{game.title}</h2>
+                <span class="game-seller">{game.seller}</span>
+
+                {#if game.description}
+                  <p class="game-desc">{game.description}</p>
+                {/if}
+
+                <div class="countdown-row tabular" title={`Ends ${formatExactDateTime(game.endsAt)}`}>
+                  <Badge tone={endInfo.tone}>
+                    <Clock size={10} />
+                    <span>{endInfo.ended ? 'Ended' : `Ends in ${endInfo.text}`}</span>
+                  </Badge>
                 </div>
               </div>
 
@@ -312,62 +330,29 @@
         <div class="epic-grid">
           {#each upcomingGames as game (game.id)}
             {@const startsLabel = formatStartsIn(game.startsAt, $slowNowMs)}
-            {@const artUrl = game.boxArtUrl ?? game.bannerUrl}
-            {@const showImg = Boolean(artUrl && !brokenImages[game.id])}
             <article class="card epic-card upcoming-card">
-              <div class="card-top">
-                <button
-                  type="button"
-                  class="poster-btn"
-                  title="Click to view full artwork"
-                  onclick={() => {
-                    const previewUrl = game.bannerUrl ?? game.boxArtUrl;
-                    if (previewUrl) {
-                      openLightbox({
-                        src: previewUrl,
-                        title: game.title,
-                        subtitle: `Unlocks ${formatExactDateTime(game.startsAt)}`,
-                      });
-                    }
-                  }}
-                >
-                  {#if showImg}
-                    <img
-                      class="poster-img"
-                      src={artUrl!}
-                      alt={game.title}
-                      loading="lazy"
-                      onerror={() => {
-                        brokenImages = { ...brokenImages, [game.id]: true };
-                      }}
-                    />
-                  {:else}
-                    <Monogram src={null} name={game.title} width={72} height={96} />
+              {@render gameBanner(game, `Unlocks ${formatExactDateTime(game.startsAt)}`)}
+
+              <div class="card-meta">
+                <div class="price-row">
+                  <Badge tone="info">UPCOMING</Badge>
+                  {#if game.originalPrice && game.originalPrice !== 'Free'}
+                    <span class="orig-price tabular">{game.originalPrice}</span>
                   {/if}
-                  <span class="zoom-badge" aria-hidden="true"><Maximize2 size={11} /></span>
-                </button>
+                </div>
 
-                <div class="card-meta">
-                  <div class="price-row">
-                    <Badge tone="info">UPCOMING</Badge>
-                    {#if game.originalPrice && game.originalPrice !== 'Free'}
-                      <span class="orig-price tabular">{game.originalPrice}</span>
-                    {/if}
-                  </div>
+                <h2 class="game-title" title={game.title}>{game.title}</h2>
+                <span class="game-seller">{game.seller}</span>
 
-                  <h2 class="game-title" title={game.title}>{game.title}</h2>
-                  <span class="game-seller">{game.seller}</span>
+                {#if game.description}
+                  <p class="game-desc">{game.description}</p>
+                {/if}
 
-                  {#if game.description}
-                    <p class="game-desc">{game.description}</p>
-                  {/if}
-
-                  <div class="countdown-row tabular" title={`Free ${formatExactDateTime(game.startsAt)} – ${formatExactDateTime(game.endsAt)}`}>
-                    <Badge tone="neutral">
-                      <Clock size={10} />
-                      <span>{startsLabel}</span>
-                    </Badge>
-                  </div>
+                <div class="countdown-row tabular" title={`Free ${formatExactDateTime(game.startsAt)} – ${formatExactDateTime(game.endsAt)}`}>
+                  <Badge tone="neutral">
+                    <Clock size={10} />
+                    <span>{startsLabel}</span>
+                  </Badge>
                 </div>
               </div>
 
@@ -485,56 +470,54 @@
     opacity: 0.9;
   }
 
-  .card-top {
-    display: flex;
-    align-items: stretch;
-    gap: 12px;
-    padding: 12px;
-    flex: 1;
-  }
-
-  .poster-btn {
+  .banner-btn {
     position: relative;
-    width: 96px;
-    aspect-ratio: 3 / 4;
-    flex-shrink: 0;
-    border-radius: var(--radius-sm);
-    border: 1px solid var(--border);
+    width: 100%;
+    aspect-ratio: 16 / 9;
+    border: none;
+    border-bottom: 1px solid var(--border);
     background: var(--surface-2);
     padding: 0;
     overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
+    flex-shrink: 0;
   }
 
-  .poster-btn:hover {
-    border-color: var(--accent);
+  .banner-btn.has-art:hover .banner-img,
+  .banner-btn.has-art:focus-visible .banner-img {
+    transform: scale(1.02);
   }
 
-  .poster-img {
+  .banner-img {
     width: 100%;
     height: 100%;
-    object-fit: contain;
+    object-fit: cover;
+    object-position: center;
     display: block;
+    transition: transform var(--duration-base) var(--ease-out);
   }
 
   .zoom-badge {
     position: absolute;
-    right: 4px;
-    bottom: 4px;
-    width: 20px;
-    height: 20px;
+    right: 8px;
+    bottom: 8px;
+    width: 24px;
+    height: 24px;
     border-radius: var(--radius-xs);
-    background: rgba(9, 12, 16, 0.78);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    background: rgba(9, 12, 16, 0.82);
     color: #e6edf3;
     display: inline-flex;
     align-items: center;
     justify-content: center;
     opacity: 0;
+    transition: opacity var(--duration-fast) var(--ease-out);
   }
 
-  .poster-btn:hover .zoom-badge {
+  .banner-btn.has-art:hover .zoom-badge,
+  .banner-btn.has-art:focus-visible .zoom-badge {
     opacity: 1;
   }
 
@@ -544,6 +527,7 @@
     display: flex;
     flex-direction: column;
     gap: 5px;
+    padding: 12px;
   }
 
   .price-row {
