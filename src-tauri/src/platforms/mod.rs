@@ -328,6 +328,12 @@ pub trait Platform: Send + Sync {
     /// or an imminent drop claim syncs immediately.
     fn reset_progress_sync_cooldown(&self) {}
 
+    /// Returns cached reward drops hydrated from channel-level drop discovery (e.g. Twitch
+    /// `DropsHighlightService_AvailableDrops`) when summary campaign lists omit `timeBasedDrops`.
+    fn cached_campaign_drops(&self, _campaign_id: &str) -> Option<Vec<Drop>> {
+        None
+    }
+
     async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<(), AppError>;
 
     async fn logout(&self, token: Option<&str>) -> Result<(), AppError>;

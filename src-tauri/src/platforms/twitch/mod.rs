@@ -3,6 +3,7 @@ pub mod gql;
 pub mod models;
 pub mod watch;
 
+use std::collections::HashMap;
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,7 @@ use crate::net::client::AllowlistedClient;
 use crate::platforms::twitch::gql::{
     execute_persisted_gql, execute_persisted_gql_batch, execute_persisted_gql_opt,
     fetch_channel_live_status, fetch_channels_available_drop_campaign_ids,
-    fetch_game_directory_streams, ops, validate_oauth_token,
+    fetch_channels_available_drops_data, fetch_game_directory_streams, ops, validate_oauth_token,
 };
 use crate::platforms::twitch::models::{
     parse_campaign_details, parse_campaigns_dashboard, parse_directory_channels,
@@ -42,6 +43,7 @@ pub struct TwitchPlatform {
     watch: TwitchWatchSession,
     last_watched_channel: StdMutex<Option<(String, String)>>,
     last_inventory_bridge_at: StdMutex<Option<Instant>>,
+    hydrated_drops: StdMutex<HashMap<String, Vec<Drop>>>,
 }
 
 impl TwitchPlatform {
@@ -57,6 +59,7 @@ impl TwitchPlatform {
             watch: TwitchWatchSession::new(),
             last_watched_channel: StdMutex::new(None),
             last_inventory_bridge_at: StdMutex::new(None),
+            hydrated_drops: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -82,8 +85,18 @@ impl TwitchPlatform {
             return channels;
         }
         let ids: Vec<String> = channels.iter().map(|c| c.id.clone()).collect();
-        match fetch_channels_available_drop_campaign_ids(&self.http, Some(token), &ids).await {
-            Ok(avail_map) if !avail_map.is_empty() => {
+        match fetch_channels_available_drops_data(&self.http, Some(token), &ids).await {
+            Ok(data) if !data.campaign_ids_by_channel.is_empty() => {
+                if !data.drops_by_campaign.is_empty() {
+                    if let Ok(mut cache) = self.hydrated_drops.lock() {
+                        for (camp_id, drops) in data.drops_by_campaign {
+                            if !drops.is_empty() {
+                                cache.insert(camp_id, drops);
+                            }
+                        }
+                    }
+                }
+                let avail_map = data.campaign_ids_by_channel;
                 let total = channels.len();
                 let mut participating: Vec<Channel> = channels
                     .into_iter()
@@ -775,6 +788,13 @@ impl Platform for TwitchPlatform {
         if let Ok(mut g) = self.last_inventory_bridge_at.lock() {
             *g = None;
         }
+    }
+
+    fn cached_campaign_drops(&self, campaign_id: &str) -> Option<Vec<Drop>> {
+        self.hydrated_drops
+            .lock()
+            .ok()
+            .and_then(|g| g.get(campaign_id).cloned())
     }
 
     async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<(), AppError> {

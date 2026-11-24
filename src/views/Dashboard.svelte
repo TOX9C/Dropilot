@@ -164,6 +164,11 @@
                   · {formatEtaClock(primarySkin.remainingSeconds, $nowMs)}
                 {/if}
               </span>
+              {#if liveProg.isMultiDrop}
+                <span class="cm-total">
+                  All {liveProg.totalDrops}: {formatLiveRemaining(liveProg.wholeRemainingSeconds)}
+                </span>
+              {/if}
             {:else}
               <StatusPill state={platSnap.state} compact />
             {/if}
@@ -178,6 +183,30 @@
               <ExternalLink size={12} />
             </Button>
           </div>
+
+          {#if liveProg && liveProg.isMultiDrop}
+            <div class="cm-milestones" aria-label="Campaign reward timers">
+              <div class="cm-ms-list">
+                {#each liveProg.milestones as m (m.id)}
+                  {@const isNext = primarySkin?.id === m.id}
+                  <span
+                    class="cm-ms-pill tabular"
+                    class:ms-next={isNext && !m.claimed}
+                    class:ms-done={m.claimed || m.claimable}
+                    title={`${m.skinName} — ${formatLiveDuration(m.liveMinutes)} / ${formatMinutes(m.requiredMinutes)}`}
+                  >
+                    <span class="cm-ms-name truncate">{m.skinName}</span>
+                    <span class="cm-ms-t">
+                      {m.claimed ? 'Done' : m.claimable ? 'Ready' : formatLiveRemaining(m.remainingSeconds)}
+                    </span>
+                  </span>
+                {/each}
+              </div>
+              <span class="cm-ms-all tabular">
+                All {liveProg.totalDrops}: {formatLiveDuration(liveProg.wholeLiveMinutes)} / {formatMinutes(liveProg.wholeRequiredMinutes)} ({formatLiveRemaining(liveProg.wholeRemainingSeconds)})
+              </span>
+            </div>
+          {/if}
         {:else}
           <div class="cm-idle-span">
             <StatusPill state={platSnap.state} compact />
@@ -465,6 +494,74 @@
   }
 
   .cm-dim { color: var(--text-faint); font-size: 10.5px; }
+
+  .cm-total {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    color: var(--accent-text);
+    font-weight: 600;
+  }
+
+  .cm-milestones {
+    grid-column: 1 / -1;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 6px;
+    padding-top: 6px;
+    margin-top: 4px;
+    border-top: 1px solid var(--border);
+  }
+
+  .cm-ms-list {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 5px;
+    min-width: 0;
+  }
+
+  .cm-ms-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    max-width: 210px;
+    padding: 2px 7px;
+    border-radius: var(--radius-xs);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    font-size: 10.5px;
+    color: var(--text-muted);
+  }
+
+  .cm-ms-pill.ms-next {
+    background: var(--accent-tint);
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .cm-ms-pill.ms-done {
+    background: var(--success-tint);
+    border-color: transparent;
+    color: var(--success-text);
+  }
+
+  .cm-ms-name {
+    min-width: 0;
+  }
+
+  .cm-ms-t {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    flex-shrink: 0;
+  }
+
+  .cm-ms-all {
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    color: var(--text-muted);
+    white-space: nowrap;
+  }
 
   .cm-idle-span {
     grid-column: span 3;

@@ -57,10 +57,16 @@ const KICK_BRIDGE_SCRIPT: &str = r##"
   let readySent = false;
   function maybeSignalReady() {
     if (readySent) return true;
-    if (document.readyState === "loading" || isChallengePage()) return false;
+    if (document.readyState !== "complete" || isChallengePage()) return false;
     if (window.chrome && window.chrome.webview) {
       readySent = true;
-      window.chrome.webview.postMessage(JSON.stringify({ dpKickReady: true }));
+      setTimeout(function () {
+        if (!isChallengePage() && window.chrome && window.chrome.webview) {
+          window.chrome.webview.postMessage(JSON.stringify({ dpKickReady: true }));
+        } else {
+          readySent = false;
+        }
+      }, 300);
       return true;
     }
     return false;
@@ -70,7 +76,7 @@ const KICK_BRIDGE_SCRIPT: &str = r##"
     let attempts = 0;
     const timer = setInterval(function () {
       attempts += 1;
-      if (maybeSignalReady() || attempts >= 25) {
+      if (maybeSignalReady() || attempts >= 45) {
         clearInterval(timer);
       }
     }, 400);
@@ -615,7 +621,7 @@ fn schedule_kick_bridge_idle_close(app: &AppHandle) {
     let gen = KICK_BRIDGE_IDLE_GEN.fetch_add(1, Ordering::SeqCst) + 1;
     let app_clone = app.clone();
     tauri::async_runtime::spawn(async move {
-        sleep(Duration::from_secs(2)).await;
+        sleep(Duration::from_secs(6)).await;
         if KICK_BRIDGE_IDLE_GEN.load(Ordering::SeqCst) == gen {
             close_kick_bridge_window(&app_clone);
         }
@@ -704,263 +710,294 @@ pub async fn kick_webview_fetch_with_waiters(
             .lock()
             .await;
 
-        let win = if let Some(existing) = app.get_webview_window("kick-bridge") {
-            existing
-        } else {
-            let blank = Url::parse("about:blank")
-                .map_err(|e| AppError::Internal(format!("Invalid about:blank URL: {e}")))?;
+        let mut last_err: Option<AppError> = None;
+        for attempt in 0..2u8 {
+            if attempt > 0 {
+                close_kick_bridge_window(app);
+                sleep(Duration::from_millis(1500)).await;
+            }
 
-            let created = WebviewWindowBuilder::new(
-                app,
-                "kick-bridge",
-                WebviewUrl::External(blank),
-            )
-            .title("Dropilot Kick Bridge")
-            .inner_size(980.0, 680.0)
-            .center()
-            .visible(false)
-            .skip_taskbar(true)
-            .focused(false)
-            .data_directory(webview_data_dir())
-            .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
-            .initialization_script(KICK_BRIDGE_SCRIPT)
-            .on_navigation(|url| {
-                url.as_str() == "about:blank"
-                    || validate_url(url, AllowlistKind::LoginNavigation).is_ok()
+            let win = if let Some(existing) = app.get_webview_window("kick-bridge") {
+                existing
+            } else {
+                let blank = Url::parse("about:blank")
+                    .map_err(|e| AppError::Internal(format!("Invalid about:blank URL: {e}")))?;
+
+                let created = WebviewWindowBuilder::new(
+                    app,
+                    "kick-bridge",
+                    WebviewUrl::External(blank),
+                )
+                .title("Dropilot Kick Bridge")
+                .inner_size(980.0, 680.0)
+                .center()
+                .visible(false)
+                .skip_taskbar(true)
+                .focused(false)
+                .data_directory(webview_data_dir())
+                .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
+                .initialization_script(KICK_BRIDGE_SCRIPT)
+                .on_navigation(|url| {
+                    url.as_str() == "about:blank"
+                        || validate_url(url, AllowlistKind::LoginNavigation).is_ok()
+                })
+                .build()
+                .map_err(|e| AppError::Internal(format!("Failed creating Kick bridge window: {e}")))?;
+
+                apply_low_memory_mode(&created);
+
+                let (ready_tx, ready_rx) = oneshot::channel::<()>();
+                let ready_tx_slot = Arc::new(StdMutex::new(Some(ready_tx)));
+                let (attach_tx, attach_rx) = oneshot::channel::<Result<(), String>>();
+                let waiters_clone = waiters.clone();
+                let ready_slot_clone = ready_tx_slot.clone();
+
+                if let Err(err) = created.with_webview(move |wv| {
+                    let attach_res: Result<(), String> = (|| unsafe {
+                        let controller = wv.controller();
+                        let _ = controller.SetIsVisible(true);
+                        let core = controller
+                            .CoreWebView2()
+                            .map_err(|e| format!("CoreWebView2 lookup failed: {e}"))?;
+
+                        let mut token = 0i64;
+                        let handler = WebMessageReceivedEventHandler::create(Box::new(
+                            move |_webview, args| {
+                                let Some(args) = args else {
+                                    return Ok(());
+                                };
+                                let mut src_pwstr = PWSTR::null();
+                                args.Source(&mut src_pwstr)?;
+                                let src = take_pwstr(src_pwstr);
+                                if !src.starts_with("https://kick.com") {
+                                    return Ok(());
+                                }
+
+                                let mut msg_pwstr = PWSTR::null();
+                                if args.TryGetWebMessageAsString(&mut msg_pwstr).is_err() {
+                                    return Ok(());
+                                }
+                                let raw = take_pwstr(msg_pwstr);
+
+                                match parse_kick_bridge_message(&raw) {
+                                    Some(KickBridgeMessage::Ready) => {
+                                        if let Ok(mut guard) = ready_slot_clone.lock() {
+                                            if let Some(tx) = guard.take() {
+                                                let _ = tx.send(());
+                                            }
+                                        }
+                                    }
+                                    Some(KickBridgeMessage::Response {
+                                        request_id,
+                                        status,
+                                        body,
+                                    }) => {
+                                        let tx_opt = waiters_clone
+                                            .lock()
+                                            .ok()
+                                            .and_then(|mut g| g.remove(&request_id));
+                                        if let Some(tx) = tx_opt {
+                                            if status == 0 {
+                                                let _ = tx.send(Err(body));
+                                            } else if let Ok(serialized) =
+                                                serde_json::to_string(&KickBridgeResult {
+                                                    status,
+                                                    body,
+                                                })
+                                            {
+                                                let _ = tx.send(Ok(serialized));
+                                            } else {
+                                                let _ = tx.send(Err(
+                                                    "Failed encoding Kick bridge response".to_string(),
+                                                ));
+                                            }
+                                        }
+                                    }
+                                    None => {}
+                                }
+                                Ok(())
+                            },
+                        ));
+
+                        core.add_WebMessageReceived(&handler, &mut token)
+                            .map_err(|e| format!("add_WebMessageReceived failed: {e}"))?;
+                        Ok(())
+                    })();
+
+                    let _ = attach_tx.send(attach_res);
+                }) {
+                    close_kick_bridge_window(app);
+                    last_err = Some(AppError::Internal(format!(
+                        "Failed attaching Kick bridge listener: {err}"
+                    )));
+                    continue;
+                }
+
+                match timeout(Duration::from_secs(5), attach_rx).await {
+                    Ok(Ok(Ok(()))) => {}
+                    Ok(Ok(Err(msg))) => {
+                        close_kick_bridge_window(app);
+                        last_err = Some(AppError::Internal(msg));
+                        continue;
+                    }
+                    _ => {
+                        close_kick_bridge_window(app);
+                        last_err = Some(AppError::Internal(
+                            "Timed out preparing Kick WebView2 listener".to_string(),
+                        ));
+                        continue;
+                    }
+                }
+
+                let inventory_url = Url::parse("https://kick.com/drops/inventory")
+                    .map_err(|e| AppError::Internal(format!("Invalid bridge base URL: {e}")))?;
+                if let Err(err) = created.navigate(inventory_url) {
+                    close_kick_bridge_window(app);
+                    last_err = Some(AppError::Internal(format!(
+                        "Kick bridge navigation failed: {err}"
+                    )));
+                    continue;
+                }
+
+                match timeout(Duration::from_secs(20), ready_rx).await {
+                    Ok(Ok(())) => {}
+                    _ => {
+                        close_kick_bridge_window(app);
+                        last_err = Some(AppError::Blocked(
+                            "Kick background page timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
+                                .to_string(),
+                        ));
+                        continue;
+                    }
+                }
+
+                created
+            };
+
+            let req_id = format!(
+                "kb_{}",
+                std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_nanos())
+                    .unwrap_or(0)
+            );
+
+            let (tx, rx) = oneshot::channel::<Result<String, String>>();
+            {
+                let mut guard = waiters
+                    .lock()
+                    .map_err(|_| AppError::Internal("Bridge waiter lock poisoned".to_string()))?;
+                guard.insert(req_id.clone(), tx);
+            }
+
+            let payload = serde_json::json!({
+                "dpKickReq": true,
+                "requestId": req_id,
+                "method": method,
+                "target": parsed_target.as_str(),
+                "body": json_body,
+                "bearer": bearer_token,
             })
-            .build()
-            .map_err(|e| AppError::Internal(format!("Failed creating Kick bridge window: {e}")))?;
+            .to_string();
 
-            apply_low_memory_mode(&created);
-
-            let (ready_tx, ready_rx) = oneshot::channel::<()>();
-            let ready_tx_slot = Arc::new(StdMutex::new(Some(ready_tx)));
-            let (attach_tx, attach_rx) = oneshot::channel::<Result<(), String>>();
-            let waiters_clone = waiters.clone();
-            let ready_slot_clone = ready_tx_slot.clone();
-
-            if let Err(err) = created.with_webview(move |wv| {
-                let attach_res: Result<(), String> = (|| unsafe {
+            let (dispatch_tx, dispatch_rx) = oneshot::channel::<Result<(), String>>();
+            if let Err(err) = win.with_webview(move |wv| {
+                let res: Result<(), String> = unsafe {
                     let controller = wv.controller();
                     let _ = controller.SetIsVisible(true);
-                    let core = controller
-                        .CoreWebView2()
-                        .map_err(|e| format!("CoreWebView2 lookup failed: {e}"))?;
-
-                    let mut token = 0i64;
-                    let handler = WebMessageReceivedEventHandler::create(Box::new(
-                        move |_webview, args| {
-                            let Some(args) = args else {
-                                return Ok(());
-                            };
-                            let mut src_pwstr = PWSTR::null();
-                            args.Source(&mut src_pwstr)?;
-                            let src = take_pwstr(src_pwstr);
-                            if !src.starts_with("https://kick.com") {
-                                return Ok(());
-                            }
-
-                            let mut msg_pwstr = PWSTR::null();
-                            if args.TryGetWebMessageAsString(&mut msg_pwstr).is_err() {
-                                return Ok(());
-                            }
-                            let raw = take_pwstr(msg_pwstr);
-
-                            match parse_kick_bridge_message(&raw) {
-                                Some(KickBridgeMessage::Ready) => {
-                                    if let Ok(mut guard) = ready_slot_clone.lock() {
-                                        if let Some(tx) = guard.take() {
-                                            let _ = tx.send(());
-                                        }
-                                    }
-                                }
-                                Some(KickBridgeMessage::Response {
-                                    request_id,
-                                    status,
-                                    body,
-                                }) => {
-                                    let tx_opt = waiters_clone
-                                        .lock()
-                                        .ok()
-                                        .and_then(|mut g| g.remove(&request_id));
-                                    if let Some(tx) = tx_opt {
-                                        if status == 0 {
-                                            let _ = tx.send(Err(body));
-                                        } else if let Ok(serialized) =
-                                            serde_json::to_string(&KickBridgeResult {
-                                                status,
-                                                body,
-                                            })
-                                        {
-                                            let _ = tx.send(Ok(serialized));
-                                        } else {
-                                            let _ = tx.send(Err(
-                                                "Failed encoding Kick bridge response".to_string(),
-                                            ));
-                                        }
-                                    }
-                                }
-                                None => {}
-                            }
-                            Ok(())
-                        },
-                    ));
-
-                    core.add_WebMessageReceived(&handler, &mut token)
-                        .map_err(|e| format!("add_WebMessageReceived failed: {e}"))?;
-                    Ok(())
-                })();
-
-                let _ = attach_tx.send(attach_res);
+                    match controller.CoreWebView2() {
+                        Ok(core) => {
+                            let msg_hstring = HSTRING::from(payload.as_str());
+                            core.PostWebMessageAsString(&msg_hstring)
+                                .map_err(|e| format!("PostWebMessageAsString failed: {e}"))
+                        }
+                        Err(e) => Err(format!("CoreWebView2 lookup failed: {e}")),
+                    }
+                };
+                let _ = dispatch_tx.send(res);
             }) {
+                if let Ok(mut guard) = waiters.lock() {
+                    guard.remove(&req_id);
+                }
                 close_kick_bridge_window(app);
-                return Err(AppError::Internal(format!(
-                    "Failed attaching Kick bridge listener: {err}"
+                last_err = Some(AppError::Internal(format!(
+                    "Kick bridge dispatch failed: {err}"
                 )));
+                continue;
             }
 
-            match timeout(Duration::from_secs(5), attach_rx).await {
+            match timeout(Duration::from_secs(5), dispatch_rx).await {
                 Ok(Ok(Ok(()))) => {}
                 Ok(Ok(Err(msg))) => {
-                    close_kick_bridge_window(app);
-                    return Err(AppError::Internal(msg));
-                }
-                _ => {
-                    close_kick_bridge_window(app);
-                    return Err(AppError::Internal(
-                        "Timed out preparing Kick WebView2 listener".to_string(),
-                    ));
-                }
-            }
-
-            let inventory_url = Url::parse("https://kick.com/drops/inventory")
-                .map_err(|e| AppError::Internal(format!("Invalid bridge base URL: {e}")))?;
-            if let Err(err) = created.navigate(inventory_url) {
-                close_kick_bridge_window(app);
-                return Err(AppError::Internal(format!(
-                    "Kick bridge navigation failed: {err}"
-                )));
-            }
-
-            match timeout(Duration::from_secs(18), ready_rx).await {
-                Ok(Ok(())) => {}
-                _ => {
-                    close_kick_bridge_window(app);
-                    return Err(AppError::Blocked(
-                        "Kick background page timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
-                            .to_string(),
-                    ));
-                }
-            }
-
-            created
-        };
-
-        let req_id = format!(
-            "kb_{}",
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0)
-        );
-
-        let (tx, rx) = oneshot::channel::<Result<String, String>>();
-        {
-            let mut guard = waiters
-                .lock()
-                .map_err(|_| AppError::Internal("Bridge waiter lock poisoned".to_string()))?;
-            guard.insert(req_id.clone(), tx);
-        }
-
-        let payload = serde_json::json!({
-            "dpKickReq": true,
-            "requestId": req_id,
-            "method": method,
-            "target": parsed_target.as_str(),
-            "body": json_body,
-            "bearer": bearer_token,
-        })
-        .to_string();
-
-        let (dispatch_tx, dispatch_rx) = oneshot::channel::<Result<(), String>>();
-        if let Err(err) = win.with_webview(move |wv| {
-            let res: Result<(), String> = unsafe {
-                let controller = wv.controller();
-                let _ = controller.SetIsVisible(true);
-                match controller.CoreWebView2() {
-                    Ok(core) => {
-                        let msg_hstring = HSTRING::from(payload.as_str());
-                        core.PostWebMessageAsString(&msg_hstring)
-                            .map_err(|e| format!("PostWebMessageAsString failed: {e}"))
+                    if let Ok(mut guard) = waiters.lock() {
+                        guard.remove(&req_id);
                     }
-                    Err(e) => Err(format!("CoreWebView2 lookup failed: {e}")),
+                    close_kick_bridge_window(app);
+                    last_err = Some(AppError::Internal(msg));
+                    continue;
                 }
-            };
-            let _ = dispatch_tx.send(res);
-        }) {
+                _ => {
+                    if let Ok(mut guard) = waiters.lock() {
+                        guard.remove(&req_id);
+                    }
+                    close_kick_bridge_window(app);
+                    last_err = Some(AppError::Blocked(
+                        "Kick bridge dispatcher timed out".to_string(),
+                    ));
+                    continue;
+                }
+            }
+
+            let wait_res = timeout(Duration::from_secs(20), rx).await;
             if let Ok(mut guard) = waiters.lock() {
                 guard.remove(&req_id);
             }
-            close_kick_bridge_window(app);
-            return Err(AppError::Internal(format!(
-                "Kick bridge dispatch failed: {err}"
-            )));
-        }
 
-        match timeout(Duration::from_secs(5), dispatch_rx).await {
-            Ok(Ok(Ok(()))) => {}
-            Ok(Ok(Err(msg))) => {
-                if let Ok(mut guard) = waiters.lock() {
-                    guard.remove(&req_id);
-                }
-                close_kick_bridge_window(app);
-                return Err(AppError::Internal(msg));
-            }
-            _ => {
-                if let Ok(mut guard) = waiters.lock() {
-                    guard.remove(&req_id);
-                }
-                close_kick_bridge_window(app);
-                return Err(AppError::Blocked(
-                    "Kick bridge dispatcher timed out".to_string(),
-                ));
-            }
-        }
-
-        let wait_res = timeout(Duration::from_secs(15), rx).await;
-        if let Ok(mut guard) = waiters.lock() {
-            guard.remove(&req_id);
-        }
-
-        match wait_res {
-            Ok(Ok(Ok(raw))) => {
-                let parsed: KickBridgeResult = serde_json::from_str(&raw).map_err(|e| {
-                    AppError::PlatformChanged(format!("Bridge JSON decode error: {e}"))
-                })?;
-                if parsed.status == 403 || parsed.body.contains("Just a moment...") {
-                    if parsed_target.host_str() != Some("websockets.kick.com")
-                        || parsed.body.contains("Just a moment...")
-                    {
-                        close_kick_bridge_window(app);
+            match wait_res {
+                Ok(Ok(Ok(raw))) => {
+                    let parsed: KickBridgeResult = serde_json::from_str(&raw).map_err(|e| {
+                        AppError::PlatformChanged(format!("Bridge JSON decode error: {e}"))
+                    })?;
+                    if parsed.status == 403 || parsed.body.contains("Just a moment...") {
+                        if parsed_target.host_str() != Some("websockets.kick.com")
+                            || parsed.body.contains("Just a moment...")
+                        {
+                            close_kick_bridge_window(app);
+                        }
+                        last_err = Some(AppError::Blocked(
+                            "Kick security check blocked background access; open Kick Drops Inventory to verify"
+                                .to_string(),
+                        ));
+                        continue;
                     }
-                    return Err(AppError::Blocked(
-                        "Kick security check blocked background access; open Kick Drops Inventory to verify"
+                    schedule_kick_bridge_idle_close(app);
+                    return Ok(parsed);
+                }
+                Ok(Ok(Err(err_msg))) => {
+                    last_err = Some(AppError::Network(format!("Kick bridge error: {err_msg}")));
+                    continue;
+                }
+                Ok(Err(_)) => {
+                    last_err = Some(AppError::Network("Kick bridge channel closed".to_string()));
+                    continue;
+                }
+                Err(_) => {
+                    close_kick_bridge_window(app);
+                    last_err = Some(AppError::Blocked(
+                        "Kick background request timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
                             .to_string(),
                     ));
+                    continue;
                 }
-                schedule_kick_bridge_idle_close(app);
-                Ok(parsed)
-            }
-            Ok(Ok(Err(err_msg))) => Err(AppError::Network(format!("Kick bridge error: {err_msg}"))),
-            Ok(Err(_)) => Err(AppError::Network("Kick bridge channel closed".to_string())),
-            Err(_) => {
-                close_kick_bridge_window(app);
-                Err(AppError::Blocked(
-                    "Kick background request timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
-                        .to_string(),
-                ))
             }
         }
+
+        Err(last_err.unwrap_or_else(|| {
+            AppError::Blocked(
+                "Kick background request timed out (possible Cloudflare verification required); open Kick Drops Inventory to verify"
+                    .to_string(),
+            )
+        }))
     }
 }
 

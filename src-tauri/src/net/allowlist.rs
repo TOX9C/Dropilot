@@ -64,6 +64,7 @@ pub const EXTERNAL_LINK_EXACT_HOSTS: &[&str] = &[
     "www.twitch.tv",
     "kick.com",
     "github.com",
+    "discord.com",
     "developer.microsoft.com",
 ];
 

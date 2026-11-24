@@ -670,9 +670,21 @@
               {/if}
             </div>
             {#if webhookFeedback?.channel === 'discord'}
-              <p class="webhook-feedback" class:fb-ok={webhookFeedback.ok} class:fb-err={!webhookFeedback.ok}>
-                {webhookFeedback.text}
-              </p>
+              {@const urlMatch = webhookFeedback.text.match(/https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/)}
+              <div class="webhook-feedback-row">
+                <p class="webhook-feedback" class:fb-ok={webhookFeedback.ok} class:fb-err={!webhookFeedback.ok}>
+                  {urlMatch ? webhookFeedback.text.replace(/\s*·\s*https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/, '') : webhookFeedback.text}
+                </p>
+                {#if urlMatch}
+                  <button
+                    type="button"
+                    class="fb-open-link"
+                    onclick={() => api.openUrl(urlMatch[0]).catch((e) => notifyUi(String(e), 'error'))}
+                  >
+                    Open in Discord
+                  </button>
+                {/if}
+              </div>
             {/if}
           </div>
 
@@ -1414,12 +1426,36 @@
     color: var(--text-muted);
   }
 
+  .webhook-feedback-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
   .webhook-feedback {
     margin: 0;
     font-family: var(--font-mono);
     font-size: 11px;
     line-height: 1.4;
     word-break: break-word;
+  }
+
+  .fb-open-link {
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--accent-text);
+    border-radius: var(--radius-xs);
+    padding: 2px 8px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
+    white-space: nowrap;
+  }
+
+  .fb-open-link:hover {
+    border-color: var(--accent);
   }
 
   .webhook-feedback.fb-ok {

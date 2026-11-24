@@ -160,7 +160,7 @@ fn parse_single_campaign(v: &Value, is_dashboard_summary: bool) -> Option<Campai
     })
 }
 
-fn parse_drop(d: &Value) -> Option<Drop> {
+pub(crate) fn parse_drop(d: &Value) -> Option<Drop> {
     let id = d.get("id")?.as_str()?.to_string();
     let name = d.get("name")?.as_str().unwrap_or("Drop").to_string();
     let required_minutes = d

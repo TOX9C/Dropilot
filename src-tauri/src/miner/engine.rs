@@ -667,6 +667,11 @@ async fn step_miner(
                             apply_campaign_details(next_c, prev_c.clone());
                         }
                     }
+                    if next_c.drops.is_empty() {
+                        if let Some(cached_drops) = plat.cached_campaign_drops(&next_c.id) {
+                            next_c.drops = cached_drops;
+                        }
+                    }
                 }
                 propagate_linked_games(&mut fetched);
                 ctx.campaigns = fetched;
@@ -990,7 +995,23 @@ async fn step_miner(
                         ctx.watching = Some(best);
                         ctx.watching_since = Some(Utc::now());
                         ctx.current_campaign_id = Some(cand_camp.id.clone());
-                        ctx.current_drop_id = active_drop_for(cand_camp).map(|d| d.id.clone());
+                        // Hydrate drop rewards & timers discovered during channel verification
+                        // so Dashboard & NowWatching immediately show every reward & total ETA.
+                        if let Some(cached_drops) = plat.cached_campaign_drops(&cand_camp.id) {
+                            if let Some(target_c) =
+                                ctx.campaigns.iter_mut().find(|c| c.id == cand_camp.id)
+                            {
+                                if target_c.drops.is_empty() {
+                                    target_c.drops = cached_drops;
+                                }
+                            }
+                        }
+                        let active_camp_ref = ctx
+                            .campaigns
+                            .iter()
+                            .find(|c| c.id == cand_camp.id)
+                            .unwrap_or(cand_camp);
+                        ctx.current_drop_id = active_drop_for(active_camp_ref).map(|d| d.id.clone());
                         ctx.no_live_channels_until.remove(&cand_camp.id);
                         ctx.last_live_check = Some(Instant::now());
                         ctx.last_watch_tick = None;

@@ -301,13 +301,25 @@
               class="ms-chip"
               class:ms-done={m.claimed || m.claimable}
               class:ms-next={isNext && !m.claimed}
-              title={`${m.skinName} — ${formatMinutes(m.requiredMinutes)} (${formatLiveRemaining(m.remainingSeconds)})`}
+              title={`${m.skinName} — ${formatLiveDuration(m.liveMinutes)} / ${formatMinutes(m.requiredMinutes)} (${formatLiveRemaining(m.remainingSeconds)})`}
             >
               {#if m.claimed}
                 <Check size={11} />
+              {:else if m.imageUrl}
+                <img src={m.imageUrl} alt="" class="ms-thumb" />
+              {:else}
+                <Gift size={11} />
               {/if}
               <span class="ms-name truncate">{m.skinName}</span>
-              <span class="ms-time tabular">{formatMinutes(m.requiredMinutes)}</span>
+              <span class="ms-time tabular">
+                {#if m.claimed}
+                  Claimed
+                {:else if m.claimable}
+                  Ready
+                {:else}
+                  {formatLiveRemaining(m.remainingSeconds)} / {formatMinutes(m.requiredMinutes)}
+                {/if}
+              </span>
             </div>
           {/each}
         </div>
@@ -588,22 +600,31 @@
   }
 
   .milestones-strip {
-    display: flex;
-    flex-wrap: wrap;
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
     gap: 6px;
   }
 
   .ms-chip {
-    display: inline-flex;
+    display: flex;
     align-items: center;
-    gap: 5px;
-    max-width: 180px;
-    padding: 4px 8px;
+    gap: 6px;
+    min-width: 0;
+    padding: 5px 8px;
     border-radius: var(--radius-sm);
     background: var(--surface-2);
     border: 1px solid var(--border);
     font-size: 11px;
     color: var(--text-muted);
+  }
+
+  .ms-thumb {
+    width: 18px;
+    height: 18px;
+    border-radius: 3px;
+    object-fit: contain;
+    background: var(--surface);
+    flex-shrink: 0;
   }
 
   .ms-chip.ms-next {
@@ -620,13 +641,22 @@
   }
 
   .ms-name {
+    flex: 1;
     min-width: 0;
+    color: var(--text);
+  }
+
+  .ms-chip.ms-done .ms-name {
+    color: var(--success-text);
   }
 
   .ms-time {
     color: var(--text-faint);
+    font-family: var(--font-mono);
+    font-size: 10.5px;
     font-weight: 600;
     flex-shrink: 0;
+    white-space: nowrap;
   }
 
   .ms-chip.ms-next .ms-time {

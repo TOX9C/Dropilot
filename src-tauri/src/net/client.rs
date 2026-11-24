@@ -425,6 +425,35 @@ impl AllowlistedClient {
             .map_err(|e| AppError::PlatformChanged(format!("Invalid remote config JSON: {e}")))
     }
 
+    pub async fn get_webhook_json(
+        &self,
+        op_name: &str,
+        raw_url: &str,
+    ) -> Result<(StatusCode, String), AppError> {
+        let parsed = Url::parse(raw_url)
+            .map_err(|e| AppError::Internal(format!("Invalid webhook URL: {}", redact(&e.to_string()))))?;
+        validate_url(&parsed, AllowlistKind::Webhook)?;
+
+        let resp: Response = self
+            .http_update
+            .get(parsed)
+            .header(
+                USER_AGENT,
+                format!(
+                    "DiscordBot (https://github.com/theflash1211/dropilot, {})",
+                    env!("CARGO_PKG_VERSION")
+                ),
+            )
+            .header("Accept", "application/json")
+            .send()
+            .await
+            .map_err(|e| map_reqwest_error(op_name, e))?;
+
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        Ok((status, body))
+    }
+
     pub async fn post_webhook_json(
         &self,
         op_name: &str,

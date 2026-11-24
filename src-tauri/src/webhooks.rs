@@ -252,6 +252,28 @@ impl WebhookDispatcher {
                     .map_err(|e| e.user_message())?
                     .ok_or_else(|| "Save a Discord webhook URL first".to_string())?;
                 let normalized = Self::normalize_discord_url(url.expose())?;
+                // Best-effort metadata lookup so we can report the webhook name and guild link.
+                let (webhook_name, guild_id) = match http
+                    .get_webhook_json("discord_webhook_meta", &normalized)
+                    .await
+                {
+                    Ok((st, meta_body)) if st.is_success() => {
+                        let meta: Option<Value> = serde_json::from_str(&meta_body).ok();
+                        let name = meta
+                            .as_ref()
+                            .and_then(|v| v.get("name"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        let gid = meta
+                            .as_ref()
+                            .and_then(|v| v.get("guild_id"))
+                            .and_then(|v| v.as_str())
+                            .map(str::to_string);
+                        (name, gid)
+                    }
+                    _ => (None, None),
+                };
+
                 let mut wait_url = Url::parse(&normalized)
                     .map_err(|_| "Invalid Discord webhook URL".to_string())?;
                 if !wait_url.query_pairs().any(|(k, _)| k == "wait") {
@@ -276,13 +298,25 @@ impl WebhookDispatcher {
                             let cid = channel_id.unwrap_or("unknown");
                             info!(
                                 status = status.as_u16(),
+                                webhook_name = webhook_name.as_deref().unwrap_or("unknown"),
+                                guild_id = guild_id.as_deref().unwrap_or("unknown"),
                                 channel_id = cid,
                                 message_id = mid,
                                 "Delivered Discord test webhook notification"
                             );
-                            Ok(format!(
-                                "Test posted to Discord channel {cid} (msg {mid})"
-                            ))
+                            let via = webhook_name
+                                .as_deref()
+                                .map(|n| format!(" via \"{n}\""))
+                                .unwrap_or_default();
+                            if let Some(gid) = guild_id.as_deref() {
+                                Ok(format!(
+                                    "Posted{via} to channel {cid} · https://discord.com/channels/{gid}/{cid}/{mid}"
+                                ))
+                            } else {
+                                Ok(format!(
+                                    "Posted{via} to Discord channel {cid} (msg {mid})"
+                                ))
+                            }
                         } else {
                             warn!(
                                 status = status.as_u16(),

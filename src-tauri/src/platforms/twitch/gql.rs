@@ -5,7 +5,8 @@ use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 
 use crate::net::client::{parse_header_name_value, AllowlistedClient};
-use crate::platforms::{AppError, PlatformId};
+use crate::platforms::twitch::models::{parse_directory_channels, parse_drop};
+use crate::platforms::{AppError, Drop, PlatformId};
 use crate::remote_config::{resolve_gql_hash, resolve_twitch_client_id};
 
 /// Official public Twitch web client ID observed on https://www.twitch.tv.
@@ -346,19 +347,26 @@ pub async fn fetch_channel_live_status(
     Ok(parsed)
 }
 
+#[derive(Debug, Default)]
+pub struct ChannelAvailableDrops {
+    pub campaign_ids_by_channel: HashMap<String, Vec<String>>,
+    pub drops_by_campaign: HashMap<String, Vec<Drop>>,
+}
+
 /// Queries `DropsHighlightService_AvailableDrops` in a single batch for the given Twitch
-/// broadcaster IDs and returns a map of `channel_id -> active viewerDropCampaign IDs`.
+/// broadcaster IDs and returns both `channel_id -> active viewerDropCampaign IDs` and
+/// `campaign_id -> hydrated timeBasedDrops` (rewards, images, required minutes).
 ///
 /// Always queries unauthenticated first because Twitch's `viewerDropCampaigns` field is
 /// viewer-scoped when an OAuth token is attached and can return empty arrays (`[]`) with
 /// HTTP 200 when viewer-specific highlight filters or integrity checks suppress banners.
 /// Falls back to a lightweight plain GraphQL batch query if the persisted hash returns empty
 /// or fails, and optionally checks the authenticated view if public lookup finds no campaigns.
-pub async fn fetch_channels_available_drop_campaign_ids(
+pub async fn fetch_channels_available_drops_data(
     http: &AllowlistedClient,
     token: Option<&str>,
     channel_ids: &[String],
-) -> Result<HashMap<String, Vec<String>>, AppError> {
+) -> Result<ChannelAvailableDrops, AppError> {
     let valid_ids: Vec<String> = channel_ids
         .iter()
         .map(|s| s.trim().to_string())
@@ -366,11 +374,11 @@ pub async fn fetch_channels_available_drop_campaign_ids(
         .collect();
 
     if valid_ids.is_empty() {
-        return Ok(HashMap::new());
+        return Ok(ChannelAvailableDrops::default());
     }
 
     fn merge_items(
-        result: &mut HashMap<String, Vec<String>>,
+        out: &mut ChannelAvailableDrops,
         chunk: &[String],
         items: &[Value],
     ) {
@@ -384,7 +392,7 @@ pub async fn fetch_channels_available_drop_campaign_ids(
             let Some(cid) = cid else {
                 continue;
             };
-            let entry = result.entry(cid).or_default();
+            let entry = out.campaign_ids_by_channel.entry(cid).or_default();
             if let Some(arr) = chan
                 .and_then(|c| c.get("viewerDropCampaigns"))
                 .and_then(|v| v.as_array())
@@ -393,6 +401,20 @@ pub async fn fetch_channels_available_drop_campaign_ids(
                     if let Some(id) = camp.get("id").and_then(|v| v.as_str()) {
                         if !entry.iter().any(|existing| existing == id) {
                             entry.push(id.to_string());
+                        }
+                        if !out.drops_by_campaign.contains_key(id) {
+                            if let Some(drops_arr) =
+                                camp.get("timeBasedDrops").and_then(|v| v.as_array())
+                            {
+                                let parsed_drops: Vec<Drop> = drops_arr
+                                    .iter()
+                                    .filter_map(parse_drop)
+                                    .filter(|d| d.required_minutes > 0)
+                                    .collect();
+                                if !parsed_drops.is_empty() {
+                                    out.drops_by_campaign.insert(id.to_string(), parsed_drops);
+                                }
+                            }
                         }
                     }
                 }
@@ -406,7 +428,7 @@ pub async fn fetch_channels_available_drop_campaign_ids(
         chunk: &[String],
     ) -> Result<Vec<Value>, AppError> {
         const PLAIN_QUERY: &str =
-            "query($id: ID!) { channel(id: $id) { id viewerDropCampaigns { id } } }";
+            "query($id: ID!) { channel(id: $id) { id viewerDropCampaigns { id timeBasedDrops { id name requiredMinutesWatched benefitEdges { benefit { name imageAssetURL } } } } } }";
         let headers = build_twitch_headers(token)?;
         let batch_payload = Value::Array(
             chunk
@@ -444,7 +466,10 @@ pub async fn fetch_channels_available_drop_campaign_ids(
         Ok(items)
     }
 
-    let mut result: HashMap<String, Vec<String>> = HashMap::with_capacity(valid_ids.len());
+    let mut out = ChannelAvailableDrops {
+        campaign_ids_by_channel: HashMap::with_capacity(valid_ids.len()),
+        drops_by_campaign: HashMap::new(),
+    };
 
     for chunk in valid_ids.chunks(25) {
         let vars: Vec<Value> = chunk
@@ -452,8 +477,6 @@ pub async fn fetch_channels_available_drop_campaign_ids(
             .map(|cid| json!({ "channelID": cid }))
             .collect();
 
-        // 1. Prefer unauthenticated persisted query — returns public active drop campaigns on
-        //    each channel without viewer-level dismissal/integrity soft-filtering.
         let mut chunk_has_any = false;
         if let Ok(items) = execute_persisted_gql_batch_opt(
             http,
@@ -463,24 +486,27 @@ pub async fn fetch_channels_available_drop_campaign_ids(
         )
         .await
         {
-            merge_items(&mut result, chunk, &items);
-            chunk_has_any = chunk
-                .iter()
-                .any(|cid| result.get(cid).map(|v| !v.is_empty()).unwrap_or(false));
+            merge_items(&mut out, chunk, &items);
+            chunk_has_any = chunk.iter().any(|cid| {
+                out.campaign_ids_by_channel
+                    .get(cid)
+                    .map(|v| !v.is_empty())
+                    .unwrap_or(false)
+            });
         }
 
-        // 2. Fallback to lightweight plain GQL batch (immune to persisted hash rotation).
         if !chunk_has_any {
             if let Ok(items) = query_plain_batch(http, None, chunk).await {
-                merge_items(&mut result, chunk, &items);
-                chunk_has_any = chunk
-                    .iter()
-                    .any(|cid| result.get(cid).map(|v| !v.is_empty()).unwrap_or(false));
+                merge_items(&mut out, chunk, &items);
+                chunk_has_any = chunk.iter().any(|cid| {
+                    out.campaign_ids_by_channel
+                        .get(cid)
+                        .map(|v| !v.is_empty())
+                        .unwrap_or(false)
+                });
             }
         }
 
-        // 3. If still empty and we have a user token, check authenticated view (e.g. account-gated
-        //    campaigns) and merge any IDs returned.
         if !chunk_has_any && token.is_some() {
             if let Ok(items) = execute_persisted_gql_batch_opt(
                 http,
@@ -490,12 +516,58 @@ pub async fn fetch_channels_available_drop_campaign_ids(
             )
             .await
             {
-                merge_items(&mut result, chunk, &items);
+                merge_items(&mut out, chunk, &items);
             }
         }
     }
 
-    Ok(result)
+    Ok(out)
+}
+
+pub async fn fetch_channels_available_drop_campaign_ids(
+    http: &AllowlistedClient,
+    token: Option<&str>,
+    channel_ids: &[String],
+) -> Result<HashMap<String, Vec<String>>, AppError> {
+    let data = fetch_channels_available_drops_data(http, token, channel_ids).await?;
+    Ok(data.campaign_ids_by_channel)
+}
+
+/// Fast pure-Rust reward preview hydration for any Twitch campaign by probing live
+/// Drops-enabled channels in the campaign's game category via public `AvailableDrops`.
+pub async fn fetch_campaign_drops_via_public_directory(
+    http: &AllowlistedClient,
+    game_id: &str,
+    game_name: &str,
+    campaign_id: &str,
+) -> Option<Vec<Drop>> {
+    const TWITCH_DROPS_TAG_ID: &str = "c2542d6d-cd10-4532-919b-3dcc9f54d5bf";
+
+    let payload = fetch_game_directory_streams(
+        http,
+        None,
+        game_id,
+        game_name,
+        Some(TWITCH_DROPS_TAG_ID),
+    )
+    .await
+    .ok()
+    .or(
+        fetch_game_directory_streams(http, None, game_id, game_name, None)
+            .await
+            .ok(),
+    )?;
+
+    let channels = parse_directory_channels(&payload, game_name).ok()?;
+    let ids: Vec<String> = channels.into_iter().take(12).map(|c| c.id).collect();
+    if ids.is_empty() {
+        return None;
+    }
+
+    let data = fetch_channels_available_drops_data(http, None, &ids)
+        .await
+        .ok()?;
+    data.drops_by_campaign.get(campaign_id).cloned()
 }
 
 pub async fn fetch_game_directory_streams(

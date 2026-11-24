@@ -346,6 +346,41 @@ pub async fn fetch_campaign_details(
         return Ok(camp);
     }
 
+    // 1. Fast pure-Rust reward preview lookup via public live directory + AvailableDrops (~120ms,
+    //    no hidden WebView2 hang when Twitch DropCampaignDetails is integrity-gated).
+    if camp.drops.is_empty() {
+        if let Some(public_drops) =
+            crate::platforms::twitch::gql::fetch_campaign_drops_via_public_directory(
+                &state.http,
+                &camp.game.id,
+                &camp.game.name,
+                &camp.id,
+            )
+            .await
+        {
+            if !public_drops.is_empty() {
+                camp.drops = public_drops;
+                {
+                    let mut snap = state.twitch_snapshot.write().await;
+                    if let Some(target) = snap.campaigns.iter_mut().find(|c| c.id == camp.id) {
+                        if target.drops.is_empty() {
+                            target.drops = camp.drops.clone();
+                        }
+                        camp = target.clone();
+                    }
+                }
+                state
+                    .send_miner(
+                        PlatformId::Twitch,
+                        MinerControl::CampaignDetailsLoaded(Box::new(camp.clone())),
+                    )
+                    .await;
+                state.publish_snapshot(&app, true).await;
+                return Ok(camp);
+            }
+        }
+    }
+
     let payload = {
         let _guard = state.twitch_bridge_lock.lock().await;
         twitch_bridge_fetch_campaign_details(
