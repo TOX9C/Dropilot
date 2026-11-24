@@ -52,6 +52,7 @@ pub struct AppState {
     pub kick_bridge_waiters: BridgeWaiters,
     pub twitch_bridge_lock: Arc<Mutex<()>>,
     pub allow_exit: AtomicBool,
+    pub close_to_tray: AtomicBool,
     pub mock_active: AtomicBool,
 }
 
@@ -62,6 +63,7 @@ impl AppState {
         logs: LogBuffer,
     ) -> Self {
         let mock_active = cfg!(feature = "mock") && initial_settings.mock_mode;
+        let close_to_tray = initial_settings.close_to_tray;
         let history_store = HistoryStore::load();
         let initial_claims: VecDeque<RecentClaim> =
             history_store.recent_claimed(MAX_RECENT_CLAIMS).into_iter().collect();
@@ -85,6 +87,7 @@ impl AppState {
             kick_bridge_waiters: Arc::new(StdMutex::new(HashMap::new())),
             twitch_bridge_lock: Arc::new(Mutex::new(())),
             allow_exit: AtomicBool::new(false),
+            close_to_tray: AtomicBool::new(close_to_tray),
             mock_active: AtomicBool::new(mock_active),
         }
     }

@@ -495,8 +495,8 @@ export const api = {
   checkUpdate: () =>
     call<UpdateStatus>('check_update', undefined, () => ({
       available: false,
-      currentVersion: '0.2.0',
-      latestVersion: '0.2.0',
+      currentVersion: '0.2.3',
+      latestVersion: '0.2.3',
       releaseUrl: 'https://github.com/theflash1211/dropilot/releases',
       publishedAt: null,
       notes: null,

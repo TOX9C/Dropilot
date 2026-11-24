@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v0.2.0)'
+        description: 'Release tag (e.g. v0.2.3)'
         required: true
         type: string
 
@@ -43,6 +43,34 @@ jobs:
           npm run check
           cargo test --manifest-path src-tauri/Cargo.toml
 
+      - name: Prepare Windows Sparse MSIX Identity
+        shell: pwsh
+        env:
+          WINDOWS_SIGNING_CERT_BASE64: ${{ secrets.WINDOWS_SIGNING_CERT_BASE64 }}
+          WINDOWS_SIGNING_CERT_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERT_PASSWORD }}
+          WINDOWS_SIGNING_PUBLISHER: ${{ secrets.WINDOWS_SIGNING_PUBLISHER }}
+        run: |
+          $certB64 = $env:WINDOWS_SIGNING_CERT_BASE64
+          if (-not [string]::IsNullOrWhiteSpace($certB64)) {
+            $pfxPath = Join-Path $env:RUNNER_TEMP 'dropilot-signing.pfx'
+            [System.IO.File]::WriteAllBytes($pfxPath, [System.Convert]::FromBase64String($certB64))
+            $publisher = $env:WINDOWS_SIGNING_PUBLISHER
+            if ([string]::IsNullOrWhiteSpace($publisher)) {
+              $cert = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2(
+                $pfxPath,
+                $env:WINDOWS_SIGNING_CERT_PASSWORD
+              )
+              $publisher = $cert.Subject
+            }
+            echo "DROPILOT_MSIX_PUBLISHER=$publisher" >> $env:GITHUB_ENV
+            & powershell -ExecutionPolicy Bypass -File scripts/build-sparse-msix.ps1 `
+              -Publisher $publisher `
+              -PfxPath $pfxPath `
+              -PfxPassword $env:WINDOWS_SIGNING_CERT_PASSWORD
+          } else {
+            & powershell -ExecutionPolicy Bypass -File scripts/build-sparse-msix.ps1
+          }
+
       - name: Resolve release tag
         id: meta
         shell: pwsh
@@ -70,3 +98,12 @@ jobs:
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
+
+      - name: Clean up temporary Windows signing certificate
+        if: always()
+        shell: pwsh
+        run: |
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'dropilot-signing.pfx'
+          if (Test-Path $pfxPath) {
+            Remove-Item -Force $pfxPath -ErrorAction SilentlyContinue
+          }

@@ -39,8 +39,9 @@ use crate::settings::{load_settings, save_settings};
 use crate::state::{AppState, MinerControl};
 use crate::tray::setup_tray;
 use crate::windows::{
-    capture_bounds_sync, ensure_main_window, migrate_legacy_webview_dir, resume_webview,
-    suspend_webview,
+    cached_main_bounds, capture_bounds_sync, destroy_main_to_tray, ensure_main_window,
+    has_active_aux_webview, migrate_legacy_webview_dir, resume_webview, suspend_webview,
+    update_cached_main_bounds,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -230,11 +231,29 @@ pub fn run() {
                 return;
             }
             match event {
+                WindowEvent::Moved(_) => {
+                    update_cached_main_bounds(window);
+                }
                 WindowEvent::Resized(_) => {
-                    if let Some(wv) = window.app_handle().get_webview_window("main") {
-                        if window.is_minimized().unwrap_or(false) {
-                            suspend_webview(&wv);
+                    if window.is_minimized().unwrap_or(false) {
+                        let cached_bounds = cached_main_bounds();
+                        let app_c = window.app_handle().clone();
+                        let st = state_for_window.clone();
+                        if has_active_aux_webview(&app_c) {
+                            if let Some(wv) = app_c.get_webview_window("main") {
+                                suspend_webview(&wv);
+                            }
+                            info!(
+                                "Main window minimized while auxiliary/login/bridge window is open; suspended WebView2 instead of destroying"
+                            );
                         } else {
+                            tauri::async_runtime::spawn(async move {
+                                destroy_main_to_tray(&app_c, &st, cached_bounds).await;
+                            });
+                        }
+                    } else {
+                        update_cached_main_bounds(window);
+                        if let Some(wv) = window.app_handle().get_webview_window("main") {
                             resume_webview(&wv);
                         }
                     }
@@ -244,36 +263,62 @@ pub fn run() {
                         resume_webview(&wv);
                     }
                 }
-                WindowEvent::CloseRequested { .. } => {
-                    let bounds = capture_bounds_sync(window);
-                    let st = state_for_window.clone();
+                WindowEvent::CloseRequested { api, .. } => {
+                    let close_to_tray = state_for_window.close_to_tray.load(Ordering::Relaxed);
                     let app_c = window.app_handle().clone();
+                    let st = state_for_window.clone();
+                    let bounds = capture_bounds_sync(window).or_else(cached_main_bounds);
 
-                    tauri::async_runtime::spawn(async move {
-                        let close_to_tray = {
-                            let mut guard = st.settings.write().await;
+                    if close_to_tray && has_active_aux_webview(&app_c) {
+                        api.prevent_close();
+                        let _ = window.hide();
+                        if let Some(wv) = app_c.get_webview_window("main") {
+                            suspend_webview(&wv);
+                        }
+                        tauri::async_runtime::spawn(async move {
                             if let Some(b) = bounds {
-                                guard.window_bounds = Some(b);
+                                {
+                                    let mut guard = st.settings.write().await;
+                                    guard.window_bounds = Some(b);
+                                }
+                                let _ = st.persist_settings().await;
                             }
-                            guard.close_to_tray
-                        };
-                        let _ = st.persist_settings().await;
-                        st.events.reset_cache().await;
-
-                        if !close_to_tray {
+                            info!(
+                                "Close to tray requested while auxiliary/login/bridge window is open; hid main window without destroying WebView2"
+                            );
+                        });
+                    } else if close_to_tray {
+                        tauri::async_runtime::spawn(async move {
+                            if let Some(b) = bounds {
+                                {
+                                    let mut guard = st.settings.write().await;
+                                    guard.window_bounds = Some(b);
+                                }
+                                let _ = st.persist_settings().await;
+                            }
+                            st.events.reset_cache().await;
+                            info!(
+                                "Main window closed to tray; UI WebView2 destroyed and only dropilot.exe remains"
+                            );
+                        });
+                    } else {
+                        tauri::async_runtime::spawn(async move {
+                            if let Some(b) = bounds {
+                                {
+                                    let mut guard = st.settings.write().await;
+                                    guard.window_bounds = Some(b);
+                                }
+                                let _ = st.persist_settings().await;
+                            }
+                            st.events.reset_cache().await;
                             st.allow_exit.store(true, Ordering::SeqCst);
                             st.send_all_miners(MinerControl::Shutdown).await;
                             close_kick_bridge_window(&app_c);
                             close_twitch_bridge_window(&app_c);
                             close_epic_claim_window(&app_c);
                             app_c.exit(0);
-                        } else {
-                            close_kick_bridge_window(&app_c);
-                            close_twitch_bridge_window(&app_c);
-                            close_epic_claim_window(&app_c);
-                            info!("Main window closed to tray; WebView2 destroyed to save RAM");
-                        }
-                    });
+                        });
+                    }
                 }
                 _ => {}
             }

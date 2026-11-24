@@ -1,6 +1,6 @@
 [package]
 name = "dropilot"
-version = "0.2.2"
+version = "0.2.3"
 description = "Lightweight Windows desktop app that automatically farms Twitch Drops and Kick Drops for your own logged-in accounts."
 authors = ["Dropilot Contributors"]
 license = "MIT"
@@ -51,6 +51,7 @@ windows = { version = "0.62", features = ["Win32_System_Com"] }
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
+    "Win32_Storage_Packaging_Appx",
     "Win32_System_JobObjects",
     "Win32_System_Threading",
     "Win32_UI_Shell",

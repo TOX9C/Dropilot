@@ -1,11 +1,28 @@
 use std::path::PathBuf;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Theme, WebviewUrl, WebviewWindowBuilder};
-use tracing::warn;
+use tracing::{info, warn};
 
 use crate::settings::{ThemeMode, WindowBounds};
 use crate::state::AppState;
+
+/// Auxiliary WebView2 window labels that must stay alive if open when `"main"` is
+/// minimized or hidden to the system tray (login modals, background API bridges,
+/// drops inventory views, Epic claim modal, and compatibility watch windows).
+pub const AUX_WEBVIEW_LABELS: &[&str] = &[
+    "login-twitch",
+    "login-kick",
+    "kick-bridge",
+    "twitch-bridge",
+    "inventory-twitch",
+    "inventory-kick",
+    "epic-claim",
+    "compat-watch-twitch",
+    "compat-watch-kick",
+];
+
+static LAST_MAIN_BOUNDS: Mutex<Option<WindowBounds>> = Mutex::new(None);
 
 /// Ultra-light Chromium flags for Dropilot's local Svelte UI window (`main`).
 /// Disables the separate GPU & out-of-process audio processes, caps disk/media caches
@@ -64,13 +81,79 @@ pub fn webview_data_dir() -> PathBuf {
         .join("WebView2")
 }
 
+/// Returns `true` if any auxiliary/login/bridge label in `AUX_WEBVIEW_LABELS` is reported open.
+pub fn any_aux_label_active<F>(exists: F) -> bool
+where
+    F: Fn(&str) -> bool,
+{
+    AUX_WEBVIEW_LABELS.iter().any(|label| exists(label))
+}
+
+/// Returns `true` when any login, bridge, inventory, Epic claim, or compat-watch WebView2 window is open.
+pub fn has_active_aux_webview(app: &AppHandle) -> bool {
+    any_aux_label_active(|label| app.get_webview_window(label).is_some())
+}
+
+/// Stores validated non-minimized `"main"` window bounds in memory for restore after minimize-to-tray.
+pub fn store_cached_main_bounds(bounds: Option<WindowBounds>) {
+    if let Some(b) = bounds {
+        if let Ok(mut guard) = LAST_MAIN_BOUNDS.lock() {
+            *guard = Some(b);
+        }
+    }
+}
+
+/// Captures and caches `"main"` window bounds only when the window is not minimized.
+pub fn update_cached_main_bounds(window: &tauri::Window) {
+    if window.is_minimized().unwrap_or(false) {
+        return;
+    }
+    store_cached_main_bounds(capture_bounds_sync(window));
+}
+
+/// Returns the last-known valid `"main"` window bounds cached in memory.
+pub fn cached_main_bounds() -> Option<WindowBounds> {
+    LAST_MAIN_BOUNDS.lock().ok().and_then(|g| g.clone())
+}
+
+/// Returns the current Windows Package Family Name (e.g. `io.dropilot.app_...`) when running
+/// with sparse/full MSIX Package Identity, or `None` when unpackaged.
+#[cfg(windows)]
+pub fn current_package_family_name() -> Option<String> {
+    use windows_sys::Win32::Foundation::{ERROR_INSUFFICIENT_BUFFER, ERROR_SUCCESS};
+    use windows_sys::Win32::Storage::Packaging::Appx::GetCurrentPackageFamilyName;
+
+    let mut len: u32 = 128;
+    let mut buf = vec![0u16; len as usize];
+    let mut status = unsafe { GetCurrentPackageFamilyName(&mut len, buf.as_mut_ptr()) };
+    if status == ERROR_INSUFFICIENT_BUFFER && len > 0 {
+        buf.resize(len as usize, 0);
+        status = unsafe { GetCurrentPackageFamilyName(&mut len, buf.as_mut_ptr()) };
+    }
+    if status != ERROR_SUCCESS || len <= 1 {
+        return None;
+    }
+    let trimmed_len = (len as usize).saturating_sub(1).min(buf.len());
+    let name = String::from_utf16_lossy(&buf[..trimmed_len]);
+    let trimmed = name.trim_end_matches('\0').trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
+}
+
+#[cfg(not(windows))]
+pub fn current_package_family_name() -> Option<String> {
+    None
+}
+
 /// Configures Windows process identity (`AppUserModelID`) and assigns Dropilot to an
 /// anonymous Job Object with `JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE` so all child
 /// `msedgewebview2.exe` processes terminate automatically when Dropilot exits or crashes.
 #[cfg(windows)]
 pub fn configure_windows_process_group() {
     use std::sync::OnceLock;
-    use tracing::info;
     use windows_sys::Win32::Foundation::{CloseHandle, GetLastError};
     use windows_sys::Win32::System::JobObjects::{
         AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
@@ -82,10 +165,21 @@ pub fn configure_windows_process_group() {
 
     static PROCESS_JOB_HANDLE: OnceLock<isize> = OnceLock::new();
 
-    let app_id: Vec<u16> = "io.dropilot.app\0".encode_utf16().collect();
-    let hr = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
-    if hr < 0 {
-        warn!(hresult = hr, "Failed setting Windows AppUserModelID");
+    match current_package_family_name() {
+        Some(pfn) => {
+            info!(
+                package_family_name = %pfn,
+                "Running with Windows Package Identity"
+            );
+        }
+        None => {
+            info!("Running unpackaged without Windows Package Identity");
+            let app_id: Vec<u16> = "io.dropilot.app\0".encode_utf16().collect();
+            let hr = unsafe { SetCurrentProcessExplicitAppUserModelID(app_id.as_ptr()) };
+            if hr < 0 {
+                warn!(hresult = hr, "Failed setting Windows AppUserModelID");
+            }
+        }
     }
 
     if PROCESS_JOB_HANDLE.get().is_some() {
@@ -134,7 +228,7 @@ pub fn configure_windows_process_group() {
             return;
         }
 
-        info!("Configured Windows AppUserModelID and KILL_ON_JOB_CLOSE Job Object");
+        info!("Configured Windows KILL_ON_JOB_CLOSE Job Object");
     }
 }
 
@@ -181,7 +275,7 @@ pub fn apply_low_memory_mode(win: &tauri::WebviewWindow) {
 #[cfg(not(windows))]
 pub fn apply_low_memory_mode(_win: &tauri::WebviewWindow) {}
 
-/// Suspends the WebView2 renderer when minimized to taskbar (0% CPU, aggressively trimmed RAM).
+/// Suspends the WebView2 renderer when minimized or hidden with an active auxiliary window.
 #[cfg(windows)]
 pub fn suspend_webview(win: &tauri::WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::{
@@ -252,6 +346,8 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         (guard.window_bounds.clone(), guard.theme)
     };
 
+    store_cached_main_bounds(bounds.clone());
+
     let (width, height) = bounds
         .as_ref()
         .map(|b| (b.width as f64, b.height as f64))
@@ -276,10 +372,51 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         .build()
         .map_err(|e| format!("Failed creating main window: {e}"))?;
 
+    update_cached_main_bounds(&win.as_ref().window());
     apply_low_memory_mode(&win);
 
     state.events.reset_cache().await;
     Ok(())
+}
+
+/// Destroys the `"main"` UI WebView2 window to the system tray so zero `msedgewebview2.exe`
+/// processes remain while miners, scheduler, webhooks, Epic polling, and tray keep running.
+///
+/// If any auxiliary window (`login-*`, `*-bridge`, `inventory-*`, `epic-claim`, `compat-watch-*`)
+/// is currently open, destruction is skipped so those windows are never interrupted; `"main"` is
+/// gently hidden/suspended instead and `false` is returned.
+pub async fn destroy_main_to_tray(
+    app: &AppHandle,
+    state: &Arc<AppState>,
+    bounds_override: Option<WindowBounds>,
+) -> bool {
+    if let Some(b) = bounds_override.or_else(cached_main_bounds) {
+        {
+            let mut guard = state.settings.write().await;
+            guard.window_bounds = Some(b);
+        }
+        let _ = state.persist_settings().await;
+    }
+
+    if has_active_aux_webview(app) {
+        if let Some(win) = app.get_webview_window("main") {
+            let _ = win.hide();
+            suspend_webview(&win);
+        }
+        info!(
+            "Skipped destroying UI WebView2 while an auxiliary/login/bridge window is open; hid main window instead"
+        );
+        return false;
+    }
+
+    state.events.reset_cache().await;
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.destroy();
+        info!("UI WebView2 destroyed to tray; only dropilot.exe remains");
+        true
+    } else {
+        false
+    }
 }
 
 pub fn capture_bounds_sync(window: &tauri::Window) -> Option<WindowBounds> {
@@ -318,5 +455,60 @@ pub fn apply_window_theme(app: &AppHandle, mode: ThemeMode) {
                 warn!(window = label, error = %err, "Failed updating window theme");
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn aux_webview_labels_include_all_login_bridge_and_overlay_windows() {
+        for expected in [
+            "login-twitch",
+            "login-kick",
+            "kick-bridge",
+            "twitch-bridge",
+            "inventory-twitch",
+            "inventory-kick",
+            "epic-claim",
+            "compat-watch-twitch",
+            "compat-watch-kick",
+        ] {
+            assert!(
+                AUX_WEBVIEW_LABELS.contains(&expected),
+                "Missing expected auxiliary label: {expected}"
+            );
+        }
+        assert_eq!(AUX_WEBVIEW_LABELS.len(), 9);
+    }
+
+    #[test]
+    fn aux_guard_detects_active_aux_windows_and_ignores_main() {
+        assert!(!any_aux_label_active(|label| label == "main"));
+        assert!(!any_aux_label_active(|_| false));
+
+        for label in AUX_WEBVIEW_LABELS {
+            assert!(
+                any_aux_label_active(|candidate| candidate == *label),
+                "Aux guard should return true when {label} is active"
+            );
+        }
+    }
+
+    #[test]
+    fn cached_main_bounds_ignores_none_and_keeps_last_valid_bounds() {
+        let sample = WindowBounds {
+            x: 120,
+            y: 80,
+            width: 1120,
+            height: 760,
+        };
+        store_cached_main_bounds(Some(sample.clone()));
+        assert_eq!(cached_main_bounds(), Some(sample.clone()));
+
+        // Passing None (e.g. minimized (-32000, -32000) coordinates) must preserve prior valid bounds.
+        store_cached_main_bounds(None);
+        assert_eq!(cached_main_bounds(), Some(sample));
     }
 }

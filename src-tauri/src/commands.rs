@@ -7,9 +7,8 @@ use tracing::{info, warn};
 use url::Url;
 
 use crate::auth::login_window::{
-    clear_webview_browsing_data, close_kick_bridge_window, close_twitch_bridge_window,
-    open_drops_inventory_window, open_epic_claim_window, open_login_window,
-    twitch_bridge_fetch_campaign_details,
+    clear_webview_browsing_data, open_drops_inventory_window, open_epic_claim_window,
+    open_login_window, twitch_bridge_fetch_campaign_details,
 };
 use crate::autostart::sync_autostart;
 use crate::history::{history_path, HistoryExportResult, HistoryStats, HistoryStore};
@@ -482,6 +481,10 @@ pub async fn update_settings(
         }
     }
 
+    state
+        .close_to_tray
+        .store(new_settings.close_to_tray, Ordering::Relaxed);
+
     {
         let mut guard = state.settings.write().await;
         *guard = new_settings.clone();
@@ -527,6 +530,9 @@ pub async fn clear_app_data(
         disclaimer_accepted_version,
         ..Default::default()
     };
+    state
+        .close_to_tray
+        .store(fresh.close_to_tray, Ordering::Relaxed);
     {
         let mut guard = state.settings.write().await;
         *guard = fresh;
@@ -637,24 +643,17 @@ pub async fn report_user_agent(
 }
 
 /// Closes & destroys the UI WebView2 window so Dropilot keeps farming in the system tray
-/// with ~11 MB RAM and 0 background WebView2 processes.
+/// with ~11 MB RAM and 0 background WebView2 processes (unless an auxiliary window is open).
 #[tauri::command]
 pub async fn hide_to_tray(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    if let Some(win) = app.get_webview_window("main") {
-        if let Some(bounds) = crate::windows::capture_bounds_sync(&win.as_ref().window()) {
-            let mut guard = state.settings.write().await;
-            guard.window_bounds = Some(bounds);
-        }
-        let _ = state.persist_settings().await;
-        state.events.reset_cache().await;
-        let _ = win.destroy();
-    }
-    close_kick_bridge_window(&app);
-    close_twitch_bridge_window(&app);
-    info!("UI closed to system tray (ultra-light mode; WebView2 destroyed)");
+    let bounds = app
+        .get_webview_window("main")
+        .and_then(|win| crate::windows::capture_bounds_sync(&win.as_ref().window()))
+        .or_else(crate::windows::cached_main_bounds);
+    crate::windows::destroy_main_to_tray(&app, state.inner(), bounds).await;
     Ok(())
 }
 
