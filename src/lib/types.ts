@@ -13,6 +13,10 @@ export type CampaignStatus = 'active' | 'upcoming' | 'expired';
 
 export type ThemeMode = 'dark' | 'light' | 'system';
 
+export type FontFamily = 'plex' | 'inter' | 'system' | 'mono';
+
+export type FontScale = 'compact' | 'default' | 'comfortable' | 'large';
+
 export type IdleBehavior = 'stay_idle' | 'farm_any';
 
 export type LogLevel = 'info' | 'warn' | 'error' | 'debug';
@@ -213,6 +217,8 @@ export interface HistoryExportResult {
 export interface Settings {
   schemaVersion: number;
   theme: ThemeMode;
+  fontFamily: FontFamily;
+  fontScale: FontScale;
   autostart: boolean;
   startMinimized: boolean;
   closeToTray: boolean;

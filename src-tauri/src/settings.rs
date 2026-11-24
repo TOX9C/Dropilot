@@ -20,6 +20,26 @@ pub enum ThemeMode {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FontFamily {
+    #[default]
+    Plex,
+    Inter,
+    System,
+    Mono,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FontScale {
+    Compact,
+    #[default]
+    Default,
+    Comfortable,
+    Large,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum IdleBehavior {
     #[default]
@@ -157,6 +177,10 @@ impl Default for WebhookSettings {
 pub struct Settings {
     pub schema_version: u32,
     pub theme: ThemeMode,
+    #[serde(default)]
+    pub font_family: FontFamily,
+    #[serde(default)]
+    pub font_scale: FontScale,
     pub autostart: bool,
     pub start_minimized: bool,
     pub close_to_tray: bool,
@@ -186,6 +210,8 @@ impl Default for Settings {
         Self {
             schema_version: CURRENT_SCHEMA_VERSION,
             theme: ThemeMode::Dark,
+            font_family: FontFamily::Plex,
+            font_scale: FontScale::Default,
             autostart: false,
             start_minimized: false,
             close_to_tray: true,
@@ -464,6 +490,55 @@ mod tests {
                     .starts_with("settings.json.corrupt.")
             });
         assert!(has_backup);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn font_family_and_scale_default_and_roundtrip() {
+        let dir = temp_dir("font_prefs");
+        let path = dir.join("settings.json");
+
+        // Existing v1 settings without fontFamily/fontScale should default cleanly.
+        let defaults_json = serde_json::json!({
+            "schemaVersion": CURRENT_SCHEMA_VERSION,
+            "theme": "dark",
+            "autostart": false,
+            "startMinimized": false,
+            "closeToTray": true,
+            "notifications": true,
+            "autoClaim": true,
+            "idleBehavior": "stay_idle",
+            "refreshMinutes": 30,
+            "farmUnlinked": false,
+            "compatWatchMode": false,
+            "updateCheck": false,
+            "disclaimerAcceptedVersion": 1,
+            "logLevel": "info",
+            "mockMode": false,
+            "windowBounds": null,
+            "twitch": PlatformSettings::default(),
+            "kick": PlatformSettings::default()
+        });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&defaults_json).expect("serialize"),
+        )
+        .expect("write v1");
+
+        let migrated = load_from_path(&path);
+        assert_eq!(migrated.font_family, FontFamily::Plex);
+        assert_eq!(migrated.font_scale, FontScale::Default);
+
+        // Save custom font preferences and verify round-trip.
+        let mut custom = migrated;
+        custom.font_family = FontFamily::Inter;
+        custom.font_scale = FontScale::Comfortable;
+        save_atomic_to_path(&path, &custom).expect("save custom font prefs");
+
+        let reloaded = load_from_path(&path);
+        assert_eq!(reloaded.font_family, FontFamily::Inter);
+        assert_eq!(reloaded.font_scale, FontScale::Comfortable);
 
         let _ = fs::remove_dir_all(&dir);
     }

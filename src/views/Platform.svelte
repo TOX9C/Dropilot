@@ -1,16 +1,21 @@
 <script lang="ts">
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
+  import ExternalLink from 'lucide-svelte/icons/external-link';
   import Gift from 'lucide-svelte/icons/gift';
+  import Info from 'lucide-svelte/icons/info';
+  import LoaderCircle from 'lucide-svelte/icons/loader-circle';
   import LogIn from 'lucide-svelte/icons/log-in';
   import Pause from 'lucide-svelte/icons/pause';
   import Pin from 'lucide-svelte/icons/pin';
   import Play from 'lucide-svelte/icons/play';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
+  import Search from 'lucide-svelte/icons/search';
+  import Star from 'lucide-svelte/icons/star';
   import AccountChip from '../components/AccountChip.svelte';
   import Button from '../components/Button.svelte';
-  import CampaignCard from '../components/CampaignCard.svelte';
   import Countdown from '../components/Countdown.svelte';
   import FilterBar from '../components/FilterBar.svelte';
+  import GameDropGrid from '../components/GameDropGrid.svelte';
   import Monogram from '../components/Monogram.svelte';
   import NowWatchingCard from '../components/NowWatchingCard.svelte';
   import PriorityList from '../components/PriorityList.svelte';
@@ -21,17 +26,19 @@
   import { formatRelativeTime, formatViewerCount } from '../lib/format';
   import {
     computeCampaignCounts,
+    countSearchMatchesIgnoringFilters,
     extractGameOptions,
     filterAndSortCampaigns,
-    isCampaignFarmed,
-    isGamePrioritizedFor,
+    groupCampaignsByGame,
+    isCampaignActiveNow,
+    type GameDropGroup,
   } from '../lib/selectors';
   import {
     appSettings,
     lastSnapshotAt,
     notifyUi,
     toggleCampaignFarmAction,
-    toggleGameFarmAction,
+    toggleGameGroupFarmAction,
     updateSnapshotCampaign,
   } from '../lib/stores';
   import type {
@@ -56,6 +63,8 @@
   let sort = $state<CampaignSort>('ending_soon');
   let search = $state('');
   let selectedGame = $state('all');
+  let refreshing = $state(false);
+  let addingWatch = $state(false);
 
   $effect(() => {
     void platform;
@@ -66,6 +75,11 @@
 
   const platSettings = $derived(settings[platform]);
   const platName = $derived(platform === 'twitch' ? 'Twitch' : 'Kick');
+  const browserDropsUrl = $derived(
+    platform === 'twitch'
+      ? 'https://www.twitch.tv/drops/campaigns'
+      : 'https://kick.com/drops/campaigns',
+  );
   const activePinnedChannel = $derived(snapshot.pinnedChannel ?? null);
   const participatingChannels = $derived(
     snapshot.candidateChannels.filter((c) => c.isLive && c.dropsEnabled),
@@ -95,6 +109,20 @@
   const filteredCampaigns = $derived(
     filterAndSortCampaigns(snapshot.campaigns, settings, filter, sort, search, selectedGame, $slowNowMs),
   );
+  const gameGroups = $derived(
+    groupCampaignsByGame(filteredCampaigns, settings, $slowNowMs),
+  );
+
+  const filteredActiveCount = $derived(
+    filteredCampaigns.filter((c) => isCampaignActiveNow(c, $slowNowMs)).length,
+  );
+  const filteredUpcomingCount = $derived(
+    filteredCampaigns.filter((c) => c.status === 'upcoming').length,
+  );
+  const trimmedSearch = $derived(search.trim());
+  const searchMatchesInCatalog = $derived(
+    trimmedSearch ? countSearchMatchesIgnoringFilters(snapshot.campaigns, trimmedSearch) : 0,
+  );
 
   async function handleLogin() {
     try { await api.login(platform); } catch (err) { notifyUi(String(err), 'error'); }
@@ -102,6 +130,14 @@
 
   async function handleLogout() {
     try { await api.logout(platform); } catch (err) { notifyUi(String(err), 'error'); }
+  }
+
+  async function handleOpenBrowserDrops() {
+    try {
+      await api.openUrl(browserDropsUrl);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
   }
 
   async function handlePauseResume() {
@@ -126,7 +162,7 @@
     }
   }
 
-  async function handleToggleFarm(camp: Campaign, farm: boolean) {
+  async function handleToggleCampaignFarm(camp: Campaign, farm: boolean) {
     try {
       await toggleCampaignFarmAction(camp, farm, Boolean(snapshot.account));
     } catch (err) {
@@ -134,9 +170,14 @@
     }
   }
 
-  async function handleToggleGameFarm(camp: Campaign, farm: boolean) {
+  async function handleToggleGameFarm(group: GameDropGroup, farm: boolean) {
     try {
-      await toggleGameFarmAction(camp, farm, Boolean(snapshot.account));
+      await toggleGameGroupFarmAction(
+        group.campaigns,
+        farm,
+        Boolean(snapshot.account),
+        settings,
+      );
     } catch (err) {
       notifyUi(String(err), 'error');
     }
@@ -174,12 +215,20 @@
   }
 
   async function handleRetry() {
-    try { await api.retryPlatform(platform); } catch (err) { notifyUi(String(err), 'error'); }
+    refreshing = true;
+    try {
+      await api.retryPlatform(platform);
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    } finally {
+      refreshing = false;
+    }
   }
 
   async function handleAddWatchedGame(gameName: string) {
     const clean = gameName.trim();
-    if (!clean) return;
+    if (!clean || addingWatch) return;
+    addingWatch = true;
     try {
       const match = snapshot.campaigns.find(
         (c) => c.game.name.trim().toLowerCase() === clean.toLowerCase(),
@@ -198,12 +247,20 @@
       );
     } catch (err) {
       notifyUi(String(err), 'error');
+    } finally {
+      addingWatch = false;
     }
   }
 
   async function handleFetchDetails(camp: Campaign) {
     const detailed = await api.fetchCampaignDetails(platform, camp.id);
     updateSnapshotCampaign(detailed);
+  }
+
+  function clearFilters() {
+    filter = 'all';
+    selectedGame = 'all';
+    search = '';
   }
 </script>
 
@@ -221,9 +278,9 @@
 
     <div class="page-actions">
       {#if snapshot.account}
-        <Button variant="secondary" size="sm" onclick={handleRetry}>
+        <Button variant="secondary" size="sm" disabled={refreshing} onclick={handleRetry}>
           <RefreshCw size={13} />
-          <span>Refresh</span>
+          <span>{refreshing ? 'Refreshing...' : 'Refresh'}</span>
         </Button>
         <Button variant="secondary" size="sm" onclick={handleSwitchChannel} disabled={snapshot.state === 'Paused'}>
           <RefreshCw size={13} />
@@ -257,28 +314,48 @@
   {/if}
 
   {#if snapshot.state === 'LoggedOut' && snapshot.campaigns.length === 0}
-    <section class="designed-empty">
+    <section class="designed-empty login-empty">
       <span class="empty-ico" aria-hidden="true"><LogIn size={18} /></span>
       <strong>Sign in to {platName}</strong>
       <p>
-        Open {platName}'s official site inside Dropilot's isolated window to load active campaigns and track drops.
+        Open {platName}'s official sign-in inside Dropilot's isolated window to load active campaigns and track drops.
       </p>
-      <Button variant="primary" size="md" onclick={handleLogin}>
-        <LogIn size={14} />
-        <span>Log in to {platName}</span>
-      </Button>
+      <div class="login-actions">
+        <Button variant="primary" size="md" onclick={handleLogin}>
+          <LogIn size={14} />
+          <span>Log in to {platName}</span>
+        </Button>
+        <Button variant="secondary" size="md" onclick={handleOpenBrowserDrops}>
+          <ExternalLink size={14} />
+          <span>Open {platName} in browser</span>
+        </Button>
+      </div>
+      <div class="session-note">
+        <Info size={14} />
+        <span>
+          <strong>Isolated sign-in:</strong> Dropilot never reads your personal browser profiles. {platName} Drops sync and integrity checks require a separate isolated session, and your token is saved securely in Windows Credential Manager so you only sign in once.
+        </span>
+      </div>
     </section>
   {:else}
     {#if snapshot.state === 'LoggedOut'}
       <div class="card public-bar">
         <div class="banner-text">
           <strong>Browsing public {platName} drops catalog</strong>
-          <span>Sign in with your {platName} account to farm drops and sync progress automatically.</span>
+          <span>
+            Opens Dropilot's isolated sign-in window (required for {platName} Drops sync; never reads your browser profiles and saves securely in Windows Credential Manager).
+          </span>
         </div>
-        <Button variant="primary" size="sm" onclick={handleLogin}>
-          <LogIn size={13} />
-          <span>Log in to {platName}</span>
-        </Button>
+        <div class="public-bar-actions">
+          <Button variant="secondary" size="sm" onclick={handleOpenBrowserDrops}>
+            <ExternalLink size={13} />
+            <span>Open {platName} in browser</span>
+          </Button>
+          <Button variant="primary" size="sm" onclick={handleLogin}>
+            <LogIn size={13} />
+            <span>Log in to {platName}</span>
+          </Button>
+        </div>
       </div>
     {:else}
       <NowWatchingCard
@@ -312,18 +389,49 @@
           {counts}
           {games}
           {selectedGame}
-          viewMode="compact"
           onfilter={(next) => (filter = next)}
           onsort={(next) => (sort = next)}
           onsearch={(next) => (search = next)}
           ongame={(next) => (selectedGame = next)}
         />
 
-        {#if filteredCampaigns.length === 0}
+        <div class="discovery-bar tabular" role="status">
+          <div class="disc-left">
+            <span>
+              Showing <strong>{gameGroups.length}</strong> {gameGroups.length === 1 ? 'game' : 'games'}
+              ({filteredCampaigns.length} {filteredCampaigns.length === 1 ? 'campaign' : 'campaigns'}:
+              {filteredActiveCount} active{filteredUpcomingCount > 0 ? `, ${filteredUpcomingCount} upcoming` : ''})
+            </span>
+            <span class="disc-sep" aria-hidden="true">·</span>
+            <span class="disc-sync">Synced {formatRelativeTime($lastSnapshotAt, $slowNowMs)}</span>
+          </div>
+          <div class="disc-right">
+            {#if snapshot.state === 'Error' && snapshot.lastError}
+              <span class="disc-err">Sync issue</span>
+            {:else if !snapshot.account}
+              <span>Public catalog</span>
+            {:else}
+              <span>@{snapshot.account.login}</span>
+            {/if}
+          </div>
+        </div>
+
+        {#if gameGroups.length === 0}
           <div class="designed-empty">
-            <span class="empty-ico" aria-hidden="true"><Gift size={18} /></span>
-            {#if snapshot.campaigns.length === 0}
-              <strong>No active {platName} campaigns right now</strong>
+            {#if snapshot.campaigns.length === 0 && (refreshing || snapshot.state === 'Selecting')}
+              <span class="empty-ico spin-ico" aria-hidden="true"><LoaderCircle size={18} /></span>
+              <strong>Syncing {platName} campaigns...</strong>
+              <p>Fetching live and upcoming drop campaigns from {platName}.</p>
+            {:else if snapshot.campaigns.length === 0 && snapshot.state === 'Error'}
+              <span class="empty-ico err-ico" aria-hidden="true"><AlertTriangle size={18} /></span>
+              <strong>Could not load {platName} campaigns</strong>
+              <p>{snapshot.lastError ?? 'Platform sync failed.'}</p>
+              <Button variant="primary" size="sm" onclick={handleRetry}>
+                <RefreshCw size={13} /> Retry now
+              </Button>
+            {:else if snapshot.campaigns.length === 0}
+              <span class="empty-ico" aria-hidden="true"><Gift size={18} /></span>
+              <strong>No active or upcoming {platName} campaigns right now</strong>
               <p>
                 Last checked {formatRelativeTime($lastSnapshotAt, $slowNowMs)}.
                 {#if snapshot.nextActionAt}
@@ -333,33 +441,57 @@
               <Button variant="secondary" size="sm" onclick={handleRetry}>
                 <RefreshCw size={13} /> Refresh now
               </Button>
+            {:else if trimmedSearch}
+              <span class="empty-ico" aria-hidden="true"><Search size={18} /></span>
+              {#if searchMatchesInCatalog > 0}
+                <strong>No "{trimmedSearch}" campaigns match active filters</strong>
+                <p>
+                  {searchMatchesInCatalog} matching {searchMatchesInCatalog === 1 ? 'campaign is' : 'campaigns are'} hidden by the "{filter !== 'all' ? filter : selectedGame}" filter.
+                </p>
+                <Button variant="primary" size="sm" onclick={clearFilters}>
+                  Clear filters
+                </Button>
+              {:else}
+                <strong>No active or upcoming {platName} drop campaigns for "{trimmedSearch}" right now.</strong>
+                <p>
+                  Add "{trimmedSearch}" to your {platName} priority watchlist to auto-farm when a drop campaign launches.
+                </p>
+                <div class="empty-actions">
+                  <Button
+                    variant="primary"
+                    size="sm"
+                    disabled={addingWatch}
+                    onclick={() => handleAddWatchedGame(trimmedSearch)}
+                  >
+                    <Star size={13} />
+                    <span>Watch "{trimmedSearch}" for future drops</span>
+                  </Button>
+                  <Button variant="secondary" size="sm" onclick={() => (search = '')}>
+                    Clear search
+                  </Button>
+                </div>
+              {/if}
             {:else}
+              <span class="empty-ico" aria-hidden="true"><Gift size={18} /></span>
               <strong>No campaigns match these filters</strong>
               <p>Try switching status or clearing your search query.</p>
-              <Button variant="secondary" size="sm" onclick={() => { filter = 'all'; selectedGame = 'all'; search = ''; }}>
-                Show all campaigns
+              <Button variant="secondary" size="sm" onclick={clearFilters}>
+                Clear filters
               </Button>
             {/if}
           </div>
         {:else}
-          <div class="campaigns-grid compact-list">
-            {#each filteredCampaigns as camp (camp.id)}
-              <CampaignCard
-                campaign={camp}
-                showPlatformBadge={false}
-                compact={true}
-                isFarmSelected={isCampaignFarmed(camp, settings)}
-                isExcluded={platSettings.excludedCampaigns.includes(camp.id)}
-                isGamePrioritized={isGamePrioritizedFor(camp, settings)}
-                onToggleFarm={(farm) => handleToggleFarm(camp, farm)}
-                onToggleGameFarm={(farm) => handleToggleGameFarm(camp, farm)}
-                onExclude={() => handleToggleFarm(camp, false)}
-                onOpenUrl={handleOpenUrl}
-                onOpenInventory={handleOpenInventory}
-                onFetchDetails={() => handleFetchDetails(camp)}
-              />
-            {/each}
-          </div>
+          <GameDropGrid
+            groups={gameGroups}
+            {settings}
+            showPlatformBadge={false}
+            onToggleGameFarm={handleToggleGameFarm}
+            onToggleCampaignFarm={handleToggleCampaignFarm}
+            onExcludeCampaign={(camp) => handleToggleCampaignFarm(camp, false)}
+            onOpenUrl={handleOpenUrl}
+            onOpenInventory={() => handleOpenInventory()}
+            onFetchDetails={handleFetchDetails}
+          />
         {/if}
       </div>
 
@@ -436,7 +568,47 @@
     min-width: 200px;
     display: flex;
     flex-direction: column;
-    gap: 2px;
+    gap: 3px;
+  }
+
+  .login-empty {
+    padding: 36px 24px;
+    gap: 12px;
+  }
+
+  .login-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+  }
+
+  .session-note {
+    margin-top: 4px;
+    max-width: 580px;
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    line-height: 1.5;
+    text-align: left;
+  }
+
+  .session-note :global(svg) {
+    flex-shrink: 0;
+    margin-top: 2px;
+    color: var(--accent-text);
+  }
+
+  .session-note strong {
+    color: var(--text);
+    font-size: var(--text-xs);
   }
 
   .public-bar {
@@ -448,38 +620,104 @@
   }
 
   .public-bar strong { font-size: var(--text-base); }
-  .public-bar span { font-size: var(--text-xs); color: var(--text-muted); }
+  .public-bar span { font-size: var(--text-xs); color: var(--text-muted); line-height: 1.45; }
+
+  .public-bar-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+  }
 
   .workspace-split {
     display: grid;
-    grid-template-columns: minmax(0, 1fr) 256px;
+    grid-template-columns: minmax(0, 1fr) 268px;
     gap: var(--grid-gap, 14px);
     align-items: start;
+  }
+
+  @media (min-width: 1400px) {
+    .workspace-split {
+      grid-template-columns: minmax(0, 1fr) 310px;
+    }
+  }
+
+  @media (min-width: 1850px) {
+    .workspace-split {
+      grid-template-columns: minmax(0, 1fr) 350px;
+    }
   }
 
   .campaigns-col,
   .rail-col {
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 10px;
     min-width: 0;
   }
 
-  .campaigns-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: 12px;
+  .discovery-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px 14px;
+    padding: 6px 10px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: 11px;
+    color: var(--text-muted);
   }
 
-  @media (max-width: 720px) {
-    .campaigns-grid {
-      grid-template-columns: 1fr;
-    }
+  .disc-left,
+  .disc-right {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
   }
 
-  .campaigns-grid.compact-list {
-    grid-template-columns: 1fr;
-    gap: 6px;
+  .disc-left strong {
+    color: var(--text);
+  }
+
+  .disc-sep {
+    color: var(--border-hover);
+  }
+
+  .disc-sync {
+    color: var(--text-faint);
+  }
+
+  .disc-err {
+    color: var(--error-text);
+    font-weight: 600;
+  }
+
+  .empty-actions {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    margin-top: 2px;
+  }
+
+  .spin-ico {
+    animation: pl-spin 1s linear infinite;
+  }
+
+  .err-ico {
+    color: var(--error-text);
+    border-color: var(--error);
+    background: var(--error-tint);
+  }
+
+  @keyframes pl-spin {
+    from { transform: rotate(0deg); }
+    to { transform: rotate(360deg); }
   }
 
   .candidates-card {

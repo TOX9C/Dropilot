@@ -1,5 +1,5 @@
 /* ============================================================================
- * Locally Bundled Free Fonts — Console Design (IBM Plex Sans + IBM Plex Mono)
+ * Locally Bundled Free Fonts — Console Design + Curated User Presets
  * Latin subset only (tiny bundle, zero CDN requests, works offline under CSP)
  * ============================================================================ */
 
@@ -9,3 +9,9 @@
 @import "@fontsource/ibm-plex-mono/latin-400.css";
 @import "@fontsource/ibm-plex-mono/latin-500.css";
 @import "@fontsource/ibm-plex-mono/latin-600.css";
+@import "@fontsource/inter/latin-400.css";
+@import "@fontsource/inter/latin-500.css";
+@import "@fontsource/inter/latin-600.css";
+@import "@fontsource/jetbrains-mono/latin-400.css";
+@import "@fontsource/jetbrains-mono/latin-500.css";
+@import "@fontsource/jetbrains-mono/latin-600.css";

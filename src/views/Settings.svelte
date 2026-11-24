@@ -3,8 +3,10 @@
   import Bell from 'lucide-svelte/icons/bell';
   import Check from 'lucide-svelte/icons/check';
   import Cloud from 'lucide-svelte/icons/cloud';
+  import ExternalLink from 'lucide-svelte/icons/external-link';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
   import Info from 'lucide-svelte/icons/info';
+  import Link2 from 'lucide-svelte/icons/link-2';
   import LogIn from 'lucide-svelte/icons/log-in';
   import LogOut from 'lucide-svelte/icons/log-out';
   import Monitor from 'lucide-svelte/icons/monitor';
@@ -15,12 +17,14 @@
   import Shield from 'lucide-svelte/icons/shield';
   import Sliders from 'lucide-svelte/icons/sliders';
   import Trash2 from 'lucide-svelte/icons/trash-2';
+  import TypeIcon from 'lucide-svelte/icons/type';
   import Zap from 'lucide-svelte/icons/zap';
   import Badge from '../components/Badge.svelte';
   import Button from '../components/Button.svelte';
   import CustomSelect, { type SelectOption } from '../components/CustomSelect.svelte';
   import Modal from '../components/Modal.svelte';
   import Monogram from '../components/Monogram.svelte';
+  import ProgressBar from '../components/ProgressBar.svelte';
   import StatusPill from '../components/StatusPill.svelte';
   import Toggle from '../components/Toggle.svelte';
   import { api } from '../lib/api';
@@ -37,6 +41,8 @@
   } from '../lib/stores';
   import type {
     AppSnapshot,
+    FontFamily,
+    FontScale,
     Settings,
     ThemeMode,
     WebhookSecretsStatus,
@@ -95,7 +101,7 @@
   });
 
   const tabs: { id: SettingsTab; label: string; desc: string }[] = [
-    { id: 'appearance', label: 'Appearance', desc: 'Color mode' },
+    { id: 'appearance', label: 'Appearance', desc: 'Color mode & typography' },
     { id: 'farming', label: 'Farming', desc: 'Drop rules & sync' },
     { id: 'system', label: 'System', desc: 'Startup, tray & webhooks' },
     { id: 'data', label: 'Data & About', desc: 'Folders, updates & reset' },
@@ -110,6 +116,57 @@
     { id: 'light', label: 'Light', hint: 'Crisp high-contrast light surfaces' },
     { id: 'system', label: 'Match Windows', hint: 'Follows OS dark/light mode' },
   ];
+
+  const fontOptions: {
+    id: FontFamily;
+    label: string;
+    hint: string;
+    sampleSans: string;
+    sampleMono: string;
+  }[] = [
+    {
+      id: 'plex',
+      label: 'IBM Plex',
+      hint: 'Default Console pairing (Sans + Mono)',
+      sampleSans: '"IBM Plex Sans", "Segoe UI", sans-serif',
+      sampleMono: '"IBM Plex Mono", Consolas, monospace',
+    },
+    {
+      id: 'inter',
+      label: 'Inter + JetBrains',
+      hint: 'Clean geometric UI + sharp tabular mono',
+      sampleSans: '"Inter", "Segoe UI", sans-serif',
+      sampleMono: '"JetBrains Mono", Consolas, monospace',
+    },
+    {
+      id: 'system',
+      label: 'Windows System',
+      hint: 'Native Segoe UI Variable + Cascadia Mono',
+      sampleSans: '"Segoe UI Variable", "Segoe UI", system-ui, sans-serif',
+      sampleMono: '"Cascadia Mono", Consolas, monospace',
+    },
+    {
+      id: 'mono',
+      label: 'JetBrains Mono',
+      hint: 'Full terminal monospace typography',
+      sampleSans: '"JetBrains Mono", Consolas, monospace',
+      sampleMono: '"JetBrains Mono", Consolas, monospace',
+    },
+  ];
+
+  const fontScaleOptions: { id: FontScale; label: string; pct: string }[] = [
+    { id: 'compact', label: 'Compact', pct: '95%' },
+    { id: 'default', label: 'Default', pct: '100%' },
+    { id: 'comfortable', label: 'Comfortable', pct: '108%' },
+    { id: 'large', label: 'Large', pct: '115%' },
+  ];
+
+  const activeFontLabel = $derived(
+    fontOptions.find((f) => f.id === (settings.fontFamily ?? 'plex'))?.label ?? 'IBM Plex',
+  );
+  const activeScaleLabel = $derived(
+    fontScaleOptions.find((s) => s.id === (settings.fontScale ?? 'default'))?.pct ?? '100%',
+  );
 
   async function savePatch(mutator: (draft: Settings) => void) {
     const draft: Settings = structuredClone(settings);
@@ -260,48 +317,74 @@
   </header>
 
   <!-- Connected Accounts Top Strip -->
-  <section class="accounts-grid" aria-label="Connected accounts">
-    {#each [snapshot.twitch, snapshot.kick] as platSnap (platSnap.platform)}
-      {@const isTwitch = platSnap.platform === 'twitch'}
-      {@const label = isTwitch ? 'Twitch' : 'Kick'}
-      <div class="card acct-card">
-        <div class="acct-left">
-          <Monogram
-            src={platSnap.account?.avatarUrl}
-            name={platSnap.account?.displayName ?? label}
-            width={34}
-            height={34}
-          />
-          <div class="acct-meta">
-            <div class="acct-top">
-              <span class="plat-dot dot-{platSnap.platform}" aria-hidden="true"></span>
-              <strong>{label}</strong>
-              <StatusPill state={platSnap.state} compact />
+  <section class="accounts-wrap" aria-label="Connected accounts">
+    <div class="accounts-grid">
+      {#each [snapshot.twitch, snapshot.kick] as platSnap (platSnap.platform)}
+        {@const isTwitch = platSnap.platform === 'twitch'}
+        {@const label = isTwitch ? 'Twitch' : 'Kick'}
+        {@const browserUrl = isTwitch
+          ? 'https://www.twitch.tv/drops/campaigns'
+          : 'https://kick.com/drops/campaigns'}
+        <div class="card acct-card">
+          <div class="acct-left">
+            <Monogram
+              src={platSnap.account?.avatarUrl}
+              name={platSnap.account?.displayName ?? label}
+              width={34}
+              height={34}
+            />
+            <div class="acct-meta">
+              <div class="acct-top">
+                <span class="plat-dot dot-{platSnap.platform}" aria-hidden="true"></span>
+                <strong>{label}</strong>
+                <StatusPill state={platSnap.state} compact />
+              </div>
+              <span class="acct-sub">
+                {#if platSnap.account}
+                  Signed in as <strong>@{platSnap.account.displayName}</strong>
+                {:else}
+                  Not connected — sign in via Dropilot's isolated window
+                {/if}
+              </span>
             </div>
-            <span class="acct-sub">
-              {#if platSnap.account}
-                Signed in as <strong>@{platSnap.account.displayName}</strong>
-              {:else}
-                Not connected — sign in to sync &amp; farm drops
-              {/if}
-            </span>
+          </div>
+          <div class="acct-action">
+            <Button
+              variant="ghost"
+              size="sm"
+              title={`Open ${label} Drops in your default browser`}
+              onclick={() => api.openUrl(browserUrl).catch((e) => notifyUi(String(e), 'error'))}
+            >
+              <ExternalLink size={13} />
+              <span>Browser</span>
+            </Button>
+            {#if platSnap.account}
+              <Button variant="secondary" size="sm" onclick={() => api.logout(platSnap.platform)}>
+                <LogOut size={13} />
+                <span>Log out</span>
+              </Button>
+            {:else}
+              <Button
+                variant="primary"
+                size="sm"
+                title={`Opens Dropilot's isolated ${label} sign-in window (required for Drops sync; saved once in Windows Credential Manager)`}
+                onclick={() => api.login(platSnap.platform)}
+              >
+                <LogIn size={13} />
+                <span>Log in</span>
+              </Button>
+            {/if}
           </div>
         </div>
-        <div class="acct-action">
-          {#if platSnap.account}
-            <Button variant="secondary" size="sm" onclick={() => api.logout(platSnap.platform)}>
-              <LogOut size={13} />
-              <span>Log out</span>
-            </Button>
-          {:else}
-            <Button variant="primary" size="sm" onclick={() => api.login(platSnap.platform)}>
-              <LogIn size={13} />
-              <span>Log in</span>
-            </Button>
-          {/if}
-        </div>
-      </div>
-    {/each}
+      {/each}
+    </div>
+
+    <div class="session-info-bar">
+      <Info size={13} />
+      <span>
+        <strong>Isolated session sign-in:</strong> Dropilot opens a dedicated sign-in window instead of reading your Chrome, Edge, or Firefox profiles. This isolated session is required for Twitch &amp; Kick Drops sync and integrity checks, and your token is saved securely in Windows Credential Manager so you only sign in once.
+      </span>
+    </div>
   </section>
 
   <!-- Segmented Tab Bar -->
@@ -335,35 +418,144 @@
 
   <!-- Tab Panel: Appearance -->
   {#if activeTab === 'appearance'}
-    <div class="panel-stack">
-      <section class="card studio-card">
+    <div class="appearance-split">
+      <div class="panel-stack">
+        <section class="card studio-card">
+          <div class="studio-head">
+            <div>
+              <h2>Color Mode</h2>
+              <p class="studio-sub">Applies dark or light surfaces and matches the native Windows title bar.</p>
+            </div>
+          </div>
+
+          <div class="mode-grid" role="radiogroup" aria-label="Color mode">
+            {#each themeOptions as opt (opt.id)}
+              {@const active = settings.theme === opt.id}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={active}
+                class="mode-btn"
+                class:active
+                onclick={() => savePatch((d) => (d.theme = opt.id))}
+              >
+                <div class="mode-text">
+                  <strong>{opt.label}</strong>
+                  <span>{opt.hint}</span>
+                </div>
+                {#if active}
+                  <span class="mode-check" aria-hidden="true"><Check size={14} /></span>
+                {/if}
+              </button>
+            {/each}
+          </div>
+        </section>
+
+        <section class="card studio-card">
+          <div class="studio-head">
+            <div>
+              <div class="title-with-ico">
+                <TypeIcon size={15} />
+                <h2>Typography &amp; Font</h2>
+              </div>
+              <p class="studio-sub">Zero-CDN locally bundled &amp; native Windows font pairings saved across restarts.</p>
+            </div>
+          </div>
+
+          <div class="font-grid" role="radiogroup" aria-label="Font family preset">
+            {#each fontOptions as fopt (fopt.id)}
+              {@const active = (settings.fontFamily ?? 'plex') === fopt.id}
+              <button
+                type="button"
+                role="radio"
+                aria-checked={active}
+                class="font-btn"
+                class:active
+                onclick={() => savePatch((d) => (d.fontFamily = fopt.id))}
+              >
+                <div class="font-btn-top">
+                  <strong>{fopt.label}</strong>
+                  {#if active}
+                    <span class="mode-check" aria-hidden="true"><Check size={14} /></span>
+                  {/if}
+                </div>
+                <span class="font-hint">{fopt.hint}</span>
+                <div class="font-sample-row">
+                  <span class="sample-sans" style:font-family={fopt.sampleSans}>Rust Drops</span>
+                  <span class="sample-mono" style:font-family={fopt.sampleMono}>01:45 · 63%</span>
+                </div>
+              </button>
+            {/each}
+          </div>
+
+          <div class="scale-row">
+            <div class="scale-meta">
+              <strong>Text size</strong>
+              <span>Scales UI text, timers, and card metadata cleanly across resolutions.</span>
+            </div>
+            <div class="scale-pills" role="radiogroup" aria-label="Text size scale">
+              {#each fontScaleOptions as sopt (sopt.id)}
+                {@const active = (settings.fontScale ?? 'default') === sopt.id}
+                <button
+                  type="button"
+                  role="radio"
+                  aria-checked={active}
+                  class="scale-pill"
+                  class:active
+                  onclick={() => savePatch((d) => (d.fontScale = sopt.id))}
+                >
+                  <span>{sopt.label}</span>
+                  <span class="scale-pct tabular">{sopt.pct}</span>
+                </button>
+              {/each}
+            </div>
+          </div>
+        </section>
+      </div>
+
+      <section class="card studio-card preview-card" aria-label="Typography live preview">
         <div class="studio-head">
           <div>
-            <h2>Color Mode</h2>
-            <p class="studio-sub">Applies dark or light surfaces and matches the native Windows title bar.</p>
+            <h2>Live Preview</h2>
+            <p class="studio-sub">Reflects your selected font family and text scale immediately.</p>
           </div>
+          <Badge tone="accent">{activeFontLabel} · {activeScaleLabel}</Badge>
         </div>
 
-        <div class="mode-grid" role="radiogroup" aria-label="Color mode">
-          {#each themeOptions as opt (opt.id)}
-            {@const active = settings.theme === opt.id}
-            <button
-              type="button"
-              role="radio"
-              aria-checked={active}
-              class="mode-btn"
-              class:active
-              onclick={() => savePatch((d) => (d.theme = opt.id))}
-            >
-              <div class="mode-text">
-                <strong>{opt.label}</strong>
-                <span>{opt.hint}</span>
-              </div>
-              {#if active}
-                <span class="mode-check" aria-hidden="true"><Check size={14} /></span>
-              {/if}
-            </button>
-          {/each}
+        <div class="preview-surface">
+          <div class="pv-top">
+            <div class="pv-plat">
+              <span class="plat-dot dot-twitch" aria-hidden="true"></span>
+              <span class="pv-plat-name tabular">TWITCH</span>
+              <span class="pv-acct tabular">@demo_pilot</span>
+            </div>
+            <span class="pv-status tabular">MINING</span>
+          </div>
+
+          <div class="pv-camp">
+            <div class="pv-camp-head">
+              <strong>Rust — Twitch Rivals Drops</strong>
+              <span class="pv-link">
+                <Link2 size={11} />
+                <span>Linked</span>
+              </span>
+            </div>
+            <span class="pv-reward">Reward: Cobalt Garage Door</span>
+          </div>
+
+          <div class="pv-prog">
+            <div class="pv-prog-row tabular">
+              <span>19m / 30m</span>
+              <strong>63% · 11m 00s left</strong>
+            </div>
+            <ProgressBar value={19} max={30} platform="twitch" tall label="Preview progress" />
+          </div>
+
+          <div class="pv-log mono">
+            <span class="pv-log-ts">[10:15:42]</span>
+            <span class="pv-log-lvl">INFO</span>
+            <span>Credited +1m watch time for Rust</span>
+          </div>
         </div>
       </section>
     </div>
@@ -953,6 +1145,12 @@
 </Modal>
 
 <style>
+  .accounts-wrap {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
   .accounts-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -963,6 +1161,36 @@
     .accounts-grid {
       grid-template-columns: 1fr;
     }
+  }
+
+  .acct-action {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    flex-shrink: 0;
+  }
+
+  .session-info-bar {
+    display: flex;
+    align-items: flex-start;
+    gap: 8px;
+    padding: 8px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+
+  .session-info-bar :global(svg) {
+    flex-shrink: 0;
+    margin-top: 2px;
+    color: var(--accent-text);
+  }
+
+  .session-info-bar strong {
+    color: var(--text);
   }
 
   .acct-card {
@@ -1162,11 +1390,302 @@
     display: inline-flex;
   }
 
+  .appearance-split {
+    display: grid;
+    grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.9fr);
+    gap: var(--grid-gap, 14px);
+    align-items: start;
+  }
+
+  @media (max-width: 1180px) {
+    .appearance-split {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .title-with-ico {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+  }
+
+  .font-grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  @media (max-width: 680px) {
+    .font-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  .font-btn {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    padding: 11px 13px;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    text-align: left;
+  }
+
+  .font-btn:hover {
+    border-color: var(--border-hover);
+  }
+
+  .font-btn.active {
+    border-color: var(--accent);
+    background: var(--surface);
+  }
+
+  .font-btn-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .font-btn-top strong {
+    font-size: var(--text-sm);
+    color: var(--text);
+  }
+
+  .font-hint {
+    font-size: 11px;
+    color: var(--text-muted);
+  }
+
+  .font-sample-row {
+    margin-top: 4px;
+    padding: 5px 8px;
+    border-radius: var(--radius-xs);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .sample-sans {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .sample-mono {
+    font-size: 11px;
+    color: var(--accent-text);
+  }
+
+  .scale-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    padding-top: 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  .scale-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .scale-meta strong {
+    font-size: var(--text-sm);
+    color: var(--text);
+  }
+
+  .scale-meta span {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+
+  .scale-pills {
+    display: inline-flex;
+    flex-wrap: wrap;
+    gap: 4px;
+    padding: 3px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+
+  .scale-pill {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 5px 10px;
+    border: 1px solid transparent;
+    border-radius: var(--radius-xs);
+    background: transparent;
+    color: var(--text-muted);
+    font-size: var(--text-xs);
+    font-weight: 600;
+  }
+
+  .scale-pill:hover {
+    color: var(--text);
+  }
+
+  .scale-pill.active {
+    background: var(--accent-tint);
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .scale-pct {
+    font-size: 10.5px;
+    opacity: 0.85;
+  }
+
+  .preview-card {
+    gap: 12px;
+  }
+
+  .preview-surface {
+    display: flex;
+    flex-direction: column;
+    gap: 11px;
+    padding: 12px;
+    border-radius: var(--radius-sm);
+    background: var(--bg);
+    border: 1px solid var(--border);
+  }
+
+  .pv-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .pv-plat {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+  }
+
+  .pv-plat-name {
+    font-size: var(--text-xs);
+    font-weight: 700;
+    color: var(--text);
+  }
+
+  .pv-acct {
+    font-size: var(--text-xs);
+    color: var(--text-faint);
+  }
+
+  .pv-status {
+    padding: 2px 7px;
+    border-radius: var(--radius-pill);
+    background: var(--success-tint);
+    color: var(--success-text);
+    font-size: 10px;
+    font-weight: 600;
+  }
+
+  .pv-camp {
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+  }
+
+  .pv-camp-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .pv-camp-head strong {
+    font-family: var(--font-display);
+    font-size: var(--text-md);
+    color: var(--text);
+  }
+
+  .pv-link {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px;
+    border-radius: var(--radius-pill);
+    background: var(--success-tint);
+    color: var(--success-text);
+    font-size: 10.5px;
+    font-weight: 600;
+  }
+
+  .pv-reward {
+    font-size: var(--text-sm);
+    color: var(--text-muted);
+  }
+
+  .pv-prog {
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+  }
+
+  .pv-prog-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+  }
+
+  .pv-prog-row strong {
+    color: var(--text);
+  }
+
+  .pv-log {
+    display: flex;
+    align-items: baseline;
+    gap: 7px;
+    padding: 6px 8px;
+    border-radius: var(--radius-xs);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-left: 3px solid var(--info);
+    font-size: var(--text-xs);
+    color: var(--text);
+  }
+
+  .pv-log-ts {
+    color: var(--text-faint);
+  }
+
+  .pv-log-lvl {
+    color: var(--info-text);
+    font-weight: 600;
+  }
+
   /* Preferences Grid */
   .pref-grid {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--grid-gap, 14px);
+  }
+
+  @media (min-width: 1360px) {
+    .pref-grid {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  @media (min-width: 1840px) {
+    .pref-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
   }
 
   @media (max-width: 780px) {
@@ -1216,6 +1735,7 @@
     font-size: var(--text-xs);
     color: var(--text-muted);
     line-height: 1.45;
+    max-width: 72ch;
   }
 
   .pref-wide-row {

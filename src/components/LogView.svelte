@@ -199,7 +199,9 @@
   }
 
   .search-input {
-    width: 190px;
+    flex: 1;
+    min-width: 180px;
+    max-width: 340px;
   }
 
   .follow-toggle {

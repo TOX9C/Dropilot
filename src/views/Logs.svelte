@@ -65,6 +65,7 @@
 
 <style>
   .page-logs {
-    min-height: calc(100vh - 64px);
+    height: calc(100vh - 64px);
+    min-height: 440px;
   }
 </style>

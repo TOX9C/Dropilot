@@ -51,6 +51,8 @@ function createPreviewData(): {
       settings: {
         schemaVersion: 1,
         theme: 'dark',
+        fontFamily: 'plex',
+        fontScale: 'default',
         autostart: false,
         startMinimized: false,
         closeToTray: true,
@@ -97,6 +99,8 @@ function createPreviewData(): {
     settings: {
       schemaVersion: 1,
       theme: 'dark',
+      fontFamily: 'plex',
+      fontScale: 'default',
       autostart: false,
       startMinimized: false,
       closeToTray: true,

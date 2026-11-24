@@ -4,6 +4,7 @@ import type {
   CampaignFilter,
   CampaignSort,
   Drop,
+  Game,
   PlatformId,
   PriorityItem,
   Settings,
@@ -156,6 +157,163 @@ export function filterAndSortCampaigns(
     }
     return new Date(a.endsAt).getTime() - new Date(b.endsAt).getTime();
   });
+}
+
+export interface GameDropGroup {
+  key: string;
+  platform: PlatformId;
+  game: Game;
+  campaigns: Campaign[];
+  totalDrops: number;
+  claimedDrops: number;
+  claimableCount: number;
+  soonestEndsAt: string;
+  soonestStartsAt: string;
+  hasActive: boolean;
+  hasUpcoming: boolean;
+  allCompleted: boolean;
+  linkState: 'ready' | 'linked' | 'unlinked' | 'partial';
+  linkedCount: number;
+  linkRequiredCount: number;
+  connectTargetUrl: string;
+  isGamePrioritized: boolean;
+  isFarming: boolean;
+  hasExcluded: boolean;
+}
+
+export function groupCampaignsByGame(
+  campaigns: Campaign[],
+  settings: Settings,
+  now = Date.now(),
+): GameDropGroup[] {
+  const buckets = new Map<string, Campaign[]>();
+  for (const camp of campaigns) {
+    const cleanName = camp.game.name.trim().toLowerCase();
+    const cleanId = camp.game.id.trim().toLowerCase();
+    const gameKey = cleanName || cleanId || camp.id.toLowerCase();
+    const key = `${camp.platform}:${gameKey}`;
+    const existing = buckets.get(key);
+    if (existing) {
+      existing.push(camp);
+    } else {
+      buckets.set(key, [camp]);
+    }
+  }
+
+  const out: GameDropGroup[] = [];
+  for (const [key, list] of buckets.entries()) {
+    const first = list[0];
+    const bestBoxArt = list.find((c) => Boolean(c.game.boxArtUrl))?.game.boxArtUrl ?? null;
+    const game: Game = {
+      ...first.game,
+      boxArtUrl: bestBoxArt,
+    };
+
+    let totalDrops = 0;
+    let claimedDrops = 0;
+    let claimableCount = 0;
+    let hasActive = false;
+    let hasUpcoming = false;
+    let allCompleted = true;
+
+    let soonestEndsAt = first.endsAt;
+    let soonestEndTs = Date.parse(first.endsAt);
+    let soonestStartsAt = first.startsAt;
+    let soonestStartTs = Date.parse(first.startsAt);
+
+    for (const c of list) {
+      totalDrops += c.drops.length;
+      for (const d of c.drops) {
+        if (d.claimed) claimedDrops += 1;
+        if ((d.claimable && !d.claimed) || d.needsManualClaim) claimableCount += 1;
+      }
+      if (isCampaignActiveNow(c, now)) hasActive = true;
+      if (c.status === 'upcoming') hasUpcoming = true;
+      if (!isCampaignCompleted(c)) allCompleted = false;
+
+      const endTs = Date.parse(c.endsAt);
+      if (Number.isFinite(endTs) && (!Number.isFinite(soonestEndTs) || endTs < soonestEndTs)) {
+        soonestEndTs = endTs;
+        soonestEndsAt = c.endsAt;
+      }
+      const startTs = Date.parse(c.startsAt);
+      if (Number.isFinite(startTs) && (!Number.isFinite(soonestStartTs) || startTs < soonestStartTs)) {
+        soonestStartTs = startTs;
+        soonestStartsAt = c.startsAt;
+      }
+    }
+
+    const linkRequired = list.filter((c) => c.requiresLink);
+    const linkedCount = linkRequired.filter((c) => c.linked).length;
+    const linkRequiredCount = linkRequired.length;
+    const linkState: GameDropGroup['linkState'] =
+      linkRequiredCount === 0
+        ? 'ready'
+        : linkedCount === linkRequiredCount
+          ? 'linked'
+          : linkedCount === 0
+            ? 'unlinked'
+            : 'partial';
+
+    const unlinkedCamp = linkRequired.find((c) => !c.linked);
+    const defaultLinkUrl =
+      first.platform === 'twitch'
+        ? 'https://www.twitch.tv/settings/connections'
+        : 'https://kick.com/drops/inventory';
+    const connectTargetUrl =
+      unlinkedCamp?.linkUrl || list.find((c) => c.linkUrl)?.linkUrl || defaultLinkUrl;
+
+    const isGamePrioritized = list.some((c) => isGamePrioritizedFor(c, settings));
+    const eligible = list.filter((c) => !isCampaignCompleted(c));
+    const targetList = eligible.length > 0 ? eligible : list;
+    const isFarming =
+      targetList.length > 0 && targetList.every((c) => isCampaignFarmed(c, settings));
+    const hasExcluded = list.some((c) =>
+      settings[c.platform].excludedCampaigns.includes(c.id),
+    );
+
+    out.push({
+      key,
+      platform: first.platform,
+      game,
+      campaigns: list,
+      totalDrops,
+      claimedDrops,
+      claimableCount,
+      soonestEndsAt,
+      soonestStartsAt,
+      hasActive,
+      hasUpcoming,
+      allCompleted,
+      linkState,
+      linkedCount,
+      linkRequiredCount,
+      connectTargetUrl,
+      isGamePrioritized,
+      isFarming,
+      hasExcluded,
+    });
+  }
+
+  return out;
+}
+
+export function countSearchMatchesIgnoringFilters(
+  campaigns: Campaign[],
+  search: string,
+): number {
+  const q = search.trim().toLowerCase();
+  if (!q) return 0;
+  return campaigns.filter((c) => {
+    const matchesMeta =
+      c.name.toLowerCase().includes(q) || c.game.name.toLowerCase().includes(q);
+    const matchesDrop = c.drops.some(
+      (d) =>
+        d.name.toLowerCase().includes(q) ||
+        d.rewards.some((r) => r.name.toLowerCase().includes(q)),
+    );
+    return matchesMeta || matchesDrop;
+  }).length;
 }
 
 export interface UpNextItem {

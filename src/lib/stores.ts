@@ -214,6 +214,54 @@ export async function toggleGameFarmAction(
   appSettings.set(updated);
 }
 
+export async function toggleGameGroupFarmAction(
+  campaigns: Campaign[],
+  farm: boolean,
+  hasAccount: boolean,
+  currentSettings: Settings,
+): Promise<void> {
+  if (campaigns.length === 0) return;
+  const primary = campaigns[0];
+  const plat = primary.platform;
+  const platSettings = currentSettings[plat];
+
+  let updated = await api.setGameFarm(plat, primary.game.id, primary.game.name, farm);
+
+  if (farm) {
+    // Ensure campaigns in this game aren't stuck in excludedCampaigns when explicitly farming the game.
+    for (const c of campaigns) {
+      if (platSettings.excludedCampaigns.includes(c.id)) {
+        updated = await api.setCampaignFarm(plat, c.id, true);
+      }
+    }
+    if (!hasAccount) {
+      const platName = plat === 'twitch' ? 'Twitch' : 'Kick';
+      notifyUi(`Saved! Log in to ${platName} to start farming ${primary.game.name}.`);
+    }
+  } else {
+    // Also clear any individual campaign-level farm/priority entries for this game so the toggle truly turns off.
+    const campaignIds = new Set(campaigns.map((c) => c.id));
+    const hasCampaignPriority = updated[plat].priority.some(
+      (p) => p.kind === 'campaign' && campaignIds.has(p.campaignId),
+    );
+    if (hasCampaignPriority) {
+      updated = await api.setPriority(
+        plat,
+        updated[plat].priority.filter(
+          (p) => !(p.kind === 'campaign' && campaignIds.has(p.campaignId)),
+        ),
+      );
+    }
+    for (const c of campaigns) {
+      if (updated[plat].farmCampaigns.includes(c.id)) {
+        updated = await api.setCampaignFarm(plat, c.id, false);
+      }
+    }
+  }
+
+  appSettings.set(updated);
+}
+
 export async function addWatchedGameAction(
   gameName: string,
   target: 'twitch' | 'kick' | 'both',

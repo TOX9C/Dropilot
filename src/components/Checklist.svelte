@@ -1,5 +1,7 @@
 <script lang="ts">
   import Check from 'lucide-svelte/icons/check';
+  import ExternalLink from 'lucide-svelte/icons/external-link';
+  import Info from 'lucide-svelte/icons/info';
   import X from 'lucide-svelte/icons/x';
   import { api } from '../lib/api';
   import { activeRoute, appSettings, checklistDismissed, notifyUi } from '../lib/stores';
@@ -71,6 +73,7 @@
 
   const completedRequired = $derived(items.slice(0, 4).every((i) => i.done));
   const doneCount = $derived(items.filter((i) => i.done).length);
+  const anyLoggedOut = $derived(!snapshot.twitch.account || !snapshot.kick.account);
 
   async function trigger(run: () => Promise<void> | void) {
     try {
@@ -112,6 +115,24 @@
           </span>
           <span class="check-label">{item.label}</span>
           {#if !item.done}
+            {#if item.id === 'twitch' || item.id === 'kick'}
+              <button
+                type="button"
+                class="browser-link-btn"
+                title={`Open ${item.id === 'twitch' ? 'Twitch' : 'Kick'} drops in your default browser`}
+                aria-label={`Open ${item.id === 'twitch' ? 'Twitch' : 'Kick'} drops in browser`}
+                onclick={() =>
+                  trigger(() =>
+                    api.openUrl(
+                      item.id === 'twitch'
+                        ? 'https://www.twitch.tv/drops/campaigns'
+                        : 'https://kick.com/drops/campaigns',
+                    ),
+                  )}
+              >
+                <ExternalLink size={12} />
+              </button>
+            {/if}
             <Button variant="ghost" size="sm" onclick={() => trigger(item.run)}>
               {item.actionLabel}
             </Button>
@@ -119,6 +140,15 @@
         </div>
       {/each}
     </div>
+
+    {#if anyLoggedOut}
+      <p class="check-session-note">
+        <Info size={12} />
+        <span>
+          Sign-in opens Dropilot's isolated window (never reads your personal browser profiles; required for Drops sync and saved once in Windows Credential Manager).
+        </span>
+      </p>
+    {/if}
   </section>
 {/if}
 
@@ -185,5 +215,39 @@
   .check-item.done .check-label {
     color: var(--text-muted);
     text-decoration: line-through;
+  }
+
+  .browser-link-btn {
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-xs);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .browser-link-btn:hover {
+    background: var(--surface);
+    border-color: var(--border);
+    color: var(--text);
+  }
+
+  .check-session-note {
+    display: flex;
+    align-items: flex-start;
+    gap: 6px;
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    line-height: 1.45;
+  }
+
+  .check-session-note :global(svg) {
+    flex-shrink: 0;
+    margin-top: 2px;
+    color: var(--accent-text);
   }
 </style>

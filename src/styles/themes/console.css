@@ -9,13 +9,14 @@
   --font-display: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
   --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
   --font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  --font-scale: 1;
 
-  --text-xs: 11px;
-  --text-sm: 12px;
-  --text-base: 13px;
-  --text-md: 14px;
-  --text-lg: 16px;
-  --text-xl: 22px;
+  --text-xs: calc(11px * var(--font-scale));
+  --text-sm: calc(12px * var(--font-scale));
+  --text-base: calc(13px * var(--font-scale));
+  --text-md: calc(14px * var(--font-scale));
+  --text-lg: calc(16px * var(--font-scale));
+  --text-xl: calc(22px * var(--font-scale));
 
   /* Geometry & Spacing */
   --radius-xs: 2px;
@@ -25,13 +26,13 @@
   --radius-pill: 3px;
 
   --card-pad: 10px;
-  --page-gap: 10px;
-  --grid-gap: 8px;
-  --content-pad-y: 12px;
-  --content-pad-x: 14px;
-  --content-max: 1600px;
+  --page-gap: clamp(10px, 1vw, 14px);
+  --grid-gap: clamp(8px, 0.8vw, 14px);
+  --content-pad-y: clamp(12px, 1.2vw, 20px);
+  --content-pad-x: clamp(14px, 1.6vw, 28px);
+  --content-max: 2400px;
 
-  --sidebar-width: 192px;
+  --sidebar-width: clamp(188px, 14vw, 220px);
   --sidebar-collapsed: 52px;
 
   --btn-sm-h: 26px;
@@ -39,6 +40,48 @@
   --progress-h: 5px;
   --progress-tall-h: 7px;
   --icon-stroke: 1.5;
+}
+
+/* Curated Local Font Presets */
+:root[data-font="plex"] {
+  --font-display: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+  --font-sans: "IBM Plex Sans", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+:root[data-font="inter"] {
+  --font-display: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "Inter", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+:root[data-font="system"] {
+  --font-display: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-sans: "Segoe UI Variable", "Segoe UI", system-ui, sans-serif;
+  --font-mono: "Cascadia Mono", Consolas, "Courier New", monospace;
+}
+
+:root[data-font="mono"] {
+  --font-display: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  --font-sans: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+  --font-mono: "JetBrains Mono", "Cascadia Mono", Consolas, monospace;
+}
+
+/* Font Scale Presets */
+:root[data-font-scale="compact"] {
+  --font-scale: 0.95;
+}
+
+:root[data-font-scale="default"] {
+  --font-scale: 1;
+}
+
+:root[data-font-scale="comfortable"] {
+  --font-scale: 1.08;
+}
+
+:root[data-font-scale="large"] {
+  --font-scale: 1.15;
 }
 
 /* Console — Dark (Default) */

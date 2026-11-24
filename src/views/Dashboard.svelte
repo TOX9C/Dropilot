@@ -261,119 +261,115 @@
   <Checklist {snapshot} {settings} />
 
   <div class="bottom-grid">
-    <div class="col-stack">
-      <section class="card panel">
-        <SectionHeader title="Up next" count={upNext.length} uppercase>
-          {#snippet icon()}<Play size={14} />{/snippet}
-        </SectionHeader>
+    <section class="card panel">
+      <SectionHeader title="Up next" count={upNext.length} uppercase>
+        {#snippet icon()}<Play size={14} />{/snippet}
+      </SectionHeader>
 
-        {#if upNext.length === 0}
-          <div class="panel-empty">
-            Queue is empty. Pick campaigns from All Drops to schedule rewards here.
-          </div>
-        {:else}
-          <div class="list-stack">
-            {#each upNext as item (item.campaign.id)}
-              <div class="mini-row">
-                <span class="plat-dot dot-{item.platform}" aria-hidden="true"></span>
-                <div class="mini-mid">
-                  <div class="mini-top">
-                    <span class="mini-title">{item.campaign.name}</span>
-                    <div class="mini-badges">
-                      {#if item.totalDrops > 0}
-                        <Badge tone="neutral">
-                          {item.claimedDrops > 0
-                            ? `${item.claimedDrops}/${item.totalDrops} drops`
-                            : `${item.totalDrops} ${item.totalDrops === 1 ? 'drop' : 'drops'}`}
-                        </Badge>
-                      {/if}
-                      <span class="plat-inline">
-                        <span class="plat-dot dot-{item.platform}" aria-hidden="true"></span>
-                        <span>{item.campaign.game.name}</span>
-                      </span>
-                    </div>
-                  </div>
-                  <div class="mini-sub tabular">
-                    <span>{formatMinutes(item.currentMinutes)} / {formatMinutes(item.requiredMinutes)}</span>
-                    {#if item.totalDrops > 1}
-                      <span class="mini-next-hint">· Next: {item.drop.rewards[0]?.name || item.drop.name}</span>
-                    {/if}
-                  </div>
-                  <ProgressBar
-                    value={item.currentMinutes}
-                    max={item.requiredMinutes}
-                    platform={item.platform}
-                    label={item.campaign.name}
-                  />
-                </div>
-              </div>
-            {/each}
-          </div>
-        {/if}
-      </section>
-
-      <section class="card panel">
-        <SectionHeader title="Ending soon (< 48h)" count={endingSoon.length} uppercase>
-          {#snippet icon()}<Clock size={14} />{/snippet}
-        </SectionHeader>
-
-        {#if endingSoon.length === 0}
-          <div class="panel-empty">No active campaigns expiring in the next 48 hours.</div>
-        {:else}
-          <div class="list-stack">
-            {#each endingSoon as item (item.campaign.id)}
-              {@const endInfo = formatEndCountdown(item.campaign.endsAt, $slowNowMs)}
-              <button
-                type="button"
-                class="ending-row"
-                title={`Ends ${formatExactDateTime(item.campaign.endsAt)}`}
-                onclick={() => activeRoute.set('drops')}
-              >
-                <span class="plat-dot dot-{item.platform}" aria-hidden="true"></span>
-                <div class="mini-mid">
+      {#if upNext.length === 0}
+        <div class="panel-empty">
+          Queue is empty. Pick campaigns from All Drops to schedule rewards here.
+        </div>
+      {:else}
+        <div class="list-stack">
+          {#each upNext as item (item.campaign.id)}
+            <div class="mini-row">
+              <span class="plat-dot dot-{item.platform}" aria-hidden="true"></span>
+              <div class="mini-mid">
+                <div class="mini-top">
                   <span class="mini-title">{item.campaign.name}</span>
-                  <span class="mini-sub">{item.campaign.game.name} · {item.platform === 'twitch' ? 'Twitch' : 'Kick'}</span>
+                  <div class="mini-badges">
+                    {#if item.totalDrops > 0}
+                      <Badge tone="neutral">
+                        {item.claimedDrops > 0
+                          ? `${item.claimedDrops}/${item.totalDrops} drops`
+                          : `${item.totalDrops} ${item.totalDrops === 1 ? 'drop' : 'drops'}`}
+                      </Badge>
+                    {/if}
+                    <span class="plat-inline">
+                      <span class="plat-dot dot-{item.platform}" aria-hidden="true"></span>
+                      <span>{item.campaign.game.name}</span>
+                    </span>
+                  </div>
                 </div>
-                <Badge tone={endInfo.tone}>
-                  <Clock size={10} />
-                  <span>{endInfo.ended ? 'Ended' : endInfo.text}</span>
-                </Badge>
-              </button>
-            {/each}
-          </div>
-        {/if}
-      </section>
-    </div>
-
-    <div class="col-stack">
-      <section class="card panel">
-        <SectionHeader title="Recent claims" count={snapshot.recentClaims.length} uppercase>
-          {#snippet icon()}<Check size={14} />{/snippet}
-        </SectionHeader>
-
-        {#if snapshot.recentClaims.length === 0}
-          <div class="panel-empty">
-            Completed rewards are claimed automatically and logged here.
-          </div>
-        {:else}
-          <div class="list-stack">
-            {#each snapshot.recentClaims.slice(0, 6) as claim (claim.id + claim.claimedAt)}
-              <div class="mini-row">
-                <span class="plat-dot dot-{claim.platform}" aria-hidden="true"></span>
-                <div class="mini-mid">
-                  <span class="mini-title">{claim.dropName}</span>
-                  <span class="mini-sub">{claim.gameName} · {claim.campaignName}</span>
+                <div class="mini-sub tabular">
+                  <span>{formatMinutes(item.currentMinutes)} / {formatMinutes(item.requiredMinutes)}</span>
+                  {#if item.totalDrops > 1}
+                    <span class="mini-next-hint">· Next: {item.drop.rewards[0]?.name || item.drop.name}</span>
+                  {/if}
                 </div>
-                <Badge tone={claim.platform}>{claim.platform}</Badge>
-                <span class="claim-ts tabular">{formatRelativeTime(claim.claimedAt, $slowNowMs)}</span>
+                <ProgressBar
+                  value={item.currentMinutes}
+                  max={item.requiredMinutes}
+                  platform={item.platform}
+                  label={item.campaign.name}
+                />
               </div>
-            {/each}
-          </div>
-        {/if}
-      </section>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </section>
 
-      <ActivityFeed {logs} />
-    </div>
+    <section class="card panel">
+      <SectionHeader title="Recent claims" count={snapshot.recentClaims.length} uppercase>
+        {#snippet icon()}<Check size={14} />{/snippet}
+      </SectionHeader>
+
+      {#if snapshot.recentClaims.length === 0}
+        <div class="panel-empty">
+          Completed rewards are claimed automatically and logged here.
+        </div>
+      {:else}
+        <div class="list-stack">
+          {#each snapshot.recentClaims.slice(0, 6) as claim (claim.id + claim.claimedAt)}
+            <div class="mini-row">
+              <span class="plat-dot dot-{claim.platform}" aria-hidden="true"></span>
+              <div class="mini-mid">
+                <span class="mini-title">{claim.dropName}</span>
+                <span class="mini-sub">{claim.gameName} · {claim.campaignName}</span>
+              </div>
+              <Badge tone={claim.platform}>{claim.platform}</Badge>
+              <span class="claim-ts tabular">{formatRelativeTime(claim.claimedAt, $slowNowMs)}</span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    </section>
+
+    <section class="card panel">
+      <SectionHeader title="Ending soon (< 48h)" count={endingSoon.length} uppercase>
+        {#snippet icon()}<Clock size={14} />{/snippet}
+      </SectionHeader>
+
+      {#if endingSoon.length === 0}
+        <div class="panel-empty">No active campaigns expiring in the next 48 hours.</div>
+      {:else}
+        <div class="list-stack">
+          {#each endingSoon as item (item.campaign.id)}
+            {@const endInfo = formatEndCountdown(item.campaign.endsAt, $slowNowMs)}
+            <button
+              type="button"
+              class="ending-row"
+              title={`Ends ${formatExactDateTime(item.campaign.endsAt)}`}
+              onclick={() => activeRoute.set('drops')}
+            >
+              <span class="plat-dot dot-{item.platform}" aria-hidden="true"></span>
+              <div class="mini-mid">
+                <span class="mini-title">{item.campaign.name}</span>
+                <span class="mini-sub">{item.campaign.game.name} · {item.platform === 'twitch' ? 'Twitch' : 'Kick'}</span>
+              </div>
+              <Badge tone={endInfo.tone}>
+                <Clock size={10} />
+                <span>{endInfo.ended ? 'Ended' : endInfo.text}</span>
+              </Badge>
+            </button>
+          {/each}
+        </div>
+      {/if}
+    </section>
+
+    <ActivityFeed {logs} />
   </div>
 </div>
 
@@ -610,15 +606,28 @@
 
   .bottom-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
+    grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: var(--grid-gap, 8px);
     align-items: start;
   }
 
-  .col-stack {
-    display: flex;
-    flex-direction: column;
-    gap: var(--grid-gap, 8px);
+  @media (max-width: 900px) {
+    .bottom-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+
+  @media (min-width: 1440px) {
+    .cm-head,
+    .cm-row {
+      grid-template-columns: 150px minmax(180px, 1.15fr) minmax(220px, 1.35fr) 168px auto;
+    }
+  }
+
+  @media (min-width: 1680px) {
+    .bottom-grid {
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+    }
   }
 
   .panel {

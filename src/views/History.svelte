@@ -357,7 +357,7 @@
   .bar-track {
     flex: 1;
     width: 100%;
-    max-width: 28px;
+    max-width: 44px;
     border-radius: var(--radius-xs);
     background: var(--surface-2);
     border: 1px solid var(--border);
@@ -525,6 +525,14 @@
     gap: 10px;
     padding: 6px 10px;
     font-size: 11.5px;
+  }
+
+  @media (min-width: 1440px) {
+    .ct-head,
+    .ct-row {
+      grid-template-columns: 180px 94px minmax(200px, 1fr) minmax(240px, 1.4fr) 100px;
+      padding: 7px 14px;
+    }
   }
 
   .ct-head {

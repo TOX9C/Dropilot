@@ -25,7 +25,12 @@
     </Button>
   </div>
 {:else}
-  <Button variant="primary" size="sm" onclick={onlogin}>
+  <Button
+    variant="primary"
+    size="sm"
+    title={`Opens Dropilot's isolated ${platform === 'twitch' ? 'Twitch' : 'Kick'} sign-in window (never reads browser profiles; saved once in Windows Credential Manager)`}
+    onclick={onlogin}
+  >
     <LogIn size={14} />
     <span>Log in</span>
   </Button>

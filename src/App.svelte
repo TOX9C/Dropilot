@@ -26,7 +26,7 @@
     sessionMinutes,
     shortcutsOpen,
   } from './lib/stores';
-  import type { NavRoute, ThemeMode } from './lib/types';
+  import type { FontFamily, FontScale, NavRoute, ThemeMode } from './lib/types';
   import Dashboard from './views/Dashboard.svelte';
   import Drops from './views/Drops.svelte';
   import History from './views/History.svelte';
@@ -56,16 +56,25 @@
   );
   const nextCheckIso = $derived($appSnapshot ? earliestNextActionAt($appSnapshot) : null);
 
-  function applyDomTheme(mode: ThemeMode, sysDark: boolean) {
+  function applyDomTheme(
+    mode: ThemeMode,
+    sysDark: boolean,
+    fontFamily: FontFamily,
+    fontScale: FontScale,
+  ) {
     const resolved = mode === 'system' ? (sysDark ? 'dark' : 'light') : mode;
     document.documentElement.dataset.design = 'console';
     document.documentElement.dataset.mode = resolved;
     document.documentElement.dataset.theme = `console-${resolved}`;
+    document.documentElement.dataset.font = fontFamily;
+    document.documentElement.dataset.fontScale = fontScale;
   }
 
   $effect(() => {
     const mode = $appSettings?.theme ?? 'dark';
-    applyDomTheme(mode, systemDark);
+    const fontFamily = $appSettings?.fontFamily ?? 'plex';
+    const fontScale = $appSettings?.fontScale ?? 'default';
+    applyDomTheme(mode, systemDark, fontFamily, fontScale);
   });
 
   onMount(() => {
