@@ -344,7 +344,11 @@ export function updateSnapshotCampaign(updated: Campaign): void {
   });
 }
 
-function trackSessionProgress(snap: AppSnapshot, isBaseline: boolean) {
+function trackSessionProgress(
+  snap: AppSnapshot,
+  isBaseline: boolean,
+  deferStoreUpdate = false,
+): number {
   let delta = 0;
   const entries =
     snap.profiles && snap.profiles.length > 0
@@ -365,12 +369,28 @@ function trackSessionProgress(snap: AppSnapshot, isBaseline: boolean) {
       }
     }
   }
-  if (delta > 0) {
+  if (delta > 0 && !deferStoreUpdate) {
     sessionMinutes.update((total) => {
       const next = total + delta;
       sessionHistory.update((hist) => [...hist, next].slice(-60));
       return next;
     });
+  }
+  return delta;
+}
+
+function isWindowInteractive(): boolean {
+  if (typeof document === 'undefined') return true;
+  if (document.visibilityState !== 'visible') return false;
+  return typeof document.hasFocus === 'function' ? document.hasFocus() : true;
+}
+
+function setWindowInactiveAttr(inactive: boolean): void {
+  if (typeof document === 'undefined') return;
+  if (inactive) {
+    document.documentElement.dataset.windowInactive = 'true';
+  } else {
+    delete document.documentElement.dataset.windowInactive;
   }
 }
 
@@ -395,13 +415,84 @@ export async function initializeAppStores(): Promise<() => void> {
   mockFeatureAvailable.set(hasMock);
   lastSnapshotAt.set(Date.now());
 
+  let pendingSnapshot: AppSnapshot | null = null;
+  let pendingSnapshotAt = 0;
+  let pendingSessionDelta = 0;
+  let pendingLogs: LogEntry[] = [];
+  let pendingUnreadAlerts = 0;
+
+  function flushPendingUpdates(): void {
+    if (pendingSessionDelta > 0) {
+      const delta = pendingSessionDelta;
+      pendingSessionDelta = 0;
+      sessionMinutes.update((total) => {
+        const next = total + delta;
+        sessionHistory.update((hist) => [...hist, next].slice(-60));
+        return next;
+      });
+    }
+    if (pendingSnapshot) {
+      appSnapshot.set(pendingSnapshot);
+      lastSnapshotAt.set(pendingSnapshotAt || Date.now());
+      pendingSnapshot = null;
+      pendingSnapshotAt = 0;
+    }
+    if (pendingLogs.length > 0) {
+      const incoming = pendingLogs;
+      pendingLogs = [];
+      appLogs.update((prev) => {
+        const next = [...incoming, ...prev];
+        return next.length > 1000 ? next.slice(0, 1000) : next;
+      });
+    }
+    if (pendingUnreadAlerts > 0) {
+      const alerts = pendingUnreadAlerts;
+      pendingUnreadAlerts = 0;
+      if (currentRoute !== 'logs') {
+        unreadAlertCount.update((c) => c + alerts);
+      }
+    }
+  }
+
+  function handleActivityChange(): void {
+    const active = isWindowInteractive();
+    setWindowInactiveAttr(!active);
+    if (active) {
+      flushPendingUpdates();
+    }
+  }
+
+  setWindowInactiveAttr(!isWindowInteractive());
+  if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+    document.addEventListener('visibilitychange', handleActivityChange);
+    window.addEventListener('focus', handleActivityChange);
+    window.addEventListener('blur', handleActivityChange);
+  }
+
   const unlisten = await subscribeBackendEvents(
     (nextSnap) => {
-      trackSessionProgress(nextSnap, false);
+      const active = isWindowInteractive();
+      const delta = trackSessionProgress(nextSnap, false, !active);
+      if (!active) {
+        pendingSnapshot = nextSnap;
+        pendingSnapshotAt = Date.now();
+        pendingSessionDelta += delta;
+        return;
+      }
       appSnapshot.set(nextSnap);
       lastSnapshotAt.set(Date.now());
     },
     (entry) => {
+      if (!isWindowInteractive()) {
+        pendingLogs.unshift(entry);
+        if (pendingLogs.length > 1000) {
+          pendingLogs.length = 1000;
+        }
+        if (currentRoute !== 'logs' && (entry.level === 'warn' || entry.level === 'error')) {
+          pendingUnreadAlerts += 1;
+        }
+        return;
+      }
       appLogs.update((prev) => {
         const next = [entry, ...prev];
         return next.length > 1000 ? next.slice(0, 1000) : next;
@@ -436,6 +527,12 @@ export async function initializeAppStores(): Promise<() => void> {
 
   return () => {
     clearInterval(updateTimer);
+    if (typeof document !== 'undefined' && typeof window !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleActivityChange);
+      window.removeEventListener('focus', handleActivityChange);
+      window.removeEventListener('blur', handleActivityChange);
+    }
+    delete document.documentElement.dataset.windowInactive;
     unlisten();
   };
 }

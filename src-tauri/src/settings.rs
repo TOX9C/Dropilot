@@ -204,6 +204,8 @@ pub struct Settings {
     #[serde(default)]
     pub font_scale: FontScale,
     pub autostart: bool,
+    #[serde(default = "default_true")]
+    pub start_in_tray: bool,
     pub start_minimized: bool,
     pub close_to_tray: bool,
     pub notifications: bool,
@@ -244,6 +246,7 @@ impl Default for Settings {
             font_family: FontFamily::Plex,
             font_scale: FontScale::Default,
             autostart: false,
+            start_in_tray: true,
             start_minimized: false,
             close_to_tray: true,
             notifications: true,
@@ -295,8 +298,8 @@ impl Settings {
             self.mock_mode = false;
         }
         if let Some(ref mut bounds) = self.window_bounds {
-            bounds.width = bounds.width.clamp(840, 3840);
-            bounds.height = bounds.height.clamp(560, 2160);
+            bounds.width = bounds.width.clamp(600, 3840);
+            bounds.height = bounds.height.clamp(480, 2160);
         }
 
         // Ensure at least one Twitch profile and one Kick profile always exist.
@@ -648,6 +651,7 @@ mod tests {
         assert_eq!(loaded.schema_version, CURRENT_SCHEMA_VERSION);
         assert_eq!(loaded.theme, ThemeMode::Light);
         assert_eq!(loaded.refresh_minutes, 45);
+        assert!(loaded.start_in_tray);
         assert!(loaded.close_to_tray);
 
         let _ = fs::remove_dir_all(&dir);

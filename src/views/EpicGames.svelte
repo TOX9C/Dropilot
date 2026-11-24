@@ -5,6 +5,7 @@
   import Check from 'lucide-svelte/icons/check';
   import Clock from 'lucide-svelte/icons/clock';
   import ExternalLink from 'lucide-svelte/icons/external-link';
+  import Gamepad2 from 'lucide-svelte/icons/gamepad-2';
   import Gift from 'lucide-svelte/icons/gift';
   import Maximize2 from 'lucide-svelte/icons/maximize-2';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
@@ -110,6 +111,17 @@
       notifyUi(String(err), 'error');
     }
   }
+
+  async function handleOpenLauncher(game?: EpicFreeGame) {
+    try {
+      const openedLauncher = await api.openEpicLauncher(game?.id ?? null);
+      if (!openedLauncher) {
+        notifyUi('Epic Games Launcher was not detected — opened store page in browser instead');
+      }
+    } catch (err) {
+      notifyUi(String(err), 'error');
+    }
+  }
 </script>
 
 {#snippet gameBanner(game: EpicFreeGame, lightboxSubtitle: string)}
@@ -173,6 +185,15 @@
     </div>
 
     <div class="page-actions">
+      <Button
+        variant="secondary"
+        size="sm"
+        onclick={() => handleOpenLauncher()}
+        title="Open Epic Games Launcher to Free Games"
+      >
+        <Gamepad2 size={13} />
+        <span>Open Launcher</span>
+      </Button>
       <Button
         variant="secondary"
         size="sm"
@@ -299,6 +320,16 @@
                 <Button
                   variant="ghost"
                   size="sm"
+                  onclick={() => handleOpenLauncher(game)}
+                  title="Open this game in Epic Games Launcher"
+                >
+                  <Gamepad2 size={12} />
+                  <span>Launcher</span>
+                </Button>
+
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onclick={() => handleOpenStore(game.storeUrl)}
                   title="Open store page in default browser"
                 >
@@ -360,10 +391,19 @@
                 <Button
                   variant="secondary"
                   size="sm"
+                  onclick={() => handleOpenLauncher(game)}
+                  title="Open this game in Epic Games Launcher"
+                >
+                  <Gamepad2 size={12} />
+                  <span>Open in Launcher</span>
+                </Button>
+                <Button
+                  variant="ghost"
+                  size="sm"
                   onclick={() => handleOpenStore(game.storeUrl)}
                 >
                   <ExternalLink size={12} />
-                  <span>Preview on Epic Store</span>
+                  <span>Browser</span>
                 </Button>
               </footer>
             </article>
@@ -451,7 +491,7 @@
 
   .epic-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
     gap: var(--grid-gap, 12px);
   }
 

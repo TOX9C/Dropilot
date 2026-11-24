@@ -528,7 +528,7 @@
   .console-table {
     border: 1px solid var(--border);
     border-radius: var(--radius-xs);
-    overflow: hidden;
+    overflow-x: auto;
   }
 
   .ct-head,
@@ -539,6 +539,16 @@
     gap: 10px;
     padding: 6px 10px;
     font-size: 11.5px;
+    min-width: 540px;
+  }
+
+  @media (max-width: 780px) {
+    .ct-head,
+    .ct-row {
+      grid-template-columns: 112px 68px minmax(110px, 1fr) minmax(110px, 1fr) 74px;
+      gap: 8px;
+      padding: 6px 8px;
+    }
   }
 
   @media (min-width: 1440px) {

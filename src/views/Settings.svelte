@@ -3,23 +3,21 @@
   import Bell from 'lucide-svelte/icons/bell';
   import Check from 'lucide-svelte/icons/check';
   import Cloud from 'lucide-svelte/icons/cloud';
+  import Database from 'lucide-svelte/icons/database';
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import FolderOpen from 'lucide-svelte/icons/folder-open';
   import Info from 'lucide-svelte/icons/info';
   import Link2 from 'lucide-svelte/icons/link-2';
   import LogIn from 'lucide-svelte/icons/log-in';
   import LogOut from 'lucide-svelte/icons/log-out';
-  import Monitor from 'lucide-svelte/icons/monitor';
-  import Moon from 'lucide-svelte/icons/moon';
   import Palette from 'lucide-svelte/icons/palette';
   import Pencil from 'lucide-svelte/icons/pencil';
   import Plus from 'lucide-svelte/icons/plus';
   import RefreshCw from 'lucide-svelte/icons/refresh-cw';
   import Send from 'lucide-svelte/icons/send';
-  import Shield from 'lucide-svelte/icons/shield';
   import Sliders from 'lucide-svelte/icons/sliders';
   import Trash2 from 'lucide-svelte/icons/trash-2';
-  import TypeIcon from 'lucide-svelte/icons/type';
+  import Users from 'lucide-svelte/icons/users';
   import Zap from 'lucide-svelte/icons/zap';
   import Badge from '../components/Badge.svelte';
   import Button from '../components/Button.svelte';
@@ -60,9 +58,9 @@
 
   let { settings, snapshot, mockAvailable }: Props = $props();
 
-  type SettingsTab = 'appearance' | 'farming' | 'system' | 'data';
+  type SettingsTab = 'general' | 'accounts' | 'farming' | 'alerts' | 'appearance' | 'data';
 
-  let activeTab = $state<SettingsTab>('appearance');
+  let activeTab = $state<SettingsTab>('general');
   let syncingRemote = $state(false);
   let clearModalOpen = $state(false);
 
@@ -188,11 +186,13 @@
       .catch(() => {});
   });
 
-  const tabs: { id: SettingsTab; label: string; desc: string }[] = [
-    { id: 'appearance', label: 'Appearance', desc: 'Color mode & typography' },
-    { id: 'farming', label: 'Farming', desc: 'Drop rules & sync' },
-    { id: 'system', label: 'System', desc: 'Startup, tray & webhooks' },
-    { id: 'data', label: 'Data & About', desc: 'Folders, updates & reset' },
+  const tabs: { id: SettingsTab; label: string; hint: string }[] = [
+    { id: 'general', label: 'General & Startup', hint: 'Tray, boot & logs' },
+    { id: 'accounts', label: 'Accounts', hint: 'Isolated profiles' },
+    { id: 'farming', label: 'Mining & Schedule', hint: 'Rules & quiet hours' },
+    { id: 'alerts', label: 'Discord Webhooks', hint: 'Alerts & triggers' },
+    { id: 'appearance', label: 'Appearance', hint: 'Theme & typography' },
+    { id: 'data', label: 'Data & Updates', hint: 'Storage, OTA & reset' },
   ];
 
   const themeOptions: {
@@ -201,7 +201,7 @@
     hint: string;
   }[] = [
     { id: 'dark', label: 'Dark', hint: 'Low-glare terminal surfaces' },
-    { id: 'light', label: 'Light', hint: 'Crisp high-contrast light surfaces' },
+    { id: 'light', label: 'Light', hint: 'Crisp high-contrast surfaces' },
     { id: 'system', label: 'Match Windows', hint: 'Follows OS dark/light mode' },
   ];
 
@@ -359,904 +359,1008 @@
 <div class="page settings-page">
   <header class="page-header">
     <div class="page-title-wrap">
-      <h1>Settings</h1>
+      <div>
+        <h1>Settings</h1>
+        <p class="page-subtitle">Configure startup, tray behavior, isolated accounts, farming rules, and appearance</p>
+      </div>
     </div>
     <div class="page-actions">
       <Badge tone="neutral">v{__APP_VERSION__}</Badge>
     </div>
   </header>
 
-  <!-- Connected Accounts Top Strip -->
-  <section class="accounts-wrap" aria-label="Connected accounts">
-    <div class="accounts-bar">
-      <div class="accounts-bar-title">
-        <span class="acct-kicker tabular">ACCOUNTS // ISOLATED PROFILES</span>
-        <span class="acct-count tabular">{twitchProfileCount} Twitch · {kickProfileCount} Kick</span>
-      </div>
-      <div class="accounts-bar-actions">
-        <Button
-          variant="secondary"
-          size="sm"
-          onclick={() => {
-            addingPlatform = 'twitch';
-            newProfileLabel = '';
-          }}
+  <div class="settings-shell">
+    <!-- Category Navigation (left rail on desktop, horizontal strip on compact/half-screen) -->
+    <div class="settings-nav" role="tablist" aria-label="Settings categories">
+      {#each tabs as tab (tab.id)}
+        <button
+          type="button"
+          role="tab"
+          aria-selected={activeTab === tab.id}
+          class="nav-pill"
+          class:active={activeTab === tab.id}
+          onclick={() => (activeTab = tab.id)}
         >
-          <Plus size={12} />
-          <span>Add Twitch</span>
-        </Button>
-        <Button
-          variant="secondary"
-          size="sm"
-          onclick={() => {
-            addingPlatform = 'kick';
-            newProfileLabel = '';
-          }}
-        >
-          <Plus size={12} />
-          <span>Add Kick</span>
-        </Button>
-      </div>
-    </div>
-
-    {#if addingPlatform}
-      <form class="card add-profile-bar" onsubmit={handleAddProfile}>
-        <span class="plat-dot dot-{addingPlatform}" aria-hidden="true"></span>
-        <span class="add-prof-title">
-          New {addingPlatform === 'twitch' ? 'Twitch' : 'Kick'} account
-        </span>
-        <input
-          type="text"
-          class="secret-input add-prof-input"
-          bind:value={newProfileLabel}
-          placeholder="Label (e.g. Alt, Drops #2)"
-          maxlength={24}
-          onkeydown={(e) => e.key === 'Escape' && (addingPlatform = null)}
-        />
-        <Button type="submit" variant="primary" size="sm" disabled={savingProfile}>
-          {savingProfile ? 'Adding...' : 'Create profile'}
-        </Button>
-        <Button type="button" variant="ghost" size="sm" onclick={() => (addingPlatform = null)}>
-          Cancel
-        </Button>
-      </form>
-    {/if}
-
-    <div class="accounts-grid">
-      {#each profileCards as card (card.profileId)}
-        {@const platSnap = card.snapshot}
-        {@const isTwitch = card.platform === 'twitch'}
-        {@const label = isTwitch ? 'Twitch' : 'Kick'}
-        {@const platCount = isTwitch ? twitchProfileCount : kickProfileCount}
-        {@const isActive = isActiveProfileCard(card)}
-        {@const isDefault = isDefaultProfileId(card.profileId)}
-        {@const browserUrl = isTwitch
-          ? 'https://www.twitch.tv/drops/campaigns'
-          : 'https://kick.com/drops/campaigns'}
-        <div class="card acct-card" class:acct-card-active={platCount > 1 && isActive}>
-          <div class="acct-left">
-            <Monogram
-              src={platSnap.account?.avatarUrl}
-              name={platSnap.account?.displayName ?? `${label} ${card.label}`}
-              width={34}
-              height={34}
-            />
-            <div class="acct-meta">
-              <div class="acct-top">
-                <span class="plat-dot dot-{card.platform}" aria-hidden="true"></span>
-                <strong>{label}</strong>
-                {#if renamingProfileId === card.profileId}
-                  <form class="rename-inline" onsubmit={handleRenameProfile}>
-                    <input
-                      type="text"
-                      class="rename-input"
-                      bind:value={renameValue}
-                      maxlength={24}
-                      aria-label="Account label"
-                      onkeydown={(e) => e.key === 'Escape' && (renamingProfileId = null)}
-                    />
-                    <Button type="submit" variant="primary" size="sm">Save</Button>
-                  </form>
-                {:else}
-                  <Badge tone="neutral">{card.label}</Badge>
-                  <button
-                    type="button"
-                    class="rename-btn"
-                    title="Rename profile"
-                    aria-label={`Rename ${card.label}`}
-                    onclick={() => {
-                      renamingProfileId = card.profileId;
-                      renameValue = card.label;
-                    }}
-                  >
-                    <Pencil size={11} />
-                  </button>
-                {/if}
-                {#if platCount > 1 && isActive}
-                  <Badge tone="accent">Active</Badge>
-                {/if}
-                <StatusPill state={platSnap.state} compact />
-              </div>
-              <span class="acct-sub">
-                {#if platSnap.account}
-                  Signed in as <strong>@{platSnap.account.displayName}</strong>
-                {:else}
-                  Not connected — sign in via Dropilot's isolated window
-                {/if}
-              </span>
-              <span class="acct-iso tabular">
-                {isDefault
-                  ? 'Isolated WebView2 · Default session'
-                  : `Isolated WebView2 · WebView2-Profiles/${card.profileId}`}
-              </span>
-            </div>
-          </div>
-          <div class="acct-action">
-            {#if platCount > 1 && !isActive}
-              <Button
-                variant="ghost"
-                size="sm"
-                title={`Switch active ${label} view to ${card.label}`}
-                onclick={() => handleSetActiveProfile(card)}
-              >
-                Use
-              </Button>
-            {/if}
-            <Button
-              variant="ghost"
-              size="sm"
-              title={`Open ${label} Drops in your default browser`}
-              onclick={() => api.openUrl(browserUrl).catch((e) => notifyUi(String(e), 'error'))}
-            >
-              <ExternalLink size={13} />
-              <span>Browser</span>
-            </Button>
-            {#if platSnap.account}
-              <Button
-                variant="secondary"
-                size="sm"
-                onclick={() => api.logout(card.platform, card.profileId)}
-              >
-                <LogOut size={13} />
-                <span>Log out</span>
-              </Button>
+          <span class="nav-pill-ico" aria-hidden="true">
+            {#if tab.id === 'general'}
+              <Sliders size={14} />
+            {:else if tab.id === 'accounts'}
+              <Users size={14} />
+            {:else if tab.id === 'farming'}
+              <Zap size={14} />
+            {:else if tab.id === 'alerts'}
+              <Bell size={14} />
+            {:else if tab.id === 'appearance'}
+              <Palette size={14} />
             {:else}
-              <Button
-                variant="primary"
-                size="sm"
-                title={`Opens Dropilot's isolated ${label} sign-in window (${card.label})`}
-                onclick={() => api.login(card.platform, card.profileId)}
-              >
-                <LogIn size={13} />
-                <span>Log in</span>
-              </Button>
+              <Database size={14} />
             {/if}
-            <Button
-              variant="ghost"
-              size="sm"
-              disabled={platCount <= 1}
-              ariaLabel={`Remove ${label} account ${card.label}`}
-              title={platCount <= 1
-                ? `At least one ${label} account must remain configured`
-                : `Remove ${label} account "${card.label}" and delete its isolated session`}
-              onclick={() => handleRemoveProfile(card)}
-            >
-              <Trash2 size={13} />
-              <span>Remove</span>
-            </Button>
-          </div>
-        </div>
+          </span>
+          <span class="nav-pill-text">
+            <span class="nav-pill-label">{tab.label}</span>
+            <span class="nav-pill-hint">{tab.hint}</span>
+          </span>
+        </button>
       {/each}
     </div>
 
-    <div class="session-info-bar">
-      <Info size={13} />
-      <span>
-        <strong>Isolated session sign-in:</strong> Dropilot opens a dedicated WebView2 session per account instead of reading your Chrome, Edge, or Firefox profiles. Additional accounts use isolated folders under <code>WebView2-Profiles</code> and separate Windows Credential Manager entries so multiple Twitch &amp; Kick accounts farm simultaneously.
-      </span>
-    </div>
-  </section>
-
-  <!-- Segmented Tab Bar -->
-  <div class="seg-tabs" role="tablist" aria-label="Settings categories">
-    {#each tabs as tab (tab.id)}
-      <button
-        type="button"
-        role="tab"
-        aria-selected={activeTab === tab.id}
-        class="seg-tab"
-        class:active={activeTab === tab.id}
-        onclick={() => (activeTab = tab.id)}
-      >
-        <span class="seg-ico" aria-hidden="true">
-          {#if tab.id === 'appearance'}
-            <Palette size={14} />
-          {:else if tab.id === 'farming'}
-            <Zap size={14} />
-          {:else if tab.id === 'system'}
-            <Sliders size={14} />
-          {:else}
-            <Shield size={14} />
-          {/if}
-        </span>
-        <span class="seg-text">
-          <span class="seg-label">{tab.label}</span>
-        </span>
-      </button>
-    {/each}
-  </div>
-
-  <!-- Tab Panel: Appearance -->
-  {#if activeTab === 'appearance'}
-    <div class="appearance-split">
-      <div class="panel-stack">
-        <section class="card studio-card">
-          <div class="studio-head">
-            <div>
-              <h2>Color Mode</h2>
-              <p class="studio-sub">Applies dark or light surfaces and matches the native Windows title bar.</p>
-            </div>
+    <!-- Active Category Content -->
+    <div class="settings-content" role="tabpanel">
+      {#if activeTab === 'general'}
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">STARTUP &amp; WINDOW</span>
           </div>
-
-          <div class="mode-grid" role="radiogroup" aria-label="Color mode">
-            {#each themeOptions as opt (opt.id)}
-              {@const active = settings.theme === opt.id}
-              <button
-                type="button"
-                role="radio"
-                aria-checked={active}
-                class="mode-btn"
-                class:active
-                onclick={() => savePatch((d) => (d.theme = opt.id))}
-              >
-                <div class="mode-text">
-                  <strong>{opt.label}</strong>
-                  <span>{opt.hint}</span>
+          <div class="card group-card">
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title-line">
+                  <strong>Start in system tray</strong>
+                  <Badge tone={settings.startInTray ? 'accent' : 'neutral'}>
+                    {settings.startInTray ? 'Tray first' : 'Window'}
+                  </Badge>
                 </div>
-                {#if active}
-                  <span class="mode-check" aria-hidden="true"><Check size={14} /></span>
-                {/if}
-              </button>
-            {/each}
+                <p>Keep the main window hidden on launch so Dropilot runs quietly in the tray with zero window flash.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.startInTray}
+                  ariaLabel="Start in system tray"
+                  onchange={(v) => savePatch((d) => (d.startInTray = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Close button minimizes to tray</strong>
+                <p>Closes the UI WebView2 window while keeping lightweight Rust drop miners active in the tray.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.closeToTray}
+                  ariaLabel="Close button minimizes to tray"
+                  onchange={(v) => savePatch((d) => (d.closeToTray = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Start with Windows</strong>
+                <p>Launches Dropilot automatically at Windows sign-in via standard HKCU Run entry.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.autostart}
+                  ariaLabel="Start with Windows"
+                  onchange={(v) => savePatch((d) => (d.autostart = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row" class:is-dimmed={settings.startInTray}>
+              <div class="setting-meta">
+                <strong>Start minimized on Windows boot</strong>
+                <p>
+                  {settings.startInTray
+                    ? 'Already covered while "Start in system tray" is enabled.'
+                    : 'Only hides the window when launched automatically at Windows sign-in.'}
+                </p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.startMinimized}
+                  disabled={settings.startInTray}
+                  ariaLabel="Start minimized on Windows boot"
+                  onchange={(v) => savePatch((d) => (d.startMinimized = v))}
+                />
+              </div>
+            </div>
           </div>
         </section>
 
-        <section class="card studio-card">
-          <div class="studio-head">
-            <div>
-              <div class="title-with-ico">
-                <TypeIcon size={15} />
-                <h2>Typography &amp; Font</h2>
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">NOTIFICATIONS &amp; DIAGNOSTICS</span>
+          </div>
+          <div class="card group-card">
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Desktop toast notifications</strong>
+                <p>Notifies you when a drop is claimed, requires manual action, expires, or an Epic free game unlocks.</p>
               </div>
-              <p class="studio-sub">Zero-CDN locally bundled &amp; native Windows font pairings saved across restarts.</p>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.notifications}
+                  ariaLabel="Desktop notifications"
+                  onchange={(v) => savePatch((d) => (d.notifications = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Diagnostic log verbosity</strong>
+                <p>Keep on Info for normal use; switch to Debug when troubleshooting platform responses.</p>
+              </div>
+              <div class="setting-ctrl">
+                <CustomSelect
+                  options={[
+                    {
+                      value: 'info',
+                      label: 'Info (Recommended)',
+                      subtitle: 'Clean activity and claim summary',
+                      dotTone: 'info',
+                    },
+                    {
+                      value: 'debug',
+                      label: 'Debug (Verbose)',
+                      subtitle: 'Detailed diagnostic trace for troubleshooting',
+                      dotTone: 'warn',
+                    },
+                  ] satisfies SelectOption[]}
+                  value={settings.logLevel}
+                  onchange={(val) => savePatch((d) => (d.logLevel = val as Settings['logLevel']))}
+                  ariaLabel="Log level"
+                  size="md"
+                  minMenuWidth={240}
+                  align="right"
+                />
+              </div>
+            </div>
+
+            {#if mockAvailable}
+              <div class="setting-row">
+                <div class="setting-meta">
+                  <strong>Mock platform mode</strong>
+                  <p>Simulates campaigns, live channels, progress, and claims offline with zero network calls.</p>
+                </div>
+                <div class="setting-ctrl">
+                  <Toggle
+                    checked={settings.mockMode}
+                    ariaLabel="Mock platform mode"
+                    onchange={(v) => savePatch((d) => (d.mockMode = v))}
+                  />
+                </div>
+              </div>
+            {/if}
+          </div>
+        </section>
+      {:else if activeTab === 'accounts'}
+        <section class="settings-group">
+          <div class="group-head group-head-actions">
+            <div class="group-head-left">
+              <span class="section-label">ISOLATED PROFILES</span>
+              <span class="group-count tabular">{twitchProfileCount} Twitch · {kickProfileCount} Kick</span>
+            </div>
+            <div class="inline-actions">
+              <Button
+                variant="secondary"
+                size="sm"
+                onclick={() => {
+                  addingPlatform = 'twitch';
+                  newProfileLabel = '';
+                }}
+              >
+                <Plus size={12} />
+                <span>Add Twitch</span>
+              </Button>
+              <Button
+                variant="secondary"
+                size="sm"
+                onclick={() => {
+                  addingPlatform = 'kick';
+                  newProfileLabel = '';
+                }}
+              >
+                <Plus size={12} />
+                <span>Add Kick</span>
+              </Button>
             </div>
           </div>
 
-          <div class="font-grid" role="radiogroup" aria-label="Font family preset">
-            {#each fontOptions as fopt (fopt.id)}
-              {@const active = (settings.fontFamily ?? 'plex') === fopt.id}
-              <button
-                type="button"
-                role="radio"
-                aria-checked={active}
-                class="font-btn"
-                class:active
-                onclick={() => savePatch((d) => (d.fontFamily = fopt.id))}
-              >
-                <div class="font-btn-top">
-                  <strong>{fopt.label}</strong>
-                  {#if active}
-                    <span class="mode-check" aria-hidden="true"><Check size={14} /></span>
+          {#if addingPlatform}
+            <form class="card add-profile-bar" onsubmit={handleAddProfile}>
+              <span class="plat-dot dot-{addingPlatform}" aria-hidden="true"></span>
+              <span class="add-prof-title">
+                New {addingPlatform === 'twitch' ? 'Twitch' : 'Kick'} account
+              </span>
+              <input
+                type="text"
+                class="secret-input add-prof-input"
+                bind:value={newProfileLabel}
+                placeholder="Label (e.g. Alt, Drops #2)"
+                maxlength={24}
+                onkeydown={(e) => e.key === 'Escape' && (addingPlatform = null)}
+              />
+              <Button type="submit" variant="primary" size="sm" disabled={savingProfile}>
+                {savingProfile ? 'Adding...' : 'Create profile'}
+              </Button>
+              <Button type="button" variant="ghost" size="sm" onclick={() => (addingPlatform = null)}>
+                Cancel
+              </Button>
+            </form>
+          {/if}
+
+          <div class="card group-card">
+            {#each profileCards as card (card.profileId)}
+              {@const platSnap = card.snapshot}
+              {@const isTwitch = card.platform === 'twitch'}
+              {@const label = isTwitch ? 'Twitch' : 'Kick'}
+              {@const platCount = isTwitch ? twitchProfileCount : kickProfileCount}
+              {@const isActive = isActiveProfileCard(card)}
+              {@const isDefault = isDefaultProfileId(card.profileId)}
+              {@const browserUrl = isTwitch
+                ? 'https://www.twitch.tv/drops/campaigns'
+                : 'https://kick.com/drops/campaigns'}
+              <div class="acct-row" class:acct-row-active={platCount > 1 && isActive}>
+                <div class="acct-left">
+                  <Monogram
+                    src={platSnap.account?.avatarUrl}
+                    name={platSnap.account?.displayName ?? `${label} ${card.label}`}
+                    width={34}
+                    height={34}
+                  />
+                  <div class="acct-meta">
+                    <div class="acct-top">
+                      <span class="plat-dot dot-{card.platform}" aria-hidden="true"></span>
+                      <strong>{label}</strong>
+                      {#if renamingProfileId === card.profileId}
+                        <form class="rename-inline" onsubmit={handleRenameProfile}>
+                          <input
+                            type="text"
+                            class="rename-input"
+                            bind:value={renameValue}
+                            maxlength={24}
+                            aria-label="Account label"
+                            onkeydown={(e) => e.key === 'Escape' && (renamingProfileId = null)}
+                          />
+                          <Button type="submit" variant="primary" size="sm">Save</Button>
+                        </form>
+                      {:else}
+                        <Badge tone="neutral">{card.label}</Badge>
+                        <button
+                          type="button"
+                          class="rename-btn"
+                          title="Rename profile"
+                          aria-label={`Rename ${card.label}`}
+                          onclick={() => {
+                            renamingProfileId = card.profileId;
+                            renameValue = card.label;
+                          }}
+                        >
+                          <Pencil size={11} />
+                        </button>
+                      {/if}
+                      {#if platCount > 1 && isActive}
+                        <Badge tone="accent">Active</Badge>
+                      {/if}
+                      <StatusPill state={platSnap.state} compact />
+                    </div>
+                    <span class="acct-sub">
+                      {#if platSnap.account}
+                        Signed in as <strong>@{platSnap.account.displayName}</strong>
+                      {:else}
+                        Not connected — sign in via Dropilot's isolated window
+                      {/if}
+                    </span>
+                    <span class="acct-iso tabular">
+                      {isDefault
+                        ? 'Isolated WebView2 · Default session'
+                        : `Isolated WebView2 · WebView2-Profiles/${card.profileId}`}
+                    </span>
+                  </div>
+                </div>
+
+                <div class="acct-action">
+                  {#if platCount > 1 && !isActive}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      title={`Switch active ${label} view to ${card.label}`}
+                      onclick={() => handleSetActiveProfile(card)}
+                    >
+                      Use
+                    </Button>
                   {/if}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    title={`Open ${label} Drops in your default browser`}
+                    onclick={() => api.openUrl(browserUrl).catch((e) => notifyUi(String(e), 'error'))}
+                  >
+                    <ExternalLink size={13} />
+                    <span>Browser</span>
+                  </Button>
+                  {#if platSnap.account}
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onclick={() => api.logout(card.platform, card.profileId)}
+                    >
+                      <LogOut size={13} />
+                      <span>Log out</span>
+                    </Button>
+                  {:else}
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      title={`Opens Dropilot's isolated ${label} sign-in window (${card.label})`}
+                      onclick={() => api.login(card.platform, card.profileId)}
+                    >
+                      <LogIn size={13} />
+                      <span>Log in</span>
+                    </Button>
+                  {/if}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={platCount <= 1}
+                    ariaLabel={`Remove ${label} account ${card.label}`}
+                    title={platCount <= 1
+                      ? `At least one ${label} account must remain configured`
+                      : `Remove ${label} account "${card.label}" and delete its isolated session`}
+                    onclick={() => handleRemoveProfile(card)}
+                  >
+                    <Trash2 size={13} />
+                    <span>Remove</span>
+                  </Button>
                 </div>
-                <span class="font-hint">{fopt.hint}</span>
-                <div class="font-sample-row">
-                  <span class="sample-sans" style:font-family={fopt.sampleSans}>Rust Drops</span>
-                  <span class="sample-mono" style:font-family={fopt.sampleMono}>01:45 · 63%</span>
-                </div>
-              </button>
+              </div>
             {/each}
           </div>
 
-          <div class="scale-row">
-            <div class="scale-meta">
-              <strong>Text size</strong>
-              <span>Scales UI text, timers, and card metadata cleanly across resolutions.</span>
+          <div class="session-info-bar">
+            <Info size={13} />
+            <span>
+              <strong>Isolated session sign-in:</strong> Dropilot uses dedicated WebView2 folders under <code>WebView2-Profiles</code> and separate Windows Credential Manager entries instead of reading Chrome, Edge, or Firefox profiles, so multiple Twitch &amp; Kick accounts can farm simultaneously.
+            </span>
+          </div>
+        </section>
+      {:else if activeTab === 'farming'}
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">DROP FARMING RULES</span>
+          </div>
+          <div class="card group-card">
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Auto-claim completed drops</strong>
+                <p>Automatically claims finished Twitch &amp; Kick rewards as soon as watch time reaches 100%.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.autoClaim}
+                  ariaLabel="Auto-claim completed drops"
+                  onchange={(v) => savePatch((d) => (d.autoClaim = v))}
+                />
+              </div>
             </div>
-            <div class="scale-pills" role="radiogroup" aria-label="Text size scale">
-              {#each fontScaleOptions as sopt (sopt.id)}
-                {@const active = (settings.fontScale ?? 'default') === sopt.id}
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Farm unlinked campaigns</strong>
+                <p>Keep off to skip games whose publisher account isn't linked yet during automatic idle fallback.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.farmUnlinked}
+                  ariaLabel="Farm even if game account is not linked"
+                  onchange={(v) => savePatch((d) => (d.farmUnlinked = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>When nothing in priority list is live</strong>
+                <p>Choose whether to stay idle or automatically farm any eligible active campaign while waiting.</p>
+              </div>
+              <div class="setting-ctrl">
+                <CustomSelect
+                  options={[
+                    {
+                      value: 'stay_idle',
+                      label: 'Stay idle (default)',
+                      subtitle: 'Wait quietly until a priority drop goes live',
+                      dotTone: 'muted',
+                    },
+                    {
+                      value: 'farm_any',
+                      label: 'Farm any available campaign',
+                      subtitle: 'Auto-mine other active drops while waiting',
+                      dotTone: 'live',
+                    },
+                  ] satisfies SelectOption[]}
+                  value={settings.idleBehavior}
+                  onchange={(val) =>
+                    savePatch((d) => (d.idleBehavior = val as Settings['idleBehavior']))}
+                  ariaLabel="Idle fallback behavior"
+                  size="md"
+                  minMenuWidth={260}
+                  align="right"
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Campaign refresh cadence</strong>
+                <p>How often Dropilot reloads the full drops catalog (10–240 min). Watch progress syncs every 60s.</p>
+              </div>
+              <div class="setting-ctrl">
+                <div class="stepper tabular">
+                  <button type="button" class="step-btn" onclick={() => stepRefresh(-5)} aria-label="Decrease refresh minutes">−</button>
+                  <span class="step-val">{settings.refreshMinutes}m</span>
+                  <button type="button" class="step-btn" onclick={() => stepRefresh(5)} aria-label="Increase refresh minutes">+</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Browser player fallback</strong>
+                <p>Ultra-light stream-less mode is active by default (0 Mbps video, ~12 MB RAM in tray). Enable only if a platform stops crediting drops.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.compatWatchMode}
+                  ariaLabel="Compatibility watch mode"
+                  onchange={(v) => savePatch((d) => (d.compatWatchMode = v))}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">SCHEDULE &amp; TIMING</span>
+          </div>
+          <div class="card group-card">
+            <div class="setting-row setting-row-col">
+              <div class="setting-row-top">
+                <div class="setting-meta">
+                  <strong>Quiet hours schedule</strong>
+                  <p>Automatically pause drop farming during local hours and resume when the window ends.</p>
+                </div>
+                <div class="setting-ctrl">
+                  <Toggle
+                    checked={settings.schedule.quietHoursEnabled}
+                    ariaLabel="Enable quiet hours schedule"
+                    onchange={(v) => savePatch((d) => (d.schedule.quietHoursEnabled = v))}
+                  />
+                </div>
+              </div>
+
+              {#if settings.schedule.quietHoursEnabled}
+                <div class="schedule-row">
+                  <div class="sched-field">
+                    <span class="sched-label">Pause at</span>
+                    <CustomSelect
+                      options={timeOptions}
+                      value={snapToHalfHour(settings.schedule.quietStartMinutes)}
+                      onchange={(val) =>
+                        savePatch((d) => (d.schedule.quietStartMinutes = Number(val)))}
+                      ariaLabel="Quiet hours start time"
+                      size="sm"
+                    />
+                  </div>
+                  <div class="sched-field">
+                    <span class="sched-label">Resume at</span>
+                    <CustomSelect
+                      options={timeOptions}
+                      value={snapToHalfHour(settings.schedule.quietEndMinutes)}
+                      onchange={(val) =>
+                        savePatch((d) => (d.schedule.quietEndMinutes = Number(val)))}
+                      ariaLabel="Quiet hours end time"
+                      size="sm"
+                    />
+                  </div>
+                  {#if settings.schedule.quietStartMinutes > settings.schedule.quietEndMinutes}
+                    <Badge tone="accent">Overnight window</Badge>
+                  {:else if settings.schedule.quietStartMinutes === settings.schedule.quietEndMinutes}
+                    <Badge tone="warning">Start &amp; end match (inactive)</Badge>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Humanized polling jitter (±25%)</strong>
+                <p>Randomizes watch ticks and background sync intervals instead of rigid 60-second pulses.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.schedule.humanizedJitter}
+                  ariaLabel="Humanized polling jitter"
+                  onchange={(v) => savePatch((d) => (d.schedule.humanizedJitter = v))}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+      {:else if activeTab === 'alerts'}
+        <section class="settings-group">
+          <div class="group-head group-head-actions">
+            <span class="section-label">DISCORD WEBHOOK</span>
+            <Badge tone="neutral">Encrypted in Credential Manager</Badge>
+          </div>
+          <div class="card group-card">
+            <div class="setting-row setting-row-col">
+              <div class="setting-row-top">
+                <div class="setting-meta">
+                  <div class="setting-title-line">
+                    <strong>Enable Discord webhook alerts</strong>
+                    {#if webhookSecrets.hasDiscordUrl}
+                      <Badge tone="success">Saved</Badge>
+                    {:else}
+                      <Badge tone="neutral">Not set</Badge>
+                    {/if}
+                  </div>
+                  <p>Receive rich Discord embeds when drops are claimed, sessions expire, or Epic free games unlock.</p>
+                </div>
+                <div class="setting-ctrl">
+                  <Toggle
+                    checked={settings.webhooks.discordEnabled}
+                    ariaLabel="Enable Discord webhook alerts"
+                    onchange={(v) => savePatch((d) => (d.webhooks.discordEnabled = v))}
+                  />
+                </div>
+              </div>
+
+              <div class="webhook-input-row">
+                <input
+                  type="password"
+                  class="secret-input"
+                  bind:value={discordUrlInput}
+                  placeholder={webhookSecrets.hasDiscordUrl
+                    ? 'Webhook URL stored securely (paste new URL to replace)'
+                    : 'https://discord.com/api/webhooks/...'}
+                  aria-label="Discord webhook URL"
+                />
+                <Button
+                  variant="primary"
+                  size="sm"
+                  disabled={savingWebhook || !discordUrlInput.trim()}
+                  onclick={() => handleSaveDiscordUrl(false)}
+                >
+                  Save
+                </Button>
+                {#if webhookSecrets.hasDiscordUrl || discordUrlInput.trim()}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={testingDiscord || savingWebhook}
+                    onclick={handleTestDiscordWebhook}
+                  >
+                    <Send size={12} />
+                    <span>{testingDiscord ? 'Sending...' : 'Test'}</span>
+                  </Button>
+                {/if}
+                {#if webhookSecrets.hasDiscordUrl}
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    disabled={savingWebhook}
+                    onclick={() => handleSaveDiscordUrl(true)}
+                  >
+                    Remove
+                  </Button>
+                {/if}
+              </div>
+
+              {#if webhookFeedback}
+                {@const urlMatch = webhookFeedback.text.match(/https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/)}
+                <div class="webhook-feedback-row">
+                  <p class="webhook-feedback" class:fb-ok={webhookFeedback.ok} class:fb-err={!webhookFeedback.ok}>
+                    {urlMatch ? webhookFeedback.text.replace(/\s*·\s*https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/, '') : webhookFeedback.text}
+                  </p>
+                  {#if urlMatch}
+                    <button
+                      type="button"
+                      class="fb-open-link"
+                      onclick={() => api.openUrl(urlMatch[0]).catch((e) => notifyUi(String(e), 'error'))}
+                    >
+                      Open in Discord
+                    </button>
+                  {/if}
+                </div>
+              {/if}
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">WEBHOOK EVENT TRIGGERS</span>
+          </div>
+          <div class="card group-card">
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Drop Claimed</strong>
+                <p>Ping Discord whenever Twitch or Kick claims a completed drop reward.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.webhooks.onDropClaimed}
+                  ariaLabel="Notify on drop claimed"
+                  onchange={(v) => savePatch((d) => (d.webhooks.onDropClaimed = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Action Required / Session Expired</strong>
+                <p>Alert when manual claim or account re-authentication is needed.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.webhooks.onActionRequired}
+                  ariaLabel="Notify on action required"
+                  onchange={(v) => savePatch((d) => (d.webhooks.onActionRequired = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Campaign Completed</strong>
+                <p>Send a summary notification when every drop in a campaign finishes.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.webhooks.onCampaignCompleted}
+                  ariaLabel="Notify on campaign completed"
+                  onchange={(v) => savePatch((d) => (d.webhooks.onCampaignCompleted = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Epic Free Game Live</strong>
+                <p>Ping when weekly free games unlock on the Epic Games Store.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.webhooks.onEpicFreeGames}
+                  ariaLabel="Notify when Epic free games go live"
+                  onchange={(v) => savePatch((d) => (d.webhooks.onEpicFreeGames = v))}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+      {:else if activeTab === 'appearance'}
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">COLOR MODE</span>
+          </div>
+          <div class="card studio-card">
+            <div class="mode-grid" role="radiogroup" aria-label="Color mode">
+              {#each themeOptions as opt (opt.id)}
+                {@const active = settings.theme === opt.id}
                 <button
                   type="button"
                   role="radio"
                   aria-checked={active}
-                  class="scale-pill"
+                  class="mode-btn"
                   class:active
-                  onclick={() => savePatch((d) => (d.fontScale = sopt.id))}
+                  onclick={() => savePatch((d) => (d.theme = opt.id))}
                 >
-                  <span>{sopt.label}</span>
-                  <span class="scale-pct tabular">{sopt.pct}</span>
+                  <div class="mode-text">
+                    <strong>{opt.label}</strong>
+                    <span>{opt.hint}</span>
+                  </div>
+                  {#if active}
+                    <span class="mode-check" aria-hidden="true"><Check size={14} /></span>
+                  {/if}
                 </button>
               {/each}
             </div>
           </div>
         </section>
-      </div>
 
-      <section class="card studio-card preview-card" aria-label="Typography live preview">
-        <div class="studio-head">
-          <div>
-            <h2>Live Preview</h2>
-            <p class="studio-sub">Reflects your selected font family and text scale immediately.</p>
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">TYPOGRAPHY &amp; TEXT SCALE</span>
           </div>
-          <Badge tone="accent">{activeFontLabel} · {activeScaleLabel}</Badge>
-        </div>
-
-        <div class="preview-surface">
-          <div class="pv-top">
-            <div class="pv-plat">
-              <span class="plat-dot dot-twitch" aria-hidden="true"></span>
-              <span class="pv-plat-name tabular">TWITCH</span>
-              <span class="pv-acct tabular">@demo_pilot</span>
-            </div>
-            <span class="pv-status tabular">MINING</span>
-          </div>
-
-          <div class="pv-camp">
-            <div class="pv-camp-head">
-              <strong>Rust — Twitch Rivals Drops</strong>
-              <span class="pv-link">
-                <Link2 size={11} />
-                <span>Linked</span>
-              </span>
-            </div>
-            <span class="pv-reward">Reward: Cobalt Garage Door</span>
-          </div>
-
-          <div class="pv-prog">
-            <div class="pv-prog-row tabular">
-              <span>19m / 30m</span>
-              <strong>63% · 11m 00s left</strong>
-            </div>
-            <ProgressBar value={19} max={30} platform="twitch" tall label="Preview progress" />
-          </div>
-
-          <div class="pv-log mono">
-            <span class="pv-log-ts">[10:15:42]</span>
-            <span class="pv-log-lvl">INFO</span>
-            <span>Credited +1m watch time for Rust</span>
-          </div>
-        </div>
-      </section>
-    </div>
-  {:else if activeTab === 'farming'}
-    <div class="pref-grid">
-      <div class="card pref-card">
-        <div class="pref-top">
-          <div class="pref-ico"><Zap size={15} /></div>
-          <Toggle
-            checked={settings.autoClaim}
-            ariaLabel="Auto-claim completed drops"
-            onchange={(v) => savePatch((d) => (d.autoClaim = v))}
-          />
-        </div>
-        <h3>Auto-claim completed drops</h3>
-        <p>Automatically claims finished Twitch &amp; Kick rewards as soon as watch time reaches 100%.</p>
-      </div>
-
-      <div class="card pref-card">
-        <div class="pref-top">
-          <div class="pref-ico"><Shield size={15} /></div>
-          <Toggle
-            checked={settings.farmUnlinked}
-            ariaLabel="Farm even if game account is not linked"
-            onchange={(v) => savePatch((d) => (d.farmUnlinked = v))}
-          />
-        </div>
-        <h3>Farm unlinked campaigns</h3>
-        <p>Keep off to skip games whose publisher account isn't linked yet during automatic idle fallback.</p>
-      </div>
-
-      <div class="card pref-card">
-        <div class="pref-top">
-          <div class="pref-ico"><Monitor size={15} /></div>
-          <Toggle
-            checked={settings.compatWatchMode}
-            ariaLabel="Compatibility watch mode"
-            onchange={(v) => savePatch((d) => (d.compatWatchMode = v))}
-          />
-        </div>
-        <h3>Browser player fallback</h3>
-        <p>Ultra-light stream-less mode is active by default (0 Mbps video, ~12 MB RAM in tray). Turn on only if a platform stops crediting drops.</p>
-      </div>
-
-      <div class="card pref-card">
-        <div class="pref-top">
-          <div class="pref-ico"><RefreshCw size={15} /></div>
-          <div class="stepper tabular">
-            <button type="button" class="step-btn" onclick={() => stepRefresh(-5)} aria-label="Decrease refresh minutes">−</button>
-            <span class="step-val">{settings.refreshMinutes}m</span>
-            <button type="button" class="step-btn" onclick={() => stepRefresh(5)} aria-label="Increase refresh minutes">+</button>
-          </div>
-        </div>
-        <h3>Campaign refresh cadence</h3>
-        <p>How often Dropilot reloads the full drops catalog (10–240 min). Progress itself syncs every 60s.</p>
-      </div>
-
-      <div class="card pref-card pref-wide">
-        <div class="pref-wide-row">
-          <div class="pref-wide-text">
-            <h3>When nothing in priority list is live</h3>
-            <p>Choose whether to stay idle or automatically farm any eligible active campaign while waiting.</p>
-          </div>
-          <CustomSelect
-            options={[
-              {
-                value: 'stay_idle',
-                label: 'Stay idle (default)',
-                subtitle: 'Wait quietly until a priority drop goes live',
-                dotTone: 'muted',
-              },
-              {
-                value: 'farm_any',
-                label: 'Farm any available campaign',
-                subtitle: 'Auto-mine other active drops while waiting',
-                dotTone: 'live',
-              },
-            ] satisfies SelectOption[]}
-            value={settings.idleBehavior}
-            onchange={(val) =>
-              savePatch((d) => (d.idleBehavior = val as Settings['idleBehavior']))}
-            ariaLabel="Idle fallback behavior"
-            size="md"
-            minMenuWidth={270}
-            align="right"
-          />
-        </div>
-      </div>
-
-      <div class="card pref-card pref-wide">
-        <div class="pref-wide-row">
-          <div class="pref-wide-text">
-            <div class="title-with-badge">
-              <span class="pref-ico"><Moon size={15} /></span>
-              <div>
-                <h3>Quiet hours schedule</h3>
-                <p>Automatically pause drop farming during local hours and resume when the window ends.</p>
-              </div>
-            </div>
-          </div>
-          <Toggle
-            checked={settings.schedule.quietHoursEnabled}
-            ariaLabel="Enable quiet hours schedule"
-            onchange={(v) => savePatch((d) => (d.schedule.quietHoursEnabled = v))}
-          />
-        </div>
-
-        {#if settings.schedule.quietHoursEnabled}
-          <div class="schedule-row">
-            <div class="sched-field">
-              <span class="sched-label">Pause at</span>
-              <CustomSelect
-                options={timeOptions}
-                value={snapToHalfHour(settings.schedule.quietStartMinutes)}
-                onchange={(val) =>
-                  savePatch((d) => (d.schedule.quietStartMinutes = Number(val)))}
-                ariaLabel="Quiet hours start time"
-                size="sm"
-              />
-            </div>
-            <div class="sched-field">
-              <span class="sched-label">Resume at</span>
-              <CustomSelect
-                options={timeOptions}
-                value={snapToHalfHour(settings.schedule.quietEndMinutes)}
-                onchange={(val) =>
-                  savePatch((d) => (d.schedule.quietEndMinutes = Number(val)))}
-                ariaLabel="Quiet hours end time"
-                size="sm"
-              />
-            </div>
-            {#if settings.schedule.quietStartMinutes > settings.schedule.quietEndMinutes}
-              <Badge tone="accent">Overnight window</Badge>
-            {:else if settings.schedule.quietStartMinutes === settings.schedule.quietEndMinutes}
-              <Badge tone="warning">Start &amp; end match (inactive)</Badge>
-            {/if}
-          </div>
-        {/if}
-
-        <div class="sub-divider"></div>
-
-        <div class="pref-wide-row">
-          <div class="pref-wide-text">
-            <h3>Humanized polling jitter (±25%)</h3>
-            <p>Randomizes watch ticks and background sync intervals instead of rigid 60-second pulses.</p>
-          </div>
-          <Toggle
-            checked={settings.schedule.humanizedJitter}
-            ariaLabel="Humanized polling jitter"
-            onchange={(v) => savePatch((d) => (d.schedule.humanizedJitter = v))}
-          />
-        </div>
-      </div>
-    </div>
-  {:else if activeTab === 'system'}
-    <div class="pref-grid">
-      <div class="card pref-card">
-        <div class="pref-top">
-          <div class="pref-ico"><Monitor size={15} /></div>
-          <Toggle
-            checked={settings.autostart}
-            ariaLabel="Start with Windows"
-            onchange={(v) => savePatch((d) => (d.autostart = v))}
-          />
-        </div>
-        <h3>Start with Windows</h3>
-        <p>Launches Dropilot automatically at Windows sign-in via standard HKCU Run entry.</p>
-      </div>
-
-      <div class="card pref-card">
-        <div class="pref-top">
-          <div class="pref-ico"><Sliders size={15} /></div>
-          <Toggle
-            checked={settings.startMinimized}
-            ariaLabel="Start minimized to tray"
-            onchange={(v) => savePatch((d) => (d.startMinimized = v))}
-          />
-        </div>
-        <h3>Start minimized to tray</h3>
-        <p>Starts quietly in the Windows notification tray when launched automatically on boot.</p>
-      </div>
-
-      <div class="card pref-card">
-        <div class="pref-top">
-          <div class="pref-ico"><Sliders size={15} /></div>
-          <Toggle
-            checked={settings.closeToTray}
-            ariaLabel="Close button minimizes to tray"
-            onchange={(v) => savePatch((d) => (d.closeToTray = v))}
-          />
-        </div>
-        <h3>Close to system tray</h3>
-        <p>Closes the UI window while keeping lightweight Rust drop miners running in the tray.</p>
-      </div>
-
-      <div class="card pref-card">
-        <div class="pref-top">
-          <div class="pref-ico"><Bell size={15} /></div>
-          <Toggle
-            checked={settings.notifications}
-            ariaLabel="Desktop notifications"
-            onchange={(v) => savePatch((d) => (d.notifications = v))}
-          />
-        </div>
-        <h3>Desktop toast notifications</h3>
-        <p>Notifies you when a reward is claimed, needs manual action, or a session expires.</p>
-      </div>
-
-      <div class="card pref-card pref-wide">
-        <div class="pref-wide-row">
-          <div class="pref-wide-text">
-            <h3>Diagnostic log verbosity</h3>
-            <p>Keep on Info for normal use; switch to Debug when troubleshooting platform responses.</p>
-          </div>
-          <CustomSelect
-            options={[
-              {
-                value: 'info',
-                label: 'Info (Recommended)',
-                subtitle: 'Clean activity and claim summary',
-                dotTone: 'info',
-              },
-              {
-                value: 'debug',
-                label: 'Debug (Verbose)',
-                subtitle: 'Detailed diagnostic trace for troubleshooting',
-                dotTone: 'warn',
-              },
-            ] satisfies SelectOption[]}
-            value={settings.logLevel}
-            onchange={(val) => savePatch((d) => (d.logLevel = val as Settings['logLevel']))}
-            ariaLabel="Log level"
-            size="md"
-            minMenuWidth={250}
-            align="right"
-          />
-        </div>
-      </div>
-
-      <div class="card pref-card pref-wide webhook-card">
-        <div class="studio-head">
-          <div>
-            <h3>Discord Webhook Alerts</h3>
-            <p class="studio-sub">Get pinged on Discord when drops are claimed or require verification. Your webhook URL stays encrypted in Windows Credential Manager.</p>
-          </div>
-          <Badge tone="neutral">Encrypted</Badge>
-        </div>
-
-        <div class="webhook-box">
-          <div class="webhook-box-head">
-            <div class="webhook-title-row">
-              <strong>Discord Webhook</strong>
-              {#if webhookSecrets.hasDiscordUrl}
-                <Badge tone="success">Saved</Badge>
-              {:else}
-                <Badge tone="neutral">Not set</Badge>
-              {/if}
-            </div>
-            <Toggle
-              checked={settings.webhooks.discordEnabled}
-              ariaLabel="Enable Discord webhook alerts"
-              onchange={(v) => savePatch((d) => (d.webhooks.discordEnabled = v))}
-            />
-          </div>
-          <div class="webhook-input-row">
-            <input
-              type="password"
-              class="secret-input"
-              bind:value={discordUrlInput}
-              placeholder={webhookSecrets.hasDiscordUrl
-                ? 'Webhook URL stored securely (paste new URL to replace)'
-                : 'https://discord.com/api/webhooks/...'}
-              aria-label="Discord webhook URL"
-            />
-            <Button
-              variant="primary"
-              size="sm"
-              disabled={savingWebhook || !discordUrlInput.trim()}
-              onclick={() => handleSaveDiscordUrl(false)}
-            >
-              Save
-            </Button>
-            {#if webhookSecrets.hasDiscordUrl || discordUrlInput.trim()}
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={testingDiscord || savingWebhook}
-                onclick={handleTestDiscordWebhook}
-              >
-                <Send size={12} />
-                <span>{testingDiscord ? 'Sending...' : 'Test'}</span>
-              </Button>
-            {/if}
-            {#if webhookSecrets.hasDiscordUrl}
-              <Button
-                variant="ghost"
-                size="sm"
-                disabled={savingWebhook}
-                onclick={() => handleSaveDiscordUrl(true)}
-              >
-                Remove
-              </Button>
-            {/if}
-          </div>
-          {#if webhookFeedback}
-            {@const urlMatch = webhookFeedback.text.match(/https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/)}
-            <div class="webhook-feedback-row">
-              <p class="webhook-feedback" class:fb-ok={webhookFeedback.ok} class:fb-err={!webhookFeedback.ok}>
-                {urlMatch ? webhookFeedback.text.replace(/\s*·\s*https:\/\/discord\.com\/channels\/\d+\/\d+\/\d+/, '') : webhookFeedback.text}
-              </p>
-              {#if urlMatch}
+          <div class="card studio-card">
+            <div class="font-grid" role="radiogroup" aria-label="Font family preset">
+              {#each fontOptions as fopt (fopt.id)}
+                {@const active = (settings.fontFamily ?? 'plex') === fopt.id}
                 <button
                   type="button"
-                  class="fb-open-link"
-                  onclick={() => api.openUrl(urlMatch[0]).catch((e) => notifyUi(String(e), 'error'))}
+                  role="radio"
+                  aria-checked={active}
+                  class="font-btn"
+                  class:active
+                  onclick={() => savePatch((d) => (d.fontFamily = fopt.id))}
                 >
-                  Open in Discord
-                </button>
-              {/if}
-            </div>
-          {/if}
-        </div>
-
-        <div class="event-toggles">
-          <label class="ev-chip">
-            <span>Drop Claimed</span>
-            <Toggle
-              checked={settings.webhooks.onDropClaimed}
-              ariaLabel="Notify on drop claimed"
-              onchange={(v) => savePatch((d) => (d.webhooks.onDropClaimed = v))}
-            />
-          </label>
-          <label class="ev-chip">
-            <span>Action Required / Session Expired</span>
-            <Toggle
-              checked={settings.webhooks.onActionRequired}
-              ariaLabel="Notify on action required"
-              onchange={(v) => savePatch((d) => (d.webhooks.onActionRequired = v))}
-            />
-          </label>
-          <label class="ev-chip">
-            <span>Campaign Completed</span>
-            <Toggle
-              checked={settings.webhooks.onCampaignCompleted}
-              ariaLabel="Notify on campaign completed"
-              onchange={(v) => savePatch((d) => (d.webhooks.onCampaignCompleted = v))}
-            />
-          </label>
-          <label class="ev-chip">
-            <span>Epic Free Game Live</span>
-            <Toggle
-              checked={settings.webhooks.onEpicFreeGames}
-              ariaLabel="Notify when Epic free games go live"
-              onchange={(v) => savePatch((d) => (d.webhooks.onEpicFreeGames = v))}
-            />
-          </label>
-        </div>
-      </div>
-
-      {#if mockAvailable}
-        <div class="card pref-card pref-wide">
-          <div class="pref-wide-row">
-            <div class="pref-wide-text">
-              <h3>Mock platform mode</h3>
-              <p>Simulates campaigns, live channels, progress, and claims offline with zero network calls.</p>
-            </div>
-            <Toggle
-              checked={settings.mockMode}
-              ariaLabel="Mock platform mode"
-              onchange={(v) => savePatch((d) => (d.mockMode = v))}
-            />
-          </div>
-        </div>
-      {/if}
-    </div>
-  {:else}
-    <div class="panel-stack">
-      <div class="pref-grid">
-        <div class="card pref-card">
-          <div class="pref-top">
-            <div class="pref-ico"><FolderOpen size={15} /></div>
-            <div class="inline-actions">
-              <Button variant="secondary" size="sm" onclick={() => api.openDataFolder().catch((e) => notifyUi(String(e), 'error'))}>
-                Data
-              </Button>
-              <Button variant="secondary" size="sm" onclick={() => api.openLogFolder().catch((e) => notifyUi(String(e), 'error'))}>
-                Logs
-              </Button>
-            </div>
-          </div>
-          <h3>Local app folders</h3>
-          <p>Inspect saved settings (%APPDATA%\Dropilot) or redacted rolling logs (%LOCALAPPDATA%\Dropilot\logs).</p>
-        </div>
-
-        <div class="card pref-card">
-          <div class="pref-top">
-            <div class="pref-ico"><RefreshCw size={15} /></div>
-            <div class="inline-actions">
-              {#if $updateInfo?.available}
-                {#if $updateInfo.signedUpdateReady}
-                  <Button
-                    variant="primary"
-                    size="sm"
-                    disabled={$installingUpdate}
-                    onclick={() => void installAppUpdate()}
-                  >
-                    {$installingUpdate ? 'Updating...' : `Install v${$updateInfo.latestVersion}`}
-                  </Button>
-                {:else}
-                  <Button variant="primary" size="sm" onclick={() => api.openUrl($updateInfo!.releaseUrl)}>
-                    v{$updateInfo.latestVersion}
-                  </Button>
-                {/if}
-              {/if}
-              <Button variant="secondary" size="sm" disabled={$checkingForUpdate} onclick={handleCheckUpdates}>
-                {$checkingForUpdate ? 'Checking...' : 'Check'}
-              </Button>
-            </div>
-          </div>
-          <h3>Signed auto-updater</h3>
-          <p>Checks cryptographically verified releases on startup and every 4 hours, and installs signed updates automatically.</p>
-          <div class="sub-divider"></div>
-          <div class="pref-toggle-list">
-            <div class="pref-toggle-row">
-              <span>Check for updates</span>
-              <Toggle
-                checked={settings.updateCheck}
-                ariaLabel="Check for signed updates"
-                onchange={(v) => savePatch((d) => (d.updateCheck = v))}
-              />
-            </div>
-            <div class="pref-toggle-row">
-              <span>Auto-install signed updates</span>
-              <Toggle
-                checked={settings.autoInstallUpdates}
-                disabled={!settings.updateCheck}
-                ariaLabel="Auto-install signed updates"
-                onchange={(v) => savePatch((d) => (d.autoInstallUpdates = v))}
-              />
-            </div>
-          </div>
-        </div>
-
-        <div class="card pref-card pref-wide">
-          <div class="pref-wide-row">
-            <div class="pref-wide-text">
-              <div class="title-with-badge">
-                <span class="pref-ico"><Cloud size={15} /></span>
-                <div>
-                  <div class="webhook-title-row">
-                    <h3>Remote hotfix config</h3>
-                    <Badge
-                      tone={$remoteConfigStatus?.source === 'remote'
-                        ? 'success'
-                        : $remoteConfigStatus?.source === 'cache'
-                          ? 'accent'
-                          : 'neutral'}
-                    >
-                      {$remoteConfigStatus?.source ?? 'bundled'}
-                    </Badge>
-                    {#if $remoteConfigStatus && $remoteConfigStatus.overriddenHashes > 0}
-                      <Badge tone="neutral">{$remoteConfigStatus.overriddenHashes} GQL hashes</Badge>
+                  <div class="font-btn-top">
+                    <strong>{fopt.label}</strong>
+                    {#if active}
+                      <span class="mode-check" aria-hidden="true"><Check size={14} /></span>
                     {/if}
                   </div>
-                  <p>
-                    Syncs verified Twitch GQL query hashes so Dropilot recovers from platform rotations without waiting for a new installer.
-                    {#if $remoteConfigStatus?.fetchedAt}
-                      Last synced {formatExactDateTime($remoteConfigStatus.fetchedAt)}.
-                    {/if}
-                  </p>
-                </div>
+                  <span class="font-hint">{fopt.hint}</span>
+                  <div class="font-sample-row">
+                    <span class="sample-sans" style:font-family={fopt.sampleSans}>Rust Drops</span>
+                    <span class="sample-mono" style:font-family={fopt.sampleMono}>01:45 · 63%</span>
+                  </div>
+                </button>
+              {/each}
+            </div>
+
+            <div class="scale-row">
+              <div class="scale-meta">
+                <strong>Text size</strong>
+                <span>Scales UI text, timers, and card metadata cleanly across resolutions.</span>
+              </div>
+              <div class="scale-pills" role="radiogroup" aria-label="Text size scale">
+                {#each fontScaleOptions as sopt (sopt.id)}
+                  {@const active = (settings.fontScale ?? 'default') === sopt.id}
+                  <button
+                    type="button"
+                    role="radio"
+                    aria-checked={active}
+                    class="scale-pill"
+                    class:active
+                    onclick={() => savePatch((d) => (d.fontScale = sopt.id))}
+                  >
+                    <span>{sopt.label}</span>
+                    <span class="scale-pct tabular">{sopt.pct}</span>
+                  </button>
+                {/each}
               </div>
             </div>
-            <div class="inline-actions">
-              <Button
-                variant="secondary"
-                size="sm"
-                disabled={syncingRemote || !settings.remoteConfigEnabled}
-                onclick={handleRefreshRemoteConfig}
-              >
-                <RefreshCw size={13} />
-                <span>{syncingRemote ? 'Syncing...' : 'Sync now'}</span>
-              </Button>
-              <Toggle
-                checked={settings.remoteConfigEnabled}
-                ariaLabel="Enable remote hotfix config"
-                onchange={(v) => savePatch((d) => (d.remoteConfigEnabled = v))}
-              />
+          </div>
+        </section>
+
+        <section class="settings-group" aria-label="Typography live preview">
+          <div class="group-head group-head-actions">
+            <span class="section-label">LIVE PREVIEW</span>
+            <Badge tone="accent">{activeFontLabel} · {activeScaleLabel}</Badge>
+          </div>
+          <div class="card studio-card">
+            <div class="preview-surface">
+              <div class="pv-top">
+                <div class="pv-plat">
+                  <span class="plat-dot dot-twitch" aria-hidden="true"></span>
+                  <span class="pv-plat-name tabular">TWITCH</span>
+                  <span class="pv-acct tabular">@demo_pilot</span>
+                </div>
+                <span class="pv-status tabular">MINING</span>
+              </div>
+
+              <div class="pv-camp">
+                <div class="pv-camp-head">
+                  <strong>Rust — Twitch Rivals Drops</strong>
+                  <span class="pv-link">
+                    <Link2 size={11} />
+                    <span>Linked</span>
+                  </span>
+                </div>
+                <span class="pv-reward">Reward: Cobalt Garage Door</span>
+              </div>
+
+              <div class="pv-prog">
+                <div class="pv-prog-row tabular">
+                  <span>19m / 30m</span>
+                  <strong>63% · 11m 00s left</strong>
+                </div>
+                <ProgressBar value={19} max={30} platform="twitch" tall label="Preview progress" />
+              </div>
+
+              <div class="pv-log mono">
+                <span class="pv-log-ts">[10:15:42]</span>
+                <span class="pv-log-lvl">INFO</span>
+                <span>Credited +1m watch time for Rust</span>
+              </div>
             </div>
           </div>
-        </div>
-      </div>
-
-      <section class="card about-card">
-        <div class="about-head">
-          <div class="pref-ico"><Info size={15} /></div>
-          <div>
-            <h2>About Dropilot</h2>
-            <p class="studio-sub">Version {__APP_VERSION__} · MIT License · Standard user privileges (asInvoker)</p>
+        </section>
+      {:else}
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">UPDATES &amp; HOTFIXES</span>
           </div>
-        </div>
-        <p class="about-note">
-          <strong>Disclaimer:</strong> Using automation tools may violate Twitch or Kick Terms of Service. You are solely responsible for your accounts. Dropilot is not affiliated with, sponsored by, or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
-        </p>
-        <div class="about-links">
-          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot#readme')}>
-            README
-          </Button>
-          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot/blob/main/docs/PRIVACY.md')}>
-            Privacy
-          </Button>
-          <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot/blob/main/docs/ENDPOINTS.md')}>
-            Endpoints
-          </Button>
-        </div>
-      </section>
+          <div class="card group-card">
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Signed auto-updater</strong>
+                <p>Checks cryptographically verified releases on startup and every 4 hours.</p>
+              </div>
+              <div class="setting-ctrl inline-actions">
+                {#if $updateInfo?.available}
+                  {#if $updateInfo.signedUpdateReady}
+                    <Button
+                      variant="primary"
+                      size="sm"
+                      disabled={$installingUpdate}
+                      onclick={() => void installAppUpdate()}
+                    >
+                      {$installingUpdate ? 'Updating...' : `Install v${$updateInfo.latestVersion}`}
+                    </Button>
+                  {:else}
+                    <Button variant="primary" size="sm" onclick={() => api.openUrl($updateInfo!.releaseUrl)}>
+                      v{$updateInfo.latestVersion}
+                    </Button>
+                  {/if}
+                {/if}
+                <Button variant="secondary" size="sm" disabled={$checkingForUpdate} onclick={handleCheckUpdates}>
+                  <RefreshCw size={12} />
+                  <span>{$checkingForUpdate ? 'Checking...' : 'Check'}</span>
+                </Button>
+              </div>
+            </div>
 
-      <section class="card danger-card">
-        <div class="danger-row">
-          <div>
-            <h3>Reset &amp; clear all Dropilot data</h3>
-            <p>Deletes Credential Manager tokens, Dropilot's isolated WebView2 cookies, and resets preferences to defaults.</p>
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Check for updates automatically</strong>
+                <p>Periodically verifies if a newer signed Dropilot release is available.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.updateCheck}
+                  ariaLabel="Check for signed updates"
+                  onchange={(v) => savePatch((d) => (d.updateCheck = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row" class:is-dimmed={!settings.updateCheck}>
+              <div class="setting-meta">
+                <strong>Auto-install signed updates</strong>
+                <p>Downloads and applies verified updates seamlessly without manual installer steps.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Toggle
+                  checked={settings.autoInstallUpdates}
+                  disabled={!settings.updateCheck}
+                  ariaLabel="Auto-install signed updates"
+                  onchange={(v) => savePatch((d) => (d.autoInstallUpdates = v))}
+                />
+              </div>
+            </div>
+
+            <div class="setting-row">
+              <div class="setting-meta">
+                <div class="setting-title-line">
+                  <strong>Remote hotfix config</strong>
+                  <Badge
+                    tone={$remoteConfigStatus?.source === 'remote'
+                      ? 'success'
+                      : $remoteConfigStatus?.source === 'cache'
+                        ? 'accent'
+                        : 'neutral'}
+                  >
+                    {$remoteConfigStatus?.source ?? 'bundled'}
+                  </Badge>
+                  {#if $remoteConfigStatus && $remoteConfigStatus.overriddenHashes > 0}
+                    <Badge tone="neutral">{$remoteConfigStatus.overriddenHashes} GQL hashes</Badge>
+                  {/if}
+                </div>
+                <p>
+                  Syncs verified Twitch GQL query hashes so Dropilot recovers from platform rotations automatically.
+                  {#if $remoteConfigStatus?.fetchedAt}
+                    Last synced {formatExactDateTime($remoteConfigStatus.fetchedAt)}.
+                  {/if}
+                </p>
+              </div>
+              <div class="setting-ctrl inline-actions">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  disabled={syncingRemote || !settings.remoteConfigEnabled}
+                  onclick={handleRefreshRemoteConfig}
+                >
+                  <Cloud size={12} />
+                  <span>{syncingRemote ? 'Syncing...' : 'Sync now'}</span>
+                </Button>
+                <Toggle
+                  checked={settings.remoteConfigEnabled}
+                  ariaLabel="Enable remote hotfix config"
+                  onchange={(v) => savePatch((d) => (d.remoteConfigEnabled = v))}
+                />
+              </div>
+            </div>
           </div>
-          <Button variant="danger" size="sm" onclick={() => (clearModalOpen = true)}>
-            <Trash2 size={13} />
-            <span>Clear app data</span>
-          </Button>
-        </div>
-      </section>
+        </section>
+
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label">STORAGE &amp; ABOUT</span>
+          </div>
+          <div class="card group-card">
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong>Local app folders</strong>
+                <p>Inspect saved settings (<code>%APPDATA%\Dropilot</code>) or redacted rolling logs (<code>%LOCALAPPDATA%\Dropilot\logs</code>).</p>
+              </div>
+              <div class="setting-ctrl inline-actions">
+                <Button variant="secondary" size="sm" onclick={() => api.openDataFolder().catch((e) => notifyUi(String(e), 'error'))}>
+                  <FolderOpen size={12} />
+                  <span>Data</span>
+                </Button>
+                <Button variant="secondary" size="sm" onclick={() => api.openLogFolder().catch((e) => notifyUi(String(e), 'error'))}>
+                  <FolderOpen size={12} />
+                  <span>Logs</span>
+                </Button>
+              </div>
+            </div>
+
+            <div class="setting-row setting-row-col">
+              <div class="setting-row-top">
+                <div class="setting-meta">
+                  <strong>Dropilot v{__APP_VERSION__}</strong>
+                  <p>MIT License · Standard user privileges (<code>asInvoker</code>)</p>
+                </div>
+                <div class="setting-ctrl inline-actions">
+                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot#readme')}>
+                    README
+                  </Button>
+                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot/blob/main/docs/PRIVACY.md')}>
+                    Privacy
+                  </Button>
+                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot/blob/main/docs/ENDPOINTS.md')}>
+                    Endpoints
+                  </Button>
+                </div>
+              </div>
+              <p class="about-note">
+                <strong>Disclaimer:</strong> Using automation tools may violate Twitch or Kick Terms of Service. You are solely responsible for your accounts. Dropilot is not affiliated with, sponsored by, or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
+              </p>
+            </div>
+          </div>
+        </section>
+
+        <section class="settings-group">
+          <div class="group-head">
+            <span class="section-label danger-label">DANGER ZONE</span>
+          </div>
+          <div class="card danger-card">
+            <div class="setting-row">
+              <div class="setting-meta">
+                <strong class="danger-title">Reset &amp; clear all Dropilot data</strong>
+                <p>Deletes Credential Manager tokens, Dropilot's isolated WebView2 cookies, and resets preferences to defaults.</p>
+              </div>
+              <div class="setting-ctrl">
+                <Button variant="danger" size="sm" onclick={() => (clearModalOpen = true)}>
+                  <Trash2 size={13} />
+                  <span>Clear app data</span>
+                </Button>
+              </div>
+            </div>
+          </div>
+        </section>
+      {/if}
     </div>
-  {/if}
+  </div>
 </div>
 
 <Modal open={clearModalOpen} title="Clear all Dropilot data?" onclose={() => (clearModalOpen = false)}>
@@ -1273,46 +1377,238 @@
 </Modal>
 
 <style>
-  .accounts-wrap {
+  .settings-shell {
+    display: grid;
+    grid-template-columns: 210px minmax(0, 1fr);
+    gap: clamp(12px, 1.5vw, 20px);
+    align-items: start;
+  }
+
+  .settings-nav {
+    position: sticky;
+    top: 4px;
+    display: flex;
+    flex-direction: column;
+    gap: 3px;
+    padding: 6px;
+    border-radius: var(--radius-md);
+    background: var(--surface);
+    border: 1px solid var(--border);
+  }
+
+  .nav-pill {
+    display: flex;
+    align-items: center;
+    gap: 9px;
+    padding: 8px 10px;
+    border-radius: var(--radius-sm);
+    border: 1px solid transparent;
+    background: transparent;
+    color: var(--text-muted);
+    text-align: left;
+    min-width: 0;
+  }
+
+  .nav-pill:hover {
+    background: var(--surface-2);
+    color: var(--text);
+  }
+
+  .nav-pill.active {
+    background: var(--surface-2);
+    border-color: var(--border-hover);
+    color: var(--text);
+  }
+
+  .nav-pill-ico {
+    width: 24px;
+    height: 24px;
+    border-radius: var(--radius-xs);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+    color: var(--text-muted);
+  }
+
+  .nav-pill.active .nav-pill-ico {
+    background: var(--accent);
+    border-color: var(--accent);
+    color: var(--accent-on);
+  }
+
+  .nav-pill-text {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    min-width: 0;
+  }
+
+  .nav-pill-label {
+    font-size: var(--text-sm);
+    font-weight: 600;
+    line-height: 1.2;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .nav-pill-hint {
+    font-size: 10.5px;
+    color: var(--text-faint);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  @media (max-width: 860px) {
+    .settings-shell {
+      grid-template-columns: 1fr;
+    }
+
+    .settings-nav {
+      position: static;
+      flex-direction: row;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 5px;
+    }
+
+    .nav-pill {
+      flex: 1 1 auto;
+      padding: 7px 10px;
+    }
+
+    .nav-pill-hint {
+      display: none;
+    }
+  }
+
+  .settings-content {
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    min-width: 0;
+    max-width: 920px;
+  }
+
+  .settings-group {
     display: flex;
     flex-direction: column;
     gap: 8px;
   }
 
-  .accounts-bar {
+  .group-head {
     display: flex;
-    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 8px;
+    padding: 0 2px;
   }
 
-  .accounts-bar-title {
+  .group-head-left {
     display: flex;
     align-items: center;
     gap: 10px;
   }
 
-  .acct-kicker {
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-weight: 600;
-    letter-spacing: 0.08em;
-    color: var(--text-faint);
-  }
-
-  .acct-count {
+  .group-count {
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-muted);
   }
 
-  .accounts-bar-actions {
-    display: inline-flex;
-    align-items: center;
-    gap: 6px;
+  .group-card {
+    padding: 0;
+    overflow: hidden;
   }
 
+  .setting-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .setting-row:last-child {
+    border-bottom: none;
+  }
+
+  .setting-row-col {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 10px;
+  }
+
+  .setting-row-top {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+  }
+
+  .setting-row.is-dimmed {
+    opacity: 0.65;
+  }
+
+  @media (max-width: 600px) {
+    .setting-row,
+    .setting-row-top {
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+
+    .setting-ctrl {
+      margin-left: auto;
+    }
+  }
+
+  .setting-meta {
+    flex: 1;
+    min-width: 200px;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .setting-title-line {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .setting-meta strong {
+    font-size: var(--text-base);
+    font-weight: 600;
+    color: var(--text);
+  }
+
+  .setting-meta p {
+    font-size: var(--text-xs);
+    color: var(--text-muted);
+    line-height: 1.45;
+    max-width: 66ch;
+  }
+
+  .setting-ctrl {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+  }
+
+  .inline-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
+
+  /* Accounts */
   .add-profile-bar {
     display: flex;
     flex-wrap: wrap;
@@ -1330,29 +1626,56 @@
     max-width: 220px;
   }
 
-  .accounts-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--grid-gap, 14px);
-  }
-
-  @media (max-width: 960px) {
-    .accounts-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .acct-card-active {
-    border-color: var(--accent);
-  }
-
-  .acct-action {
-    display: inline-flex;
-    flex-wrap: wrap;
+  .acct-row {
+    display: flex;
     align-items: center;
-    justify-content: flex-end;
+    justify-content: space-between;
+    flex-wrap: wrap;
+    gap: 12px;
+    padding: 12px 14px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .acct-row:last-child {
+    border-bottom: none;
+  }
+
+  .acct-row-active {
+    background: var(--accent-tint);
+  }
+
+  .acct-left {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-width: 0;
+    flex: 1 1 260px;
+  }
+
+  .acct-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    min-width: 0;
+  }
+
+  .acct-top {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
     gap: 6px;
-    flex-shrink: 0;
+  }
+
+  .acct-sub {
+    font-size: 12px;
+    color: var(--text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .acct-sub strong {
+    color: var(--text);
   }
 
   .acct-iso {
@@ -1362,6 +1685,15 @@
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+  }
+
+  .acct-action {
+    display: inline-flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 6px;
+    flex-shrink: 0;
   }
 
   .rename-btn {
@@ -1401,7 +1733,7 @@
     display: flex;
     align-items: flex-start;
     gap: 8px;
-    padding: 8px 12px;
+    padding: 9px 12px;
     border-radius: var(--radius-sm);
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1420,156 +1752,128 @@
     color: var(--text);
   }
 
-  .acct-card {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 12px;
-    padding: 14px 16px;
-  }
-
-  .acct-left {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    min-width: 0;
-  }
-
-  .acct-meta {
-    display: flex;
-    flex-direction: column;
-    gap: 3px;
-    min-width: 0;
-  }
-
-  .acct-top {
-    display: flex;
-    align-items: center;
-    gap: 7px;
-  }
-
-  .acct-sub {
-    font-size: 12px;
-    color: var(--text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-  }
-
-  .acct-sub strong { color: var(--text); }
-
-  .seg-tabs {
-    display: grid;
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-    gap: 6px;
-    padding: 5px;
-    border-radius: var(--radius-md);
-    background: var(--surface);
-    border: 1px solid var(--border);
-  }
-
-  @media (max-width: 760px) {
-    .seg-tabs {
-      grid-template-columns: repeat(2, minmax(0, 1fr));
-    }
-  }
-
-  .seg-tab {
-    display: flex;
-    align-items: center;
-    gap: 9px;
-    padding: 8px 11px;
-    border-radius: var(--radius-sm);
-    border: 1px solid transparent;
-    background: transparent;
-    color: var(--text-muted);
-    text-align: left;
-  }
-
-  .seg-tab:hover {
-    background: var(--surface-2);
-    color: var(--text);
-  }
-
-  .seg-tab.active {
-    background: var(--surface-2);
-    border-color: var(--border-hover);
-    color: var(--text);
-  }
-
-  .seg-ico {
-    width: 26px;
-    height: 26px;
-    border-radius: var(--radius-xs);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
+  /* Stepper & Schedule */
+  .stepper {
     display: inline-flex;
     align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    overflow: hidden;
+  }
+
+  .step-btn {
+    width: 28px;
+    height: 28px;
+    border: none;
+    background: transparent;
+    color: var(--text);
+    font-weight: 600;
+  }
+
+  .step-btn:hover {
+    background: var(--surface-hover);
+  }
+
+  .step-val {
+    min-width: 44px;
+    text-align: center;
+    font-size: 12px;
+    font-weight: 600;
+  }
+
+  .schedule-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 12px;
+    border-radius: var(--radius-sm);
+    background: var(--surface-2);
+    border: 1px solid var(--border);
+  }
+
+  .sched-field {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .sched-label {
+    font-size: 12px;
+    font-weight: 600;
     color: var(--text-muted);
   }
 
-  .seg-tab.active .seg-ico {
-    background: var(--accent);
-    border-color: var(--accent);
-    color: var(--accent-on);
-  }
-
-  .seg-text {
+  /* Webhooks */
+  .webhook-input-row {
     display: flex;
-    flex-direction: column;
-    gap: 1px;
-    min-width: 0;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px;
   }
 
-  .seg-label {
-    font-size: var(--text-sm);
-    font-weight: 600;
-    line-height: 1.2;
+  .secret-input {
+    flex: 1;
+    min-width: 160px;
+    background: var(--surface-2);
   }
 
-  .seg-desc {
+  .webhook-feedback-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .webhook-feedback {
+    margin: 0;
+    font-family: var(--font-mono);
     font-size: 11px;
-    color: var(--text-faint);
+    line-height: 1.4;
+    word-break: break-word;
+  }
+
+  .webhook-feedback.fb-ok {
+    color: var(--success-text);
+  }
+
+  .webhook-feedback.fb-err {
+    color: var(--error-text);
+  }
+
+  .fb-open-link {
+    border: 1px solid var(--border);
+    background: var(--surface-2);
+    color: var(--accent-text);
+    border-radius: var(--radius-xs);
+    padding: 2px 8px;
+    font-family: var(--font-mono);
+    font-size: 10.5px;
+    font-weight: 600;
     white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
   }
 
-  .panel-stack {
-    display: flex;
-    flex-direction: column;
-    gap: var(--grid-gap, 14px);
+  .fb-open-link:hover {
+    border-color: var(--accent);
   }
 
+  /* Appearance */
   .studio-card {
     display: flex;
     flex-direction: column;
     gap: 14px;
+    padding: 14px;
   }
 
-  .studio-head {
-    display: flex;
-    align-items: flex-start;
-    justify-content: space-between;
-    gap: 12px;
-  }
-
-  .studio-sub {
-    margin-top: 3px;
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-  }
-
-  /* Color Mode */
   .mode-grid {
     display: grid;
     grid-template-columns: repeat(3, minmax(0, 1fr));
     gap: 10px;
   }
 
-  @media (max-width: 720px) {
+  @media (max-width: 640px) {
     .mode-grid {
       grid-template-columns: 1fr;
     }
@@ -1580,7 +1884,7 @@
     align-items: center;
     justify-content: space-between;
     gap: 10px;
-    padding: 11px 13px;
+    padding: 10px 12px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--surface-2);
@@ -1608,32 +1912,14 @@
   }
 
   .mode-text span {
-    font-size: 11.5px;
+    font-size: 11px;
     color: var(--text-muted);
   }
 
   .mode-check {
     color: var(--accent-text);
     display: inline-flex;
-  }
-
-  .appearance-split {
-    display: grid;
-    grid-template-columns: minmax(0, 1.35fr) minmax(320px, 0.9fr);
-    gap: var(--grid-gap, 14px);
-    align-items: start;
-  }
-
-  @media (max-width: 1180px) {
-    .appearance-split {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .title-with-ico {
-    display: flex;
-    align-items: center;
-    gap: 7px;
+    flex-shrink: 0;
   }
 
   .font-grid {
@@ -1642,7 +1928,7 @@
     gap: 10px;
   }
 
-  @media (max-width: 680px) {
+  @media (max-width: 600px) {
     .font-grid {
       grid-template-columns: 1fr;
     }
@@ -1652,7 +1938,7 @@
     display: flex;
     flex-direction: column;
     gap: 5px;
-    padding: 11px 13px;
+    padding: 10px 12px;
     border-radius: var(--radius-sm);
     border: 1px solid var(--border);
     background: var(--surface-2);
@@ -1686,7 +1972,7 @@
   }
 
   .font-sample-row {
-    margin-top: 4px;
+    margin-top: 3px;
     padding: 5px 8px;
     border-radius: var(--radius-xs);
     background: var(--bg);
@@ -1772,14 +2058,10 @@
     opacity: 0.85;
   }
 
-  .preview-card {
-    gap: 12px;
-  }
-
   .preview-surface {
     display: flex;
     flex-direction: column;
-    gap: 11px;
+    gap: 10px;
     padding: 12px;
     border-radius: var(--radius-sm);
     background: var(--bg);
@@ -1822,7 +2104,7 @@
   .pv-camp {
     display: flex;
     flex-direction: column;
-    gap: 3px;
+    gap: 2px;
   }
 
   .pv-camp-head {
@@ -1877,6 +2159,7 @@
   .pv-log {
     display: flex;
     align-items: baseline;
+    flex-wrap: wrap;
     gap: 7px;
     padding: 6px 8px;
     border-radius: var(--radius-xs);
@@ -1896,319 +2179,24 @@
     font-weight: 600;
   }
 
-  /* Preferences Grid */
-  .pref-grid {
-    display: grid;
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-    gap: var(--grid-gap, 14px);
-  }
-
-  @media (min-width: 1360px) {
-    .pref-grid {
-      grid-template-columns: repeat(3, minmax(0, 1fr));
-    }
-  }
-
-  @media (min-width: 1840px) {
-    .pref-grid {
-      grid-template-columns: repeat(4, minmax(0, 1fr));
-    }
-  }
-
-  @media (max-width: 780px) {
-    .pref-grid {
-      grid-template-columns: 1fr;
-    }
-  }
-
-  .pref-card {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .pref-wide {
-    grid-column: 1 / -1;
-  }
-
-  .pref-top {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    margin-bottom: 2px;
-  }
-
-  .pref-ico {
-    width: 30px;
-    height: 30px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    color: var(--text-muted);
-    display: inline-flex;
-    align-items: center;
-    justify-content: center;
-    flex-shrink: 0;
-  }
-
-  .pref-card h3 {
-    font-size: var(--text-base);
-    font-weight: 600;
-    color: var(--text);
-  }
-
-  .pref-card p {
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-    line-height: 1.45;
-    max-width: 72ch;
-  }
-
-  .pref-wide-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 14px;
-  }
-
-  .pref-wide-text {
-    flex: 1;
-    min-width: 240px;
-  }
-
-  .title-with-badge {
-    display: flex;
-    align-items: flex-start;
-    gap: 10px;
-  }
-
-  .sub-divider {
-    height: 1px;
-    background: var(--border);
-    margin: 4px 0;
-  }
-
-  .schedule-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 14px;
-    padding: 10px 12px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-  }
-
-  .sched-field {
-    display: inline-flex;
-    align-items: center;
-    gap: 8px;
-  }
-
-  .sched-label {
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--text-muted);
-  }
-
-  .stepper {
-    display: inline-flex;
-    align-items: center;
-    border: 1px solid var(--border);
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    overflow: hidden;
-  }
-
-  .step-btn {
-    width: 28px;
-    height: 28px;
-    border: none;
-    background: transparent;
-    color: var(--text);
-    font-weight: 600;
-  }
-
-  .step-btn:hover {
-    background: var(--surface-hover);
-  }
-
-  .step-val {
-    min-width: 44px;
-    text-align: center;
-    font-size: 12px;
-    font-weight: 600;
-  }
-
-  .inline-actions {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .pref-toggle-list {
-    display: flex;
-    flex-direction: column;
-    gap: 8px;
-  }
-
-  .pref-toggle-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 10px;
-    font-size: var(--text-xs);
-    font-weight: 500;
-    color: var(--text);
-  }
-
-  .webhook-card {
-    gap: 14px;
-  }
-
-  .webhook-box {
-    display: flex;
-    flex-direction: column;
-    gap: 10px;
-    padding: 12px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-  }
-
-  .webhook-box-head {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .webhook-title-row {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-  }
-
-  .webhook-input-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    gap: 6px;
-  }
-
-  .secret-input {
-    flex: 1;
-    min-width: 160px;
-    background: var(--surface);
-  }
-
-  .event-toggles {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-  }
-
-  .ev-chip {
-    display: inline-flex;
-    align-items: center;
-    gap: 10px;
-    padding: 6px 10px;
-    border-radius: var(--radius-sm);
-    background: var(--surface-2);
-    border: 1px solid var(--border);
-    font-size: 12px;
-    color: var(--text);
-    cursor: pointer;
-  }
-
-  .about-card {
-    display: flex;
-    flex-direction: column;
-    gap: 12px;
-  }
-
-  .about-head {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-  }
-
+  /* About & Danger */
   .about-note {
     font-size: var(--text-xs);
     color: var(--text-muted);
-    line-height: 1.55;
+    line-height: 1.5;
   }
 
-  .about-links {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
+  .danger-label {
+    color: var(--error-text);
   }
 
   .danger-card {
+    padding: 0;
     border-color: var(--error);
+    overflow: hidden;
   }
 
-  .danger-row {
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    flex-wrap: wrap;
-    gap: 12px;
-  }
-
-  .danger-row h3 {
-    font-size: var(--text-base);
-    color: var(--error-text);
-  }
-
-  .danger-row p {
-    margin-top: 2px;
-    font-size: var(--text-xs);
-    color: var(--text-muted);
-  }
-
-  .webhook-feedback-row {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: center;
-    justify-content: space-between;
-    gap: 8px;
-  }
-
-  .webhook-feedback {
-    margin: 0;
-    font-family: var(--font-mono);
-    font-size: 11px;
-    line-height: 1.4;
-    word-break: break-word;
-  }
-
-  .fb-open-link {
-    border: 1px solid var(--border);
-    background: var(--surface-2);
-    color: var(--accent-text);
-    border-radius: var(--radius-xs);
-    padding: 2px 8px;
-    font-family: var(--font-mono);
-    font-size: 10.5px;
-    font-weight: 600;
-    white-space: nowrap;
-  }
-
-  .fb-open-link:hover {
-    border-color: var(--accent);
-  }
-
-  .webhook-feedback.fb-ok {
-    color: var(--success-text);
-  }
-
-  .webhook-feedback.fb-err {
-    color: var(--error-text);
+  .danger-title {
+    color: var(--error-text) !important;
   }
 </style>

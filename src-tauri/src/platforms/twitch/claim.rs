@@ -1,11 +1,21 @@
 use serde_json::json;
 
 use crate::net::client::AllowlistedClient;
-use crate::platforms::twitch::gql::{execute_persisted_gql, ops};
+use crate::platforms::twitch::gql::{execute_persisted_gql_for_profile, ops};
 use crate::platforms::{AppError, Drop};
+use crate::settings::DEFAULT_TWITCH_PROFILE_ID;
 
 pub async fn claim_drop(
     http: &AllowlistedClient,
+    token: &str,
+    drop: &Drop,
+) -> Result<(), AppError> {
+    claim_drop_for_profile(http, DEFAULT_TWITCH_PROFILE_ID, token, drop).await
+}
+
+pub async fn claim_drop_for_profile(
+    http: &AllowlistedClient,
+    profile_id: &str,
     token: &str,
     drop: &Drop,
 ) -> Result<(), AppError> {
@@ -22,7 +32,14 @@ pub async fn claim_drop(
         }
     });
 
-    let payload = execute_persisted_gql(http, token, ops::CLAIM_DROP_REWARDS, vars).await?;
+    let payload = execute_persisted_gql_for_profile(
+        http,
+        profile_id,
+        token,
+        ops::CLAIM_DROP_REWARDS,
+        vars,
+    )
+    .await?;
 
     let status = payload
         .pointer("/data/claimDropRewards/status")

@@ -1,6 +1,10 @@
 use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::sync::{Mutex as StdMutex, OnceLock};
 
-use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE};
+use chrono::Utc;
+use rand::Rng;
+use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, ORIGIN, REFERER};
 use reqwest::{Method, StatusCode};
 use serde_json::{json, Value};
 
@@ -8,6 +12,7 @@ use crate::net::client::{parse_header_name_value, AllowlistedClient};
 use crate::platforms::twitch::models::{parse_directory_channels, parse_drop};
 use crate::platforms::{AppError, Drop, PlatformId};
 use crate::remote_config::{resolve_gql_hash, resolve_twitch_client_id};
+use crate::settings::DEFAULT_TWITCH_PROFILE_ID;
 
 /// Official public Twitch web client ID observed on https://www.twitch.tv.
 /// Dropilot never impersonates mobile, TV, or console clients.
@@ -86,12 +91,173 @@ pub mod ops {
     };
 }
 
+static TWITCH_DEVICE_ID: OnceLock<String> = OnceLock::new();
+static TWITCH_SESSION_ID: OnceLock<String> = OnceLock::new();
+static TWITCH_INTEGRITY_CACHE: OnceLock<StdMutex<HashMap<String, TwitchIntegrityContext>>> =
+    OnceLock::new();
+
+const INTEGRITY_RENEW_MARGIN_MS: i64 = 5 * 60 * 1000;
+const INTEGRITY_DEFAULT_TTL_MS: i64 = 2 * 60 * 60 * 1000;
+
+/// Real browser integrity context captured from WebView2's official `www.twitch.tv` handshake.
+/// Never stores OAuth credentials — only an FNV-1a fingerprint to invalidate when the token changes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TwitchIntegrityContext {
+    pub client_integrity: String,
+    pub client_version: Option<String>,
+    pub client_session_id: Option<String>,
+    pub device_id: Option<String>,
+    pub user_agent: Option<String>,
+    pub expires_at_ms: i64,
+    pub token_fingerprint: u64,
+}
+
+fn integrity_cache() -> &'static StdMutex<HashMap<String, TwitchIntegrityContext>> {
+    TWITCH_INTEGRITY_CACHE.get_or_init(|| StdMutex::new(HashMap::new()))
+}
+
+pub fn token_fingerprint(token: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in token.as_bytes() {
+        hash ^= *b as u64;
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    hash
+}
+
+/// Returns a consistent 32-char hex device identifier fallback for Twitch web GQL and Spade calls.
+pub fn twitch_device_id() -> &'static str {
+    TWITCH_DEVICE_ID.get_or_init(|| {
+        let mut rng = rand::thread_rng();
+        let bytes: [u8; 16] = rng.gen();
+        let mut out = String::with_capacity(32);
+        for b in bytes {
+            let _ = write!(&mut out, "{b:02x}");
+        }
+        out
+    })
+}
+
+/// Returns a consistent 16-char hex session identifier for Twitch web GQL calls.
+pub fn twitch_session_id() -> &'static str {
+    TWITCH_SESSION_ID.get_or_init(|| {
+        let mut rng = rand::thread_rng();
+        let bytes: [u8; 8] = rng.gen();
+        let mut out = String::with_capacity(16);
+        for b in bytes {
+            let _ = write!(&mut out, "{b:02x}");
+        }
+        out
+    })
+}
+
+fn is_integrity_context_fresh(ctx: &TwitchIntegrityContext, auth_token: &str, now_ms: i64) -> bool {
+    !ctx.client_integrity.trim().is_empty()
+        && ctx.token_fingerprint == token_fingerprint(auth_token)
+        && ctx.expires_at_ms - INTEGRITY_RENEW_MARGIN_MS > now_ms
+}
+
+pub fn cache_twitch_integrity_context(
+    profile_id: &str,
+    auth_token: &str,
+    mut ctx: TwitchIntegrityContext,
+) {
+    if ctx.client_integrity.trim().is_empty() || auth_token.trim().is_empty() {
+        return;
+    }
+    let now_ms = Utc::now().timestamp_millis();
+    if ctx.expires_at_ms <= now_ms {
+        ctx.expires_at_ms = now_ms + INTEGRITY_DEFAULT_TTL_MS;
+    }
+    ctx.token_fingerprint = token_fingerprint(auth_token);
+    if let Ok(mut guard) = integrity_cache().lock() {
+        guard.insert(profile_id.to_string(), ctx);
+    }
+}
+
+pub fn get_twitch_integrity_context(
+    profile_id: &str,
+    auth_token: &str,
+) -> Option<TwitchIntegrityContext> {
+    if auth_token.trim().is_empty() {
+        return None;
+    }
+    let now_ms = Utc::now().timestamp_millis();
+    let guard = integrity_cache().lock().ok()?;
+    guard
+        .get(profile_id)
+        .filter(|ctx| is_integrity_context_fresh(ctx, auth_token, now_ms))
+        .cloned()
+}
+
+pub fn cached_twitch_user_agent(profile_id: &str) -> Option<String> {
+    let guard = integrity_cache().lock().ok()?;
+    guard
+        .get(profile_id)
+        .and_then(|ctx| ctx.user_agent.as_ref())
+        .map(|ua| ua.trim().to_string())
+        .filter(|ua| !ua.is_empty())
+}
+
+pub fn clear_twitch_integrity_context(profile_id: &str) {
+    if let Ok(mut guard) = integrity_cache().lock() {
+        guard.remove(profile_id);
+    }
+}
+
 pub fn build_twitch_headers(token: Option<&str>) -> Result<HeaderMap, AppError> {
+    build_twitch_headers_for_profile(Some(DEFAULT_TWITCH_PROFILE_ID), token)
+}
+
+pub fn build_twitch_headers_for_profile(
+    profile_id: Option<&str>,
+    token: Option<&str>,
+) -> Result<HeaderMap, AppError> {
     let mut headers = HeaderMap::new();
     let client_id = resolve_twitch_client_id(TWITCH_WEB_CLIENT_ID);
     let (cid_name, cid_val) = parse_header_name_value("Client-ID", &client_id)?;
     headers.insert(cid_name, cid_val);
     headers.insert(CONTENT_TYPE, HeaderValue::from_static("application/json"));
+    headers.insert(ORIGIN, HeaderValue::from_static("https://www.twitch.tv"));
+    headers.insert(REFERER, HeaderValue::from_static("https://www.twitch.tv/"));
+
+    let integrity_ctx = match (profile_id, token) {
+        (Some(pid), Some(tok)) => get_twitch_integrity_context(pid, tok),
+        _ => None,
+    };
+
+    let device_id = integrity_ctx
+        .as_ref()
+        .and_then(|ctx| ctx.device_id.as_deref())
+        .filter(|d| !d.trim().is_empty())
+        .unwrap_or(twitch_device_id());
+    let (dev_name, dev_val) = parse_header_name_value("X-Device-Id", device_id)?;
+    headers.insert(dev_name, dev_val);
+
+    let session_id = integrity_ctx
+        .as_ref()
+        .and_then(|ctx| ctx.client_session_id.as_deref())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or(twitch_session_id());
+    let (sess_name, sess_val) = parse_header_name_value("Client-Session-Id", session_id)?;
+    headers.insert(sess_name, sess_val);
+
+    if let Some(ref ctx) = integrity_ctx {
+        if let Some(ref ver) = ctx.client_version {
+            if !ver.trim().is_empty() {
+                if let Ok((ver_name, ver_val)) =
+                    parse_header_name_value("Client-Version", ver.trim())
+                {
+                    headers.insert(ver_name, ver_val);
+                }
+            }
+        }
+        if let Ok((int_name, int_val)) =
+            parse_header_name_value("Client-Integrity", ctx.client_integrity.trim())
+        {
+            headers.insert(int_name, int_val);
+        }
+    }
 
     if let Some(tok) = token {
         let auth_val = HeaderValue::from_str(&format!("OAuth {tok}"))
@@ -216,7 +382,24 @@ pub async fn execute_persisted_gql(
     op: PersistedOp,
     variables: Value,
 ) -> Result<Value, AppError> {
-    execute_persisted_gql_opt(http, Some(token), op, variables).await
+    execute_persisted_gql_opt_for_profile(
+        http,
+        Some(DEFAULT_TWITCH_PROFILE_ID),
+        Some(token),
+        op,
+        variables,
+    )
+    .await
+}
+
+pub async fn execute_persisted_gql_for_profile(
+    http: &AllowlistedClient,
+    profile_id: &str,
+    token: &str,
+    op: PersistedOp,
+    variables: Value,
+) -> Result<Value, AppError> {
+    execute_persisted_gql_opt_for_profile(http, Some(profile_id), Some(token), op, variables).await
 }
 
 pub async fn execute_persisted_gql_opt(
@@ -225,7 +408,25 @@ pub async fn execute_persisted_gql_opt(
     op: PersistedOp,
     variables: Value,
 ) -> Result<Value, AppError> {
-    let headers = build_twitch_headers(token)?;
+    execute_persisted_gql_opt_for_profile(
+        http,
+        Some(DEFAULT_TWITCH_PROFILE_ID),
+        token,
+        op,
+        variables,
+    )
+    .await
+}
+
+pub async fn execute_persisted_gql_opt_for_profile(
+    http: &AllowlistedClient,
+    profile_id: Option<&str>,
+    token: Option<&str>,
+    op: PersistedOp,
+    variables: Value,
+) -> Result<Value, AppError> {
+    let headers = build_twitch_headers_for_profile(profile_id, token)?;
+    let used_integrity = headers.contains_key("client-integrity");
     let payload = build_persisted_query_body(op, &variables);
 
     let resp = http
@@ -240,6 +441,11 @@ pub async fn execute_persisted_gql_opt(
         .await?;
 
     if let Some(err) = map_gql_http_status(op.operation_name, resp.status, &resp.body) {
+        if used_integrity && matches!(err, AppError::Blocked(_)) {
+            if let Some(pid) = profile_id {
+                clear_twitch_integrity_context(pid);
+            }
+        }
         return Err(err);
     }
 
@@ -247,7 +453,14 @@ pub async fn execute_persisted_gql_opt(
         AppError::PlatformChanged(format!("Invalid JSON from {}: {e}", op.operation_name))
     })?;
 
-    check_gql_errors(op.operation_name, &parsed)?;
+    if let Err(err) = check_gql_errors(op.operation_name, &parsed) {
+        if used_integrity && matches!(err, AppError::Blocked(_)) {
+            if let Some(pid) = profile_id {
+                clear_twitch_integrity_context(pid);
+            }
+        }
+        return Err(err);
+    }
 
     Ok(parsed)
 }
@@ -258,7 +471,31 @@ pub async fn execute_persisted_gql_batch(
     op: PersistedOp,
     variables_list: &[Value],
 ) -> Result<Vec<Value>, AppError> {
-    execute_persisted_gql_batch_opt(http, Some(token), op, variables_list).await
+    execute_persisted_gql_batch_opt_for_profile(
+        http,
+        Some(DEFAULT_TWITCH_PROFILE_ID),
+        Some(token),
+        op,
+        variables_list,
+    )
+    .await
+}
+
+pub async fn execute_persisted_gql_batch_for_profile(
+    http: &AllowlistedClient,
+    profile_id: &str,
+    token: &str,
+    op: PersistedOp,
+    variables_list: &[Value],
+) -> Result<Vec<Value>, AppError> {
+    execute_persisted_gql_batch_opt_for_profile(
+        http,
+        Some(profile_id),
+        Some(token),
+        op,
+        variables_list,
+    )
+    .await
 }
 
 pub async fn execute_persisted_gql_batch_opt(
@@ -267,11 +504,29 @@ pub async fn execute_persisted_gql_batch_opt(
     op: PersistedOp,
     variables_list: &[Value],
 ) -> Result<Vec<Value>, AppError> {
+    execute_persisted_gql_batch_opt_for_profile(
+        http,
+        Some(DEFAULT_TWITCH_PROFILE_ID),
+        token,
+        op,
+        variables_list,
+    )
+    .await
+}
+
+pub async fn execute_persisted_gql_batch_opt_for_profile(
+    http: &AllowlistedClient,
+    profile_id: Option<&str>,
+    token: Option<&str>,
+    op: PersistedOp,
+    variables_list: &[Value],
+) -> Result<Vec<Value>, AppError> {
     if variables_list.is_empty() {
         return Ok(Vec::new());
     }
 
-    let headers = build_twitch_headers(token)?;
+    let headers = build_twitch_headers_for_profile(profile_id, token)?;
+    let used_integrity = headers.contains_key("client-integrity");
     let batch_payload = Value::Array(
         variables_list
             .iter()
@@ -291,6 +546,11 @@ pub async fn execute_persisted_gql_batch_opt(
         .await?;
 
     if let Some(err) = map_gql_http_status(op.operation_name, resp.status, &resp.body) {
+        if used_integrity && matches!(err, AppError::Blocked(_)) {
+            if let Some(pid) = profile_id {
+                clear_twitch_integrity_context(pid);
+            }
+        }
         return Err(err);
     }
 
@@ -302,7 +562,14 @@ pub async fn execute_persisted_gql_batch_opt(
     })?;
 
     for item in &items {
-        check_gql_errors(op.operation_name, item)?;
+        if let Err(err) = check_gql_errors(op.operation_name, item) {
+            if used_integrity && matches!(err, AppError::Blocked(_)) {
+                if let Some(pid) = profile_id {
+                    clear_twitch_integrity_context(pid);
+                }
+            }
+            return Err(err);
+        }
     }
 
     Ok(items)
@@ -625,4 +892,89 @@ pub async fn fetch_game_directory_streams(
     check_gql_errors("GameDirectoryById", &parsed)?;
 
     Ok(parsed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use reqwest::header::{AUTHORIZATION, ORIGIN, REFERER};
+
+    #[test]
+    fn build_twitch_headers_includes_web_context_and_device_id() {
+        let anon = build_twitch_headers(None).expect("anon headers");
+        assert!(anon.contains_key("client-id"));
+        assert_eq!(anon.get(ORIGIN).and_then(|v| v.to_str().ok()), Some("https://www.twitch.tv"));
+        assert_eq!(anon.get(REFERER).and_then(|v| v.to_str().ok()), Some("https://www.twitch.tv/"));
+        let dev = anon
+            .get("x-device-id")
+            .and_then(|v| v.to_str().ok())
+            .expect("x-device-id present");
+        assert_eq!(dev.len(), 32);
+        assert!(dev.chars().all(|c| c.is_ascii_hexdigit()));
+        assert!(!anon.contains_key(AUTHORIZATION));
+
+        let authed = build_twitch_headers(Some("tok123")).expect("authed headers");
+        assert_eq!(
+            authed.get(AUTHORIZATION).and_then(|v| v.to_str().ok()),
+            Some("OAuth tok123")
+        );
+        assert_eq!(
+            authed.get("x-device-id").and_then(|v| v.to_str().ok()),
+            Some(dev)
+        );
+    }
+
+    #[test]
+    fn integrity_context_caches_by_profile_and_token_fingerprint() {
+        let profile = "test-integrity-profile";
+        let tok_a = "oauth-alpha-token";
+        let tok_b = "oauth-beta-token";
+        clear_twitch_integrity_context(profile);
+
+        let now_ms = Utc::now().timestamp_millis();
+        cache_twitch_integrity_context(
+            profile,
+            tok_a,
+            TwitchIntegrityContext {
+                client_integrity: "v4.public.fake-token".to_string(),
+                client_version: Some("ver-123".to_string()),
+                client_session_id: Some("sess-456".to_string()),
+                device_id: Some("real-device-789".to_string()),
+                user_agent: Some("Mozilla/5.0 TestEdge".to_string()),
+                expires_at_ms: now_ms + 3_600_000,
+                token_fingerprint: 0,
+            },
+        );
+
+        let headers_a =
+            build_twitch_headers_for_profile(Some(profile), Some(tok_a)).expect("headers a");
+        assert_eq!(
+            headers_a.get("client-integrity").and_then(|v| v.to_str().ok()),
+            Some("v4.public.fake-token")
+        );
+        assert_eq!(
+            headers_a.get("client-version").and_then(|v| v.to_str().ok()),
+            Some("ver-123")
+        );
+        assert_eq!(
+            headers_a.get("client-session-id").and_then(|v| v.to_str().ok()),
+            Some("sess-456")
+        );
+        assert_eq!(
+            headers_a.get("x-device-id").and_then(|v| v.to_str().ok()),
+            Some("real-device-789")
+        );
+        assert_eq!(
+            cached_twitch_user_agent(profile).as_deref(),
+            Some("Mozilla/5.0 TestEdge")
+        );
+
+        // A different OAuth token on the same profile must not reuse the old token's integrity proof.
+        let headers_b =
+            build_twitch_headers_for_profile(Some(profile), Some(tok_b)).expect("headers b");
+        assert!(!headers_b.contains_key("client-integrity"));
+
+        clear_twitch_integrity_context(profile);
+        assert!(get_twitch_integrity_context(profile, tok_a).is_none());
+    }
 }

@@ -55,6 +55,7 @@ function createPreviewData(): {
         fontFamily: 'plex',
         fontScale: 'default',
         autostart: false,
+        startInTray: true,
         startMinimized: false,
         closeToTray: true,
         notifications: true,
@@ -113,6 +114,7 @@ function createPreviewData(): {
       fontFamily: 'plex',
       fontScale: 'default',
       autostart: false,
+      startInTray: true,
       startMinimized: false,
       closeToTray: true,
       notifications: true,
@@ -696,6 +698,11 @@ export const api = {
   openEpicClaim: (gameId: string) =>
     call<void>('open_epic_claim', { gameId }, () => {
       window.open('https://store.epicgames.com/en-US/free-games', '_blank', 'noopener,noreferrer');
+    }),
+  openEpicLauncher: (gameId?: string | null) =>
+    call<boolean>('open_epic_launcher', { gameId: gameId ?? null }, () => {
+      window.open('com.epicgames.launcher://store/free-games', '_blank', 'noopener,noreferrer');
+      return true;
     }),
   markEpicGameClaimed: (gameId: string, claimed: boolean) =>
     call<EpicFeedSnapshot>(

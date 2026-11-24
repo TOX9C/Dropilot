@@ -20,7 +20,8 @@ use crate::settings::DEFAULT_TWITCH_PROFILE_ID;
 use crate::miner::selector::game_names_match;
 use crate::net::client::AllowlistedClient;
 use crate::platforms::twitch::gql::{
-    execute_persisted_gql, execute_persisted_gql_batch, execute_persisted_gql_opt,
+    cached_twitch_user_agent, clear_twitch_integrity_context, execute_persisted_gql_batch_for_profile,
+    execute_persisted_gql_for_profile, execute_persisted_gql_opt_for_profile,
     fetch_channel_live_status, fetch_channels_available_drop_campaign_ids,
     fetch_channels_available_drops_data, fetch_game_directory_streams, ops, validate_oauth_token,
 };
@@ -236,8 +237,14 @@ impl Platform for TwitchPlatform {
         // Try fetching display name and avatar via GQL; fall back gracefully if unavailable.
         let mut display_name = login.clone();
         let mut avatar_url = None;
-        if let Ok(profile) =
-            execute_persisted_gql(&self.http, token, ops::USER_PROFILE, json!({})).await
+        if let Ok(profile) = execute_persisted_gql_for_profile(
+            &self.http,
+            &self.profile_id,
+            token,
+            ops::USER_PROFILE,
+            json!({}),
+        )
+        .await
         {
             if let Some(dn) = profile
                 .pointer("/data/currentUser/displayName")
@@ -260,8 +267,9 @@ impl Platform for TwitchPlatform {
     }
 
     async fn fetch_campaigns(&self, token: &str) -> Result<Vec<Campaign>, AppError> {
-        let payload = match execute_persisted_gql(
+        let payload = match execute_persisted_gql_for_profile(
             &self.http,
+            &self.profile_id,
             token,
             ops::VIEWER_DROPS_DASHBOARD,
             json!({ "fetchRewardCampaigns": true }),
@@ -275,13 +283,17 @@ impl Platform for TwitchPlatform {
                     .app
                     .as_ref()
                     .ok_or_else(|| AppError::Internal("Missing app handle".to_string()))?;
-                twitch_bridge_capture_for_profile(
+                let res = twitch_bridge_capture_for_profile(
                     app_handle,
                     &self.profile_id,
                     "https://www.twitch.tv/drops/campaigns",
                     "campaigns",
                 )
-                .await?
+                .await?;
+                if let Some(ua) = cached_twitch_user_agent(&self.profile_id) {
+                    self.http.set_user_agent(ua).await;
+                }
+                res
             }
             Err(err) => return Err(err),
         };
@@ -304,8 +316,9 @@ impl Platform for TwitchPlatform {
 
             let mut working_key: Option<String> = None;
             for key in &candidate_keys {
-                match execute_persisted_gql(
+                match execute_persisted_gql_for_profile(
                     &self.http,
+                    &self.profile_id,
                     token,
                     ops::DROP_CAMPAIGN_DETAILS,
                     json!({
@@ -345,8 +358,9 @@ impl Platform for TwitchPlatform {
                         })
                         .collect();
 
-                    match execute_persisted_gql_batch(
+                    match execute_persisted_gql_batch_for_profile(
                         &self.http,
+                        &self.profile_id,
                         token,
                         ops::DROP_CAMPAIGN_DETAILS,
                         &vars_chunk,
@@ -383,27 +397,69 @@ impl Platform for TwitchPlatform {
     }
 
     async fn fetch_progress(&self, token: &str) -> Result<Vec<DropProgress>, AppError> {
+        let watched = self
+            .last_watched_channel
+            .lock()
+            .ok()
+            .and_then(|g| g.clone());
+
         // 1. Try pure-Rust direct Inventory GQL first (0 MB WebView2 RAM).
-        match execute_persisted_gql(
+        match execute_persisted_gql_for_profile(
             &self.http,
+            &self.profile_id,
             token,
             ops::INVENTORY,
             json!({ "fetchRewardCampaigns": false }),
         )
         .await
         {
-            Ok(val) => return parse_inventory_progress(&val),
+            Ok(val) => {
+                let mut progress_list = parse_inventory_progress(&val)?;
+                if let Some((ref ch_id, ref ch_login)) = watched {
+                    if let Ok(sess_val) = execute_persisted_gql_for_profile(
+                        &self.http,
+                        &self.profile_id,
+                        token,
+                        ops::DROP_CURRENT_SESSION_CONTEXT,
+                        json!({
+                            "channelID": ch_id,
+                            "channelLogin": ch_login,
+                        }),
+                    )
+                    .await
+                    {
+                        if let Some((prog, _completed)) =
+                            parse_drop_current_session_progress(&sess_val)
+                        {
+                            if let Some(existing) =
+                                progress_list.iter_mut().find(|p| p.drop_id == prog.drop_id)
+                            {
+                                existing.current_minutes =
+                                    existing.current_minutes.max(prog.current_minutes);
+                                existing.claimed |= prog.claimed;
+                                if existing.instance_id.is_none() {
+                                    existing.instance_id = prog.instance_id;
+                                }
+                            } else {
+                                progress_list.push(prog);
+                            }
+                        }
+                    }
+                }
+                return Ok(progress_list);
+            }
             Err(AppError::Blocked(_)) => {}
+            Err(AppError::PlatformChanged(msg)) => {
+                tracing::warn!(
+                    reason = %msg,
+                    "Direct Twitch Inventory GQL unavailable; falling back to DropCurrentSessionContext/bridge"
+                );
+            }
             Err(err) => return Err(err),
         }
 
         // 2. Try pure-Rust DropCurrentSessionContext for the active watched channel
         //    so live minutes sync over lightweight HTTP without spawning any hidden WebView2 tab.
-        let watched = self
-            .last_watched_channel
-            .lock()
-            .ok()
-            .and_then(|g| g.clone());
         let last_bridge = self
             .last_inventory_bridge_at
             .lock()
@@ -416,8 +472,9 @@ impl Platform for TwitchPlatform {
 
         let mut completed_needs_claim = false;
         if let Some((ref ch_id, ref ch_login)) = watched {
-            if let Ok(sess_val) = execute_persisted_gql(
+            match execute_persisted_gql_for_profile(
                 &self.http,
+                &self.profile_id,
                 token,
                 ops::DROP_CURRENT_SESSION_CONTEXT,
                 json!({
@@ -427,11 +484,20 @@ impl Platform for TwitchPlatform {
             )
             .await
             {
-                if let Some((prog, completed)) = parse_drop_current_session_progress(&sess_val) {
-                    if !completed && !bridge_due {
-                        return Ok(vec![prog]);
+                Ok(sess_val) => {
+                    if let Some((prog, completed)) = parse_drop_current_session_progress(&sess_val) {
+                        if !completed && !bridge_due {
+                            return Ok(vec![prog]);
+                        }
+                        completed_needs_claim = completed;
                     }
-                    completed_needs_claim = completed;
+                }
+                Err(err) => {
+                    tracing::debug!(
+                        channel = %ch_login,
+                        error = %err,
+                        "Twitch DropCurrentSessionContext request failed"
+                    );
                 }
             }
         }
@@ -614,8 +680,9 @@ impl Platform for TwitchPlatform {
             "includeIsDJ": false
         });
 
-        let direct_result = match execute_persisted_gql(
+        let direct_result = match execute_persisted_gql_for_profile(
             &self.http,
+            &self.profile_id,
             token,
             ops::DIRECTORY_PAGE_GAME,
             vars.clone(),
@@ -624,7 +691,14 @@ impl Platform for TwitchPlatform {
         {
             Ok(val) => Ok(val),
             Err(AppError::Blocked(_)) => {
-                execute_persisted_gql_opt(&self.http, None, ops::DIRECTORY_PAGE_GAME, vars).await
+                execute_persisted_gql_opt_for_profile(
+                    &self.http,
+                    Some(&self.profile_id),
+                    None,
+                    ops::DIRECTORY_PAGE_GAME,
+                    vars,
+                )
+                .await
             }
             Err(err) => Err(err),
         };
@@ -688,10 +762,25 @@ impl Platform for TwitchPlatform {
             Ok(val) => val,
             Err(_) => {
                 let vars = json!({ "channelLogin": channel.login });
-                match execute_persisted_gql(&self.http, token, ops::USE_LIVE, vars.clone()).await {
+                match execute_persisted_gql_for_profile(
+                    &self.http,
+                    &self.profile_id,
+                    token,
+                    ops::USE_LIVE,
+                    vars.clone(),
+                )
+                .await
+                {
                     Ok(val) => val,
                     Err(AppError::Blocked(_)) => {
-                        execute_persisted_gql_opt(&self.http, None, ops::USE_LIVE, vars).await?
+                        execute_persisted_gql_opt_for_profile(
+                            &self.http,
+                            Some(&self.profile_id),
+                            None,
+                            ops::USE_LIVE,
+                            vars,
+                        )
+                        .await?
                     }
                     Err(err) => return Err(err),
                 }
@@ -793,6 +882,7 @@ impl Platform for TwitchPlatform {
                 &self.http,
                 self.app.as_ref(),
                 &self.profile_id,
+                Some(&self.bridge_lock),
                 token,
                 channel,
                 compat_mode,
@@ -826,7 +916,7 @@ impl Platform for TwitchPlatform {
         campaign: &Campaign,
         drop: &Drop,
     ) -> Result<ClaimResult, AppError> {
-        match claim::claim_drop(&self.http, token, drop).await {
+        match claim::claim_drop_for_profile(&self.http, &self.profile_id, token, drop).await {
             Ok(()) => Ok(ClaimResult::default()),
             Err(AppError::Blocked(_)) | Err(AppError::NotFound(_)) if self.app.is_some() => {
                 let _guard = self.bridge_lock.lock().await;
@@ -855,6 +945,7 @@ impl Platform for TwitchPlatform {
 
     async fn logout(&self, _token: Option<&str>) -> Result<(), AppError> {
         self.watch.invalidate_token().await;
+        clear_twitch_integrity_context(&self.profile_id);
         if let Ok(mut g) = self.last_watched_channel.lock() {
             *g = None;
         }

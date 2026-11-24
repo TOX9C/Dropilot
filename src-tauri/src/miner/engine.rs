@@ -17,9 +17,9 @@ use crate::auth::login_window::{
 use crate::history::{ClaimHistoryEntry, ClaimRecordStatus};
 use crate::miner::scheduler::{
     duration_until_quiet_end, format_minutes_hhmm, is_in_quiet_hours_now, jittered_duration,
-    jittered_duration_with_mode, local_minutes_since_midnight, ERROR_RETRY_SECS, IDLE_RETRY_SECS,
-    LIVE_CHECK_SECS, MIN_CAMPAIGN_REFRESH_SECS, MOCK_WATCH_TICK_SECS, PROGRESS_POLL_SECS,
-    WATCH_TICK_SECS,
+    jittered_duration_with_mode, local_minutes_since_midnight, ACTIVE_PROGRESS_POLL_SECS,
+    ERROR_RETRY_SECS, IDLE_RETRY_SECS, LIVE_CHECK_SECS, MIN_CAMPAIGN_REFRESH_SECS,
+    MOCK_WATCH_TICK_SECS, PROGRESS_POLL_SECS, WATCH_TICK_SECS,
 };
 use crate::miner::selector::{
     evaluate_switch, ordered_target_campaigns, select_best_channel, SwitchContext, SwitchDecision,
@@ -765,8 +765,14 @@ async fn step_miner(
         }
     }
 
-    // 3. Refresh progress periodically (or frequently in mock mode).
-    let progress_secs = if is_mock { 6 } else { PROGRESS_POLL_SECS };
+    // 3. Refresh progress periodically (more frequently while actively watching or in mock mode).
+    let progress_secs = if is_mock {
+        6
+    } else if ctx.watching.is_some() {
+        ACTIVE_PROGRESS_POLL_SECS
+    } else {
+        PROGRESS_POLL_SECS
+    };
     let need_progress = ctx
         .last_progress_fetch
         .map(|t| t.elapsed() >= Duration::from_secs(progress_secs))
@@ -778,7 +784,9 @@ async fn step_miner(
                 if !progress_list.is_empty() {
                     apply_progress(&mut ctx.campaigns, &progress_list);
                     ctx.progress_synced_at = Some(Utc::now());
-                } else if ctx.progress_synced_at.is_none() {
+                } else if ctx.watching.is_some() || ctx.progress_synced_at.is_none() {
+                    // Always re-anchor sync timestamp when watching so UI interpolation does not
+                    // drift endlessly upward when the platform has not yet credited minutes.
                     ctx.progress_synced_at = Some(Utc::now());
                 }
                 ctx.last_progress_fetch = Some(Instant::now());
@@ -796,6 +804,16 @@ async fn step_miner(
                 } else if total_mins < ctx.last_seen_total_minutes {
                     // Campaign expired/removed; reset high-water mark so future deltas still count.
                     ctx.last_seen_total_minutes = total_mins;
+                } else if let Some(ref ch) = ctx.watching {
+                    let stalled_secs = (Utc::now() - ctx.last_progress_advance).num_seconds();
+                    if !is_mock && stalled_secs >= 4 * 60 {
+                        warn!(
+                            platform = platform_id.as_str(),
+                            channel = %ch.login,
+                            elapsed_secs = stalled_secs,
+                            "Platform has not confirmed any drop progress yet while watching"
+                        );
+                    }
                 }
             }
             Err(err) => {

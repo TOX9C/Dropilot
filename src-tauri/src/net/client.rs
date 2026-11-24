@@ -291,7 +291,7 @@ impl AllowlistedClient {
         &self,
         op_name: &str,
         raw_url: &str,
-        close_connection: bool,
+        _close_connection: bool,
     ) -> Result<HttpResponse, AppError> {
         let parsed = Url::parse(raw_url)
             .map_err(|e| AppError::Internal(format!("Invalid URL for {op_name}: {e}")))?;
@@ -300,12 +300,12 @@ impl AllowlistedClient {
         self.twitch_cdn_limiter.acquire().await;
 
         let ua = self.user_agent().await;
-        let mut req = self.http_platform.get(parsed).header(USER_AGENT, ua);
-        if close_connection {
-            req = req.header("Connection", "close");
-        }
-
-        let resp = req
+        let resp = self
+            .http_platform
+            .get(parsed)
+            .header(USER_AGENT, ua)
+            .header("Origin", "https://www.twitch.tv")
+            .header("Referer", "https://www.twitch.tv/")
             .send()
             .await
             .map_err(|e| map_reqwest_error(op_name, e))?;
@@ -341,6 +341,8 @@ impl AllowlistedClient {
             .http_platform
             .head(parsed)
             .header(USER_AGENT, ua)
+            .header("Origin", "https://www.twitch.tv")
+            .header("Referer", "https://www.twitch.tv/")
             .send()
             .await
             .map_err(|e| map_reqwest_error(op_name, e))?;

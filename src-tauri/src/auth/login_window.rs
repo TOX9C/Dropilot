@@ -2017,6 +2017,75 @@ fn build_twitch_claim_drop_script(
 }
 
 #[cfg(windows)]
+#[derive(Default, Clone)]
+struct TwitchBridgeIntegrityCapture {
+    client_integrity: Option<String>,
+    client_version: Option<String>,
+    client_session_id: Option<String>,
+    device_id: Option<String>,
+    user_agent: Option<String>,
+    expires_at_ms: i64,
+}
+
+#[cfg(windows)]
+impl TwitchBridgeIntegrityCapture {
+    fn maybe_publish(&self, profile_id: &str, auth_token: Option<&str>) {
+        let Some(tok) = auth_token else {
+            return;
+        };
+        let Some(ref integrity) = self.client_integrity else {
+            return;
+        };
+        if integrity.trim().is_empty() {
+            return;
+        }
+        crate::platforms::twitch::gql::cache_twitch_integrity_context(
+            profile_id,
+            tok,
+            crate::platforms::twitch::gql::TwitchIntegrityContext {
+                client_integrity: integrity.clone(),
+                client_version: self.client_version.clone(),
+                client_session_id: self.client_session_id.clone(),
+                device_id: self.device_id.clone(),
+                user_agent: self.user_agent.clone(),
+                expires_at_ms: self.expires_at_ms,
+                token_fingerprint: 0,
+            },
+        );
+    }
+}
+
+fn parse_twitch_integrity_response(bytes: &[u8]) -> Option<(String, i64)> {
+    let val: serde_json::Value = serde_json::from_slice(bytes).ok()?;
+    let token = val
+        .get("token")
+        .and_then(|v| v.as_str())
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())?;
+    let expiration = val
+        .get("expiration")
+        .and_then(|v| v.as_i64())
+        .unwrap_or(0);
+    Some((token, expiration))
+}
+
+#[cfg(windows)]
+unsafe fn read_wv_header(
+    headers: &webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2HttpRequestHeaders,
+    name: &str,
+) -> Option<String> {
+    let key = windows::core::HSTRING::from(name);
+    let mut val = windows::core::PWSTR::null();
+    if headers.GetHeader(&key, &mut val).is_ok() {
+        let s = webview2_com::take_pwstr(val).trim().to_string();
+        if !s.is_empty() {
+            return Some(s);
+        }
+    }
+    None
+}
+
+#[cfg(windows)]
 async fn run_twitch_bridge(
     app: &AppHandle,
     profile_id: &str,
@@ -2087,6 +2156,10 @@ async fn run_twitch_bridge(
     let attach_tx = result_tx_slot.clone();
     let attach_attempts = integrity_attempts.clone();
     let attach_ops = seen_gql_ops.clone();
+    let captured_integrity = Arc::new(StdMutex::new(TwitchBridgeIntegrityCapture::default()));
+    let attach_integrity = captured_integrity.clone();
+    let attach_profile_id = profile_id.to_string();
+    let attach_auth_token = saved_twitch_token.clone();
 
     if let Err(err) = win.with_webview(move |wv| {
         let attach_res: Result<(), String> = (|| unsafe {
@@ -2101,7 +2174,7 @@ async fn run_twitch_bridge(
 
             // Keep WebView2's Twitch session cookie synchronized with the user's validated
             // Credential Manager token so official drops pages never silently load logged-out.
-            if let Some(ref auth_tok) = saved_twitch_token {
+            if let Some(ref auth_tok) = attach_auth_token {
                 if let Ok(cm) = core2.CookieManager() {
                     let name_h = HSTRING::from("auth-token");
                     let val_h = HSTRING::from(auth_tok.as_str());
@@ -2128,14 +2201,74 @@ async fn run_twitch_bridge(
                     let mut uri_pwstr = PWSTR::null();
                     req.Uri(&mut uri_pwstr)?;
                     let uri = take_pwstr(uri_pwstr);
+                    if !uri.starts_with("https://gql.twitch.tv/integrity")
+                        && !uri.starts_with("https://gql.twitch.tv/gql")
+                    {
+                        return Ok(());
+                    }
+
+                    if let Ok(req_headers) = req.Headers() {
+                        let hdr_integrity = read_wv_header(&req_headers, "Client-Integrity");
+                        let hdr_version = read_wv_header(&req_headers, "Client-Version");
+                        let hdr_session = read_wv_header(&req_headers, "Client-Session-Id");
+                        let hdr_device = read_wv_header(&req_headers, "X-Device-Id")
+                            .or_else(|| read_wv_header(&req_headers, "Device-Id"));
+                        let hdr_ua = read_wv_header(&req_headers, "User-Agent");
+                        if let Ok(mut guard) = attach_integrity.lock() {
+                            if let Some(v) = hdr_integrity {
+                                guard.client_integrity = Some(v);
+                            }
+                            if let Some(v) = hdr_version {
+                                guard.client_version = Some(v);
+                            }
+                            if let Some(v) = hdr_session {
+                                guard.client_session_id = Some(v);
+                            }
+                            if let Some(v) = hdr_device {
+                                guard.device_id = Some(v);
+                            }
+                            if let Some(v) = hdr_ua {
+                                guard.user_agent = Some(v);
+                            }
+                            guard.maybe_publish(&attach_profile_id, attach_auth_token.as_deref());
+                        }
+                    }
+
                     if uri.starts_with("https://gql.twitch.tv/integrity") {
                         let resp = args.Response()?;
                         let mut status = 0i32;
                         resp.StatusCode(&mut status)?;
                         info!(status, "Twitch official page integrity handshake completed");
-                        return Ok(());
-                    }
-                    if !uri.starts_with("https://gql.twitch.tv/gql") {
+                        if status == 200 {
+                            let int_state = attach_integrity.clone();
+                            let pid_inner = attach_profile_id.clone();
+                            let tok_inner = attach_auth_token.clone();
+                            let int_handler = WebResourceResponseViewGetContentCompletedHandler::create(
+                                Box::new(move |hr, stream| {
+                                    if hr.is_ok() {
+                                        if let Some(stream) = stream {
+                                            let bytes = read_istream_to_vec(&stream);
+                                            if let Some((tok_str, exp_ms)) =
+                                                parse_twitch_integrity_response(&bytes)
+                                            {
+                                                if let Ok(mut guard) = int_state.lock() {
+                                                    guard.client_integrity = Some(tok_str);
+                                                    if exp_ms > 0 {
+                                                        guard.expires_at_ms = exp_ms;
+                                                    }
+                                                    guard.maybe_publish(
+                                                        &pid_inner,
+                                                        tok_inner.as_deref(),
+                                                    );
+                                                }
+                                            }
+                                        }
+                                    }
+                                    Ok(())
+                                }),
+                            );
+                            let _ = resp.GetContent(&int_handler);
+                        }
                         return Ok(());
                     }
                     let resp = args.Response()?;
@@ -2589,7 +2722,8 @@ fn handle_restricted_navigation(url: &Url, kind: AllowlistKind) -> bool {
 mod tests {
     use super::{
         inspect_twitch_campaign_details_payload, inspect_twitch_claim_payload,
-        inspect_twitch_gql_payload, parse_kick_bridge_message, KickBridgeMessage, TwitchGqlInspect,
+        inspect_twitch_gql_payload, parse_kick_bridge_message, parse_twitch_integrity_response,
+        KickBridgeMessage, TwitchGqlInspect,
     };
     use serde_json::json;
 
@@ -2616,6 +2750,17 @@ mod tests {
             panic!("expected Data variant");
         };
         assert_eq!(val["data"]["currentUser"]["dropCampaigns"][0]["id"], "c1");
+    }
+
+    #[test]
+    fn parses_twitch_integrity_token_and_expiration() {
+        let valid = br#"{"token":"v4.public.abc123","expiration":1795600000000}"#;
+        assert_eq!(
+            parse_twitch_integrity_response(valid),
+            Some(("v4.public.abc123".to_string(), 1795600000000))
+        );
+        assert_eq!(parse_twitch_integrity_response(br#"{"token":""}"#), None);
+        assert_eq!(parse_twitch_integrity_response(br#"not json"#), None);
     }
 
     #[test]

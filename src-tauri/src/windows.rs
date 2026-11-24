@@ -1,4 +1,5 @@
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use tauri::{AppHandle, Manager, PhysicalPosition, PhysicalSize, Theme, WebviewUrl, WebviewWindowBuilder};
@@ -34,6 +35,8 @@ pub const AUX_WEBVIEW_PREFIXES: &[&str] = &[
 ];
 
 static LAST_MAIN_BOUNDS: Mutex<Option<WindowBounds>> = Mutex::new(None);
+static MAIN_WEBVIEW_SUSPENDED: AtomicBool = AtomicBool::new(false);
+static MAIN_WEBVIEW_LOW_MEM: AtomicBool = AtomicBool::new(false);
 
 /// Ultra-light Chromium flags for Dropilot's local Svelte UI window (`main`).
 /// Disables the separate GPU & out-of-process audio processes, caps disk/media caches
@@ -304,23 +307,49 @@ pub fn migrate_legacy_webview_dir() {
 
 #[cfg(windows)]
 pub fn apply_low_memory_mode(win: &tauri::WebviewWindow) {
-    use webview2_com::Microsoft::Web::WebView2::Win32::{
-        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
-    };
-    use windows::core::Interface;
-
-    let _ = win.with_webview(|wv| unsafe {
-        if let Ok(core) = wv.controller().CoreWebView2() {
-            if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
-                let _ = core19
-                    .SetMemoryUsageTargetLevel(COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW);
-            }
-        }
-    });
+    set_webview_memory_level(win, true);
 }
 
 #[cfg(not(windows))]
 pub fn apply_low_memory_mode(_win: &tauri::WebviewWindow) {}
+
+/// Adjusts the `"main"` WebView2 memory usage target level only when transitioning
+/// between active focus and background/Alt-Tab blur, avoiding redundant COM calls.
+#[cfg(windows)]
+pub fn set_main_webview_low_memory(win: &tauri::WebviewWindow, low: bool) {
+    if win.label() != "main" {
+        return;
+    }
+    if MAIN_WEBVIEW_LOW_MEM.swap(low, Ordering::Relaxed) == low {
+        return;
+    }
+    set_webview_memory_level(win, low);
+}
+
+#[cfg(not(windows))]
+pub fn set_main_webview_low_memory(_win: &tauri::WebviewWindow, _low: bool) {}
+
+#[cfg(windows)]
+fn set_webview_memory_level(win: &tauri::WebviewWindow, low: bool) {
+    use webview2_com::Microsoft::Web::WebView2::Win32::{
+        ICoreWebView2_19, COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW,
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL,
+    };
+    use windows::core::Interface;
+
+    let level = if low {
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_LOW
+    } else {
+        COREWEBVIEW2_MEMORY_USAGE_TARGET_LEVEL_NORMAL
+    };
+    let _ = win.with_webview(move |wv| unsafe {
+        if let Ok(core) = wv.controller().CoreWebView2() {
+            if let Ok(core19) = core.cast::<ICoreWebView2_19>() {
+                let _ = core19.SetMemoryUsageTargetLevel(level);
+            }
+        }
+    });
+}
 
 /// Suspends the WebView2 renderer when minimized or hidden with an active auxiliary window.
 #[cfg(windows)]
@@ -330,6 +359,11 @@ pub fn suspend_webview(win: &tauri::WebviewWindow) {
     };
     use webview2_com::TrySuspendCompletedHandler;
     use windows::core::Interface;
+
+    if win.label() == "main" {
+        MAIN_WEBVIEW_SUSPENDED.store(true, Ordering::Relaxed);
+        MAIN_WEBVIEW_LOW_MEM.store(true, Ordering::Relaxed);
+    }
 
     let _ = win.with_webview(|wv| unsafe {
         let controller = wv.controller();
@@ -357,6 +391,10 @@ pub fn resume_webview(win: &tauri::WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_3;
     use windows::core::Interface;
 
+    if win.label() == "main" && !MAIN_WEBVIEW_SUSPENDED.swap(false, Ordering::Relaxed) {
+        return;
+    }
+
     let _ = win.with_webview(|wv| unsafe {
         let controller = wv.controller();
         let _ = controller.SetIsVisible(true);
@@ -381,12 +419,20 @@ pub fn resolve_tauri_theme(mode: ThemeMode) -> Option<Theme> {
 
 pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Result<(), String> {
     if let Some(existing) = app.get_webview_window("main") {
-        let _ = existing.unminimize();
-        let _ = existing.show();
+        if existing.is_minimized().unwrap_or(false) {
+            let _ = existing.unminimize();
+        }
+        if !existing.is_visible().unwrap_or(true) {
+            let _ = existing.show();
+        }
         let _ = existing.set_focus();
         resume_webview(&existing);
+        set_main_webview_low_memory(&existing, false);
         return Ok(());
     }
+
+    MAIN_WEBVIEW_SUSPENDED.store(false, Ordering::Relaxed);
+    MAIN_WEBVIEW_LOW_MEM.store(false, Ordering::Relaxed);
 
     let (bounds, theme) = {
         let guard = state.settings.read().await;
@@ -403,7 +449,7 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
     let mut builder = WebviewWindowBuilder::new(app, "main", WebviewUrl::App("index.html".into()))
         .title("Dropilot")
         .inner_size(width, height)
-        .min_inner_size(840.0, 560.0)
+        .min_inner_size(600.0, 480.0)
         .resizable(true)
         .theme(resolve_tauri_theme(theme))
         .data_directory(ui_webview_data_dir())
@@ -420,7 +466,7 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         .map_err(|e| format!("Failed creating main window: {e}"))?;
 
     update_cached_main_bounds(&win.as_ref().window());
-    apply_low_memory_mode(&win);
+    set_main_webview_low_memory(&win, false);
 
     state.events.reset_cache().await;
     Ok(())
@@ -457,6 +503,8 @@ pub async fn destroy_main_to_tray(
     }
 
     state.events.reset_cache().await;
+    MAIN_WEBVIEW_SUSPENDED.store(false, Ordering::Relaxed);
+    MAIN_WEBVIEW_LOW_MEM.store(false, Ordering::Relaxed);
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.destroy();
         info!("UI WebView2 destroyed to tray; only dropilot.exe remains");
@@ -482,8 +530,8 @@ pub fn capture_bounds_sync(window: &tauri::Window) -> Option<WindowBounds> {
     Some(WindowBounds {
         x: logical_x,
         y: logical_y,
-        width: logical_w.clamp(840, 3840),
-        height: logical_h.clamp(560, 2160),
+        width: logical_w.clamp(600, 3840),
+        height: logical_h.clamp(480, 2160),
     })
 }
 

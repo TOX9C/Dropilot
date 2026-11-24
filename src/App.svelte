@@ -360,6 +360,7 @@
   .main-area {
     flex: 1;
     overflow-y: auto;
+    overflow-x: hidden;
     padding: var(--content-pad-y, 12px) var(--content-pad-x, 14px);
     background: var(--bg);
   }
@@ -367,22 +368,42 @@
   .content-wrap {
     max-width: var(--content-max);
     margin: 0 auto;
+    min-width: 0;
   }
 
   .console-ticker {
-    height: 32px;
+    min-height: 32px;
     flex-shrink: 0;
     display: flex;
     align-items: center;
     justify-content: space-between;
-    gap: 12px;
-    padding: 0 12px;
+    gap: 10px;
+    padding: 4px 12px;
     background: var(--sidebar-bg);
     border-bottom: 1px solid var(--border);
     font-family: var(--font-mono);
     font-size: 11px;
     color: var(--text-muted);
     overflow-x: auto;
+  }
+
+  @media (max-width: 780px) {
+    .console-ticker {
+      padding: 4px 8px;
+      gap: 6px;
+    }
+
+    .ticker-dim,
+    .ticker-stat:first-child,
+    .ticker-stat:first-child + .ticker-sep {
+      display: none;
+    }
+  }
+
+  @media (max-width: 620px) {
+    .ticker-btn span {
+      display: none;
+    }
   }
 
   .ticker-group {

@@ -236,6 +236,7 @@ export interface EpicFreeGame {
   startsAt: string;
   endsAt: string;
   storeUrl: string;
+  launcherUrl?: string | null;
   boxArtUrl: string | null;
   bannerUrl: string | null;
   claimed: boolean;
@@ -261,6 +262,7 @@ export interface Settings {
   fontFamily: FontFamily;
   fontScale: FontScale;
   autostart: boolean;
+  startInTray: boolean;
   startMinimized: boolean;
   closeToTray: boolean;
   notifications: boolean;

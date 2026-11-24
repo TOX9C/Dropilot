@@ -7,6 +7,7 @@ use crate::settings::ScheduleSettings;
 
 pub const MIN_CAMPAIGN_REFRESH_SECS: u64 = 10 * 60;
 pub const PROGRESS_POLL_SECS: u64 = 5 * 60;
+pub const ACTIVE_PROGRESS_POLL_SECS: u64 = 90;
 pub const LIVE_CHECK_SECS: u64 = 150;
 pub const WATCH_TICK_SECS: u64 = 60;
 pub const IDLE_RETRY_SECS: u64 = 5 * 60;

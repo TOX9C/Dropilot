@@ -20,7 +20,7 @@ pub struct TrayHandles {
 pub struct TrayState(pub Mutex<TrayHandles>);
 
 pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
-    let open_item = MenuItemBuilder::with_id("open", "Open Dropilot")
+    let open_item = MenuItemBuilder::with_id("open", "Show Dropilot")
         .build(app)
         .map_err(|e| format!("Tray menu open item error: {e}"))?;
     let toggle_pause = MenuItemBuilder::with_id("toggle-pause", "Pause all")
@@ -109,12 +109,18 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
             }
         })
         .on_tray_icon_event(move |tray_icon, event| {
-            if let TrayIconEvent::Click {
-                button: MouseButton::Left,
-                button_state: MouseButtonState::Up,
-                ..
-            } = event
-            {
+            let should_open = matches!(
+                event,
+                TrayIconEvent::Click {
+                    button: MouseButton::Left,
+                    button_state: MouseButtonState::Up,
+                    ..
+                } | TrayIconEvent::DoubleClick {
+                    button: MouseButton::Left,
+                    ..
+                }
+            );
+            if should_open {
                 let app_c = tray_icon.app_handle().clone();
                 let st = state_click.clone();
                 tauri::async_runtime::spawn(async move {

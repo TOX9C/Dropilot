@@ -21,7 +21,10 @@ use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::parse_campaign_details;
 use crate::platforms::{AppSnapshot, Campaign, PlatformId, PlatformSnapshot};
 use crate::remote_config::RemoteConfigStatus;
-use crate::rewards::epic::{notify_newly_live_games, EpicFeedSnapshot};
+use crate::rewards::epic::{
+    launcher_url_for_game, notify_newly_live_games, EpicFeedSnapshot,
+    EPIC_FALLBACK_FREE_GAMES_URL, EPIC_LAUNCHER_FREE_GAMES_URL,
+};
 use crate::secrets::SecretStore;
 use crate::settings::{
     appdata_dir, is_default_profile, AccountProfile, PlatformSettings, PriorityItem, Settings,
@@ -855,11 +858,11 @@ pub async fn get_logs(
 #[tauri::command]
 pub async fn open_url(state: State<'_, Arc<AppState>>, url: String) -> Result<(), String> {
     let parsed = Url::parse(&url).map_err(|e| format!("Invalid URL: {e}"))?;
-    if parsed.scheme() != "https" {
-        return Err("Only https:// URLs may be opened".to_string());
+    if parsed.scheme() != "https" && parsed.scheme() != "com.epicgames.launcher" {
+        return Err("Only https:// or com.epicgames.launcher:// URLs may be opened".to_string());
     }
 
-    let campaign_link_ok = {
+    let campaign_link_ok = if parsed.scheme() == "https" {
         let map = state.profile_snapshots.read().await;
         let in_profiles = map
             .values()
@@ -877,6 +880,8 @@ pub async fn open_url(state: State<'_, Arc<AppState>>, url: String) -> Result<()
                 .filter_map(|c| c.link_url.as_deref())
                 .any(|link| link == url)
         }
+    } else {
+        false
     };
 
     let allowlist_ok = campaign_link_ok || validate_url(&parsed, AllowlistKind::ExternalOpen).is_ok();
@@ -888,7 +893,52 @@ pub async fn open_url(state: State<'_, Arc<AppState>>, url: String) -> Result<()
     }
 
     tauri_plugin_opener::open_url(parsed.as_str(), None::<&str>)
-        .map_err(|e| format!("Failed opening URL in system browser: {e}"))
+        .map_err(|e| format!("Failed opening URL in system handler: {e}"))
+}
+
+/// Opens the Epic Games Launcher directly via `com.epicgames.launcher://store/...`.
+/// Returns `Ok(true)` if the launcher URI opened, or `Ok(false)` if it gracefully fell
+/// back to opening the official Epic Games Store page in the default browser.
+#[tauri::command]
+pub async fn open_epic_launcher(
+    state: State<'_, Arc<AppState>>,
+    game_id: Option<String>,
+) -> Result<bool, String> {
+    let (launcher_url, fallback_web_url) = match game_id.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        Some(id) => match state.epic.find_game(id).await {
+            Some(game) => (launcher_url_for_game(&game), game.store_url),
+            None => (
+                EPIC_LAUNCHER_FREE_GAMES_URL.to_string(),
+                EPIC_FALLBACK_FREE_GAMES_URL.to_string(),
+            ),
+        },
+        None => (
+            EPIC_LAUNCHER_FREE_GAMES_URL.to_string(),
+            EPIC_FALLBACK_FREE_GAMES_URL.to_string(),
+        ),
+    };
+
+    let parsed_launcher = Url::parse(&launcher_url)
+        .map_err(|e| format!("Invalid Epic launcher URI: {e}"))?;
+    validate_url(&parsed_launcher, AllowlistKind::ExternalOpen)
+        .map_err(|e| e.user_message())?;
+
+    if let Err(err) = tauri_plugin_opener::open_url(parsed_launcher.as_str(), None::<&str>) {
+        warn!(
+            url = %parsed_launcher.as_str(),
+            error = %err,
+            "Failed opening Epic Games Launcher URI; falling back to default browser"
+        );
+        let parsed_web = Url::parse(&fallback_web_url)
+            .map_err(|e| format!("Invalid fallback Epic Store URL: {e}"))?;
+        validate_url(&parsed_web, AllowlistKind::ExternalOpen)
+            .map_err(|e| e.user_message())?;
+        tauri_plugin_opener::open_url(parsed_web.as_str(), None::<&str>)
+            .map_err(|e| format!("Failed opening Epic Games Launcher or browser fallback: {e}"))?;
+        return Ok(false);
+    }
+
+    Ok(true)
 }
 
 #[tauri::command]

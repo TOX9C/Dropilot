@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import BarChart3 from 'lucide-svelte/icons/bar-chart-3';
   import ChevronRight from 'lucide-svelte/icons/chevron-right';
   import Gift from 'lucide-svelte/icons/gift';
@@ -20,6 +21,19 @@
   }
 
   let { active, snapshot, onnavigate }: Props = $props();
+
+  let narrowViewport = $state(false);
+  onMount(() => {
+    const mq = window.matchMedia('(max-width: 760px)');
+    narrowViewport = mq.matches;
+    const onChange = (ev: MediaQueryListEvent) => {
+      narrowViewport = ev.matches;
+    };
+    mq.addEventListener('change', onChange);
+    return () => mq.removeEventListener('change', onChange);
+  });
+
+  const effectiveCollapsed = $derived($sidebarCollapsed || narrowViewport);
 
   const tw = $derived(snapshot?.twitch ?? null);
   const kk = $derived(snapshot?.kick ?? null);
@@ -114,29 +128,31 @@
   }
 </script>
 
-<aside class="sidebar" class:collapsed={$sidebarCollapsed} aria-label="Main navigation">
+<aside class="sidebar" class:collapsed={effectiveCollapsed} aria-label="Main navigation">
   <div class="brand-row">
     <button type="button" class="brand-btn" onclick={() => onnavigate('dashboard')}>
-      <BrandMark size={20} showWordmark={!$sidebarCollapsed} compact={$sidebarCollapsed} />
+      <BrandMark size={20} showWordmark={!effectiveCollapsed} compact={effectiveCollapsed} />
     </button>
 
-    <button
-      type="button"
-      class="collapse-btn"
-      aria-label={$sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
-      data-tip={$sidebarCollapsed ? 'Expand' : 'Collapse'}
-      onclick={() => sidebarCollapsed.update((v) => !v)}
-    >
-      {#if $sidebarCollapsed}
-        <ChevronRight size={14} />
-      {:else}
-        <span style="display:inline-flex;transform:rotate(180deg)"><ChevronRight size={14} /></span>
-      {/if}
-    </button>
+    {#if !narrowViewport}
+      <button
+        type="button"
+        class="collapse-btn"
+        aria-label={$sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        data-tip={$sidebarCollapsed ? 'Expand' : 'Collapse'}
+        onclick={() => sidebarCollapsed.update((v) => !v)}
+      >
+        {#if $sidebarCollapsed}
+          <ChevronRight size={14} />
+        {:else}
+          <span style="display:inline-flex;transform:rotate(180deg)"><ChevronRight size={14} /></span>
+        {/if}
+      </button>
+    {/if}
   </div>
 
   <nav class="nav">
-    {#if !$sidebarCollapsed}
+    {#if !effectiveCollapsed}
       <div class="nav-group-label">VIEWS</div>
     {/if}
 
@@ -148,7 +164,7 @@
       title="Dashboard (Ctrl+1)"
     >
       <span class="nav-ico" aria-hidden="true"><LayoutDashboard size={14} /></span>
-      {#if !$sidebarCollapsed}
+      {#if !effectiveCollapsed}
         <span class="nav-label">Dashboard</span>
         <span class="kbd-hint">^1</span>
       {/if}
@@ -162,7 +178,7 @@
       title="All Drops (Ctrl+2)"
     >
       <span class="nav-ico" aria-hidden="true"><Gift size={14} /></span>
-      {#if !$sidebarCollapsed}
+      {#if !effectiveCollapsed}
         <span class="nav-label">All Drops</span>
         {#if totalActiveCount > 0}
           <span class="nav-count tabular">{totalActiveCount}</span>
@@ -179,13 +195,13 @@
       title="History & Stats (Ctrl+3)"
     >
       <span class="nav-ico" aria-hidden="true"><BarChart3 size={14} /></span>
-      {#if !$sidebarCollapsed}
+      {#if !effectiveCollapsed}
         <span class="nav-label">History</span>
         <span class="kbd-hint">^3</span>
       {/if}
     </button>
 
-    {#if !$sidebarCollapsed}
+    {#if !effectiveCollapsed}
       <div class="nav-group-label">MINERS</div>
     {:else}
       <div class="nav-divider" aria-hidden="true"></div>
@@ -199,7 +215,7 @@
       title="Twitch (Ctrl+4)"
     >
       <span class="nav-ico" aria-hidden="true"><span class="plat-dot dot-twitch"></span></span>
-      {#if !$sidebarCollapsed}
+      {#if !effectiveCollapsed}
         <span class="nav-label">Twitch</span>
         {#if twActiveCount > 0}
           <span class="nav-count tabular">{twActiveCount}</span>
@@ -216,7 +232,7 @@
       title="Kick (Ctrl+5)"
     >
       <span class="nav-ico" aria-hidden="true"><span class="plat-dot dot-kick"></span></span>
-      {#if !$sidebarCollapsed}
+      {#if !effectiveCollapsed}
         <span class="nav-label">Kick</span>
         {#if kkActiveCount > 0}
           <span class="nav-count tabular">{kkActiveCount}</span>
@@ -225,7 +241,7 @@
       {/if}
     </button>
 
-    {#if !$sidebarCollapsed}
+    {#if !effectiveCollapsed}
       <div class="nav-group-label">REWARDS</div>
     {:else}
       <div class="nav-divider" aria-hidden="true"></div>
@@ -239,7 +255,7 @@
       title="Epic Free Weekly (Ctrl+6)"
     >
       <span class="nav-ico" aria-hidden="true"><Sparkles size={14} /></span>
-      {#if !$sidebarCollapsed}
+      {#if !effectiveCollapsed}
         <span class="nav-label">Epic Free</span>
         {#if epicUnclaimedCount > 0}
           <span class="nav-count count-warn tabular">{epicUnclaimedCount}</span>
@@ -248,7 +264,7 @@
       {/if}
     </button>
 
-    {#if !$sidebarCollapsed}
+    {#if !effectiveCollapsed}
       <div class="nav-group-label">SYSTEM</div>
     {:else}
       <div class="nav-divider" aria-hidden="true"></div>
@@ -262,7 +278,7 @@
       title="Logs (Ctrl+7)"
     >
       <span class="nav-ico" aria-hidden="true"><Terminal size={14} /></span>
-      {#if !$sidebarCollapsed}
+      {#if !effectiveCollapsed}
         <span class="nav-label">Logs</span>
         {#if $unreadAlertCount > 0}
           <span class="nav-count count-warn tabular">{$unreadAlertCount}</span>
@@ -279,7 +295,7 @@
       title="Settings (Ctrl+8)"
     >
       <span class="nav-ico" aria-hidden="true"><SettingsIcon size={14} /></span>
-      {#if !$sidebarCollapsed}
+      {#if !effectiveCollapsed}
         <span class="nav-label">Settings</span>
         <span class="kbd-hint">^8</span>
       {/if}
@@ -287,7 +303,7 @@
   </nav>
 
   <div class="footer">
-    {#if !$sidebarCollapsed}
+    {#if !effectiveCollapsed}
       <div class="accounts-dock">
         {#each dockProfiles as prof, idx (prof.profileId)}
           {@const showTag = prof.platform === 'twitch' ? multiTwitch : multiKick}

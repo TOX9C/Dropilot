@@ -169,8 +169,49 @@ fn is_valid_host_syntax(url: &Url) -> Result<String, AppError> {
     Ok(host.to_ascii_lowercase())
 }
 
+fn is_valid_epic_launcher_url(url: &Url) -> bool {
+    if url.scheme() != "com.epicgames.launcher"
+        || !url.username().is_empty()
+        || url.password().is_some()
+        || url.port().is_some()
+        || url.query().is_some()
+        || url.fragment().is_some()
+    {
+        return false;
+    }
+
+    if url.host_str() != Some("store") {
+        return false;
+    }
+
+    let path = url.path();
+    if path == "/free-games" || path == "/en-US/free-games" {
+        return true;
+    }
+
+    let slug = path
+        .strip_prefix("/p/")
+        .or_else(|| path.strip_prefix("/bundles/"));
+    match slug {
+        Some(rest) if !rest.is_empty() && !rest.contains("..") && !rest.contains('/') => rest
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.')),
+        _ => false,
+    }
+}
+
 pub fn validate_url(url: &Url, kind: AllowlistKind) -> Result<(), AppError> {
     let scheme = url.scheme();
+    if kind == AllowlistKind::ExternalOpen && scheme == "com.epicgames.launcher" {
+        if is_valid_epic_launcher_url(url) {
+            return Ok(());
+        }
+        warn!(url = %url.as_str(), "Blocked non-allowlisted Epic Launcher URI");
+        return Err(AppError::HostNotAllowed(
+            "Invalid Epic Games Launcher URI".to_string(),
+        ));
+    }
+
     let allowed_scheme = match kind {
         AllowlistKind::Platform => scheme == "https" || scheme == "wss",
         AllowlistKind::UpdateCheck
@@ -333,6 +374,47 @@ mod tests {
         assert!(validate_url(
             &parse("https://evil.example/en-US/p/celeste"),
             AllowlistKind::EpicCheckout
+        )
+        .is_err());
+    }
+
+    #[test]
+    fn external_open_allows_only_safe_epic_launcher_store_uris() {
+        assert!(validate_url(
+            &parse("com.epicgames.launcher://store/free-games"),
+            AllowlistKind::ExternalOpen
+        )
+        .is_ok());
+        assert!(validate_url(
+            &parse("com.epicgames.launcher://store/en-US/free-games"),
+            AllowlistKind::ExternalOpen
+        )
+        .is_ok());
+        assert!(validate_url(
+            &parse("com.epicgames.launcher://store/p/celeste"),
+            AllowlistKind::ExternalOpen
+        )
+        .is_ok());
+        assert!(validate_url(
+            &parse("com.epicgames.launcher://store/bundles/firestone-pack"),
+            AllowlistKind::ExternalOpen
+        )
+        .is_ok());
+
+        // Reject non-store hosts, path traversal, or non-ExternalOpen kinds.
+        assert!(validate_url(
+            &parse("com.epicgames.launcher://apps/launch"),
+            AllowlistKind::ExternalOpen
+        )
+        .is_err());
+        assert!(validate_url(
+            &parse("com.epicgames.launcher://store/p/../evil"),
+            AllowlistKind::ExternalOpen
+        )
+        .is_err());
+        assert!(validate_url(
+            &parse("com.epicgames.launcher://store/p/celeste"),
+            AllowlistKind::Platform
         )
         .is_err());
     }

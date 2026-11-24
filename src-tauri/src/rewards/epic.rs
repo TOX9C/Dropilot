@@ -21,7 +21,8 @@ use crate::webhooks::WebhookEvent;
 const EPIC_CACHE_SCHEMA_VERSION: u32 = 1;
 const EPIC_POLL_INTERVAL_SECS: u64 = 30 * 60;
 const EPIC_CACHE_TTL_SECS: i64 = 30 * 60;
-const EPIC_FALLBACK_FREE_GAMES_URL: &str = "https://store.epicgames.com/en-US/free-games";
+pub const EPIC_FALLBACK_FREE_GAMES_URL: &str = "https://store.epicgames.com/en-US/free-games";
+pub const EPIC_LAUNCHER_FREE_GAMES_URL: &str = "com.epicgames.launcher://store/free-games";
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -43,6 +44,8 @@ pub struct EpicFreeGame {
     pub starts_at: DateTime<Utc>,
     pub ends_at: DateTime<Utc>,
     pub store_url: String,
+    #[serde(default)]
+    pub launcher_url: Option<String>,
     pub box_art_url: Option<String>,
     pub banner_url: Option<String>,
     #[serde(default)]
@@ -149,6 +152,9 @@ impl EpicTracker {
                     EpicOfferStatus::Upcoming
                 };
                 g.status = status;
+                if g.launcher_url.is_none() {
+                    g.launcher_url = Some(launcher_url_from_store_url(&g.store_url));
+                }
                 if let Some(&claimed_at) = guard.cache.claimed_ids.get(&g.id) {
                     g.claimed = true;
                     g.claimed_at = Some(claimed_at);
@@ -403,7 +409,7 @@ pub fn parse_epic_free_games(payload: &Value, now: DateTime<Utc>) -> Vec<EpicFre
             raw_orig_price.to_string()
         };
 
-        let store_url = resolve_epic_store_url(el);
+        let (store_url, launcher_url) = resolve_epic_urls(el);
         let (box_art_url, banner_url) = extract_epic_images(el);
 
         out.push(EpicFreeGame {
@@ -417,6 +423,7 @@ pub fn parse_epic_free_games(payload: &Value, now: DateTime<Utc>) -> Vec<EpicFre
             starts_at,
             ends_at,
             store_url,
+            launcher_url: Some(launcher_url),
             box_art_url,
             banner_url,
             claimed: false,
@@ -477,7 +484,35 @@ fn find_free_promo_window(
     None
 }
 
-fn resolve_epic_store_url(el: &Value) -> String {
+pub fn launcher_url_for_game(game: &EpicFreeGame) -> String {
+    game.launcher_url
+        .clone()
+        .filter(|s| s.starts_with("com.epicgames.launcher://"))
+        .unwrap_or_else(|| launcher_url_from_store_url(&game.store_url))
+}
+
+pub fn launcher_url_from_store_url(store_url: &str) -> String {
+    if let Ok(parsed) = url::Url::parse(store_url) {
+        let segments: Vec<&str> = parsed
+            .path_segments()
+            .map(|iter| iter.filter(|s| !s.is_empty()).collect())
+            .unwrap_or_default();
+        for pair in segments.windows(2) {
+            if (pair[0] == "p" || pair[0] == "bundles")
+                && !pair[1].is_empty()
+                && !pair[1].contains("..")
+                && pair[1]
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '.'))
+            {
+                return format!("com.epicgames.launcher://store/{}/{}", pair[0], pair[1]);
+            }
+        }
+    }
+    EPIC_LAUNCHER_FREE_GAMES_URL.to_string()
+}
+
+fn resolve_epic_urls(el: &Value) -> (String, String) {
     let is_bundle = el
         .get("offerType")
         .and_then(|v| v.as_str())
@@ -514,8 +549,14 @@ fn resolve_epic_store_url(el: &Value) -> String {
         });
 
     match slug {
-        Some(s) => format!("https://store.epicgames.com/en-US/{section}/{s}"),
-        None => EPIC_FALLBACK_FREE_GAMES_URL.to_string(),
+        Some(s) => (
+            format!("https://store.epicgames.com/en-US/{section}/{s}"),
+            format!("com.epicgames.launcher://store/{section}/{s}"),
+        ),
+        None => (
+            EPIC_FALLBACK_FREE_GAMES_URL.to_string(),
+            EPIC_LAUNCHER_FREE_GAMES_URL.to_string(),
+        ),
     }
 }
 
@@ -758,6 +799,10 @@ mod tests {
         assert_eq!(games[0].original_price, "$19.99");
         assert_eq!(games[0].store_url, "https://store.epicgames.com/en-US/p/celeste");
         assert_eq!(
+            games[0].launcher_url.as_deref(),
+            Some("com.epicgames.launcher://store/p/celeste")
+        );
+        assert_eq!(
             games[0].box_art_url.as_deref(),
             Some("https://cdn1.epicgames.com/celeste-tall.jpg")
         );
@@ -768,6 +813,14 @@ mod tests {
         assert_eq!(
             games[1].store_url,
             "https://store.epicgames.com/en-US/bundles/firestone-pack"
+        );
+        assert_eq!(
+            games[1].launcher_url.as_deref(),
+            Some("com.epicgames.launcher://store/bundles/firestone-pack")
+        );
+        assert_eq!(
+            launcher_url_from_store_url("https://store.epicgames.com/en-US/free-games"),
+            "com.epicgames.launcher://store/free-games"
         );
     }
 

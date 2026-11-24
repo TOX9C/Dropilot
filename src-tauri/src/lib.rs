@@ -33,8 +33,8 @@ use crate::state::{AppState, MinerControl};
 use crate::tray::setup_tray;
 use crate::windows::{
     cached_main_bounds, capture_bounds_sync, destroy_main_to_tray, ensure_main_window,
-    has_active_aux_webview, migrate_legacy_webview_dir, resume_webview, suspend_webview,
-    update_cached_main_bounds,
+    has_active_aux_webview, migrate_legacy_webview_dir, resume_webview,
+    set_main_webview_low_memory, suspend_webview, update_cached_main_bounds,
 };
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -74,7 +74,10 @@ pub fn run() {
     }
 
     let launched_via_autostart = std::env::args().any(|a| a == "--autostart");
-    let start_minimized = launched_via_autostart && settings.start_minimized;
+    let launched_in_tray_arg = std::env::args().any(|a| a == "--minimized" || a == "--tray");
+    let start_in_tray = settings.start_in_tray
+        || launched_in_tray_arg
+        || (launched_via_autostart && settings.start_minimized);
 
     let state_for_single = app_state.clone();
     let state_for_setup = app_state.clone();
@@ -82,7 +85,10 @@ pub fn run() {
     let state_for_run = app_state.clone();
 
     let app_result = tauri::Builder::default()
-        .plugin(tauri_plugin_single_instance::init(move |app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(move |app, args, _cwd| {
+            if args.iter().any(|a| a == "--minimized" || a == "--tray") {
+                return;
+            }
             let app_c = app.clone();
             let st = state_for_single.clone();
             tauri::async_runtime::spawn(async move {
@@ -142,6 +148,7 @@ pub fn run() {
             commands::get_epic_free_games,
             commands::refresh_epic_free_games,
             commands::open_epic_claim,
+            commands::open_epic_launcher,
             commands::mark_epic_game_claimed,
         ])
         .setup(move |app| {
@@ -204,12 +211,12 @@ pub fn run() {
                 for (profile_id, tx) in spawned_miners {
                     reg_state.register_miner_for_profile(&profile_id, tx).await;
                 }
-                if !start_minimized {
+                if !start_in_tray {
                     if let Err(err) = ensure_main_window(&win_app, &reg_state).await {
                         warn!(error = %err, "Failed opening initial main window");
                     }
                 } else {
-                    info!("Started minimized to tray via autostart");
+                    info!("Started in system tray (main window hidden until opened)");
                 }
             });
 
@@ -242,14 +249,17 @@ pub fn run() {
                         }
                     } else {
                         update_cached_main_bounds(window);
-                        if let Some(wv) = window.app_handle().get_webview_window("main") {
-                            resume_webview(&wv);
-                        }
                     }
                 }
                 WindowEvent::Focused(true) => {
                     if let Some(wv) = window.app_handle().get_webview_window("main") {
                         resume_webview(&wv);
+                        set_main_webview_low_memory(&wv, false);
+                    }
+                }
+                WindowEvent::Focused(false) => {
+                    if let Some(wv) = window.app_handle().get_webview_window("main") {
+                        set_main_webview_low_memory(&wv, true);
                     }
                 }
                 WindowEvent::CloseRequested { api, .. } => {

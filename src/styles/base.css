@@ -322,3 +322,11 @@ a:focus-visible,
     transition-duration: 0.01ms !important;
   }
 }
+
+/* Pause animations and skip transitions while Alt-Tabbed or hidden to keep background overhead near zero */
+:root[data-window-inactive="true"] *,
+:root[data-window-inactive="true"] *::before,
+:root[data-window-inactive="true"] *::after {
+  animation-play-state: paused !important;
+  transition-duration: 0.01ms !important;
+}
