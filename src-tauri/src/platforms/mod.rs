@@ -226,6 +226,12 @@ pub enum WatchTickResult {
     StreamOffline,
 }
 
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ClaimResult {
+    pub reward_name: Option<String>,
+    pub reward_image_url: Option<String>,
+}
+
 #[derive(Debug, Clone, Error)]
 pub enum AppError {
     #[error("Authentication required: {0}")]
@@ -334,7 +340,7 @@ pub trait Platform: Send + Sync {
         None
     }
 
-    async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<(), AppError>;
+    async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<ClaimResult, AppError>;
 
     async fn logout(&self, token: Option<&str>) -> Result<(), AppError>;
 }

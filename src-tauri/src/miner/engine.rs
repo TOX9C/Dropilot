@@ -1218,10 +1218,26 @@ async fn claim_ready_drops(
             .unwrap_or(&drop.name)
             .to_string();
         match plat.claim(token, &camp_clone, &drop).await {
-            Ok(()) => {
+            Ok(claim_res) => {
+                let final_drop_name = match claim_res
+                    .reward_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                {
+                    Some(won) if !won.eq_ignore_ascii_case(&display_drop_name) => {
+                        format!("{display_drop_name} — {won}")
+                    }
+                    _ => display_drop_name.clone(),
+                };
+                let final_reward_img = claim_res
+                    .reward_image_url
+                    .clone()
+                    .or_else(|| drop.rewards.first().and_then(|r| r.image_url.clone()));
+
                 info!(
                     platform = platform_id.as_str(),
-                    drop = %display_drop_name,
+                    drop = %final_drop_name,
                     game = %game_name,
                     "Claimed drop"
                 );
@@ -1232,20 +1248,37 @@ async fn claim_ready_drops(
                         d.claimed = true;
                         d.claimable = false;
                         d.needs_manual_claim = false;
+                        if final_drop_name != display_drop_name {
+                            d.name = final_drop_name.clone();
+                            if let Some(first_reward) = d.rewards.first_mut() {
+                                first_reward.name = final_drop_name.clone();
+                                if let Some(ref img) = claim_res.reward_image_url {
+                                    first_reward.image_url = Some(img.clone());
+                                }
+                            } else {
+                                d.rewards.push(crate::platforms::Reward {
+                                    name: final_drop_name.clone(),
+                                    image_url: final_reward_img.clone(),
+                                });
+                            }
+                        } else if let Some(ref img) = claim_res.reward_image_url {
+                            if let Some(first_reward) = d.rewards.first_mut() {
+                                first_reward.image_url = Some(img.clone());
+                            }
+                        }
                     }
                     campaign_drops_count = camp.drops.len();
                     campaign_now_complete =
                         !camp.drops.is_empty() && camp.drops.iter().all(|d| d.claimed);
                 }
-                let reward_img = drop.rewards.first().and_then(|r| r.image_url.clone());
                 state
                     .record_claim(RecentClaim {
                         id: format!("{}-{}", camp_id, drop.id),
                         platform: platform_id,
                         game_name: game_name.clone(),
                         campaign_name: camp_name.clone(),
-                        drop_name: display_drop_name.clone(),
-                        reward_image_url: reward_img.clone(),
+                        drop_name: final_drop_name.clone(),
+                        reward_image_url: final_reward_img.clone(),
                         claimed_at: Utc::now(),
                     })
                     .await;
@@ -1255,8 +1288,8 @@ async fn claim_ready_drops(
                         platform: platform_id,
                         game_name: game_name.clone(),
                         campaign_name: camp_name.clone(),
-                        drop_name: display_drop_name.clone(),
-                        reward_image_url: reward_img,
+                        drop_name: final_drop_name.clone(),
+                        reward_image_url: final_reward_img,
                     })
                     .await;
 
@@ -1275,7 +1308,7 @@ async fn claim_ready_drops(
                     send_toast(
                         app,
                         &format!("{} Drop Claimed", platform_id.display_name()),
-                        &format!("{} ({})", display_drop_name, game_name),
+                        &format!("{} ({})", final_drop_name, game_name),
                     );
                 }
             }

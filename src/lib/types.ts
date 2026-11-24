@@ -255,6 +255,7 @@ export interface Settings {
   farmUnlinked: boolean;
   compatWatchMode: boolean;
   updateCheck: boolean;
+  autoInstallUpdates: boolean;
   remoteConfigEnabled: boolean;
   schedule: ScheduleSettings;
   webhooks: WebhookSettings;

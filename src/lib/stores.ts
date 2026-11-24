@@ -1,4 +1,4 @@
-import { writable } from 'svelte/store';
+import { get, writable } from 'svelte/store';
 import { api } from './api';
 import { subscribeBackendEvents } from './events';
 import type {
@@ -159,6 +159,8 @@ export function clearLogsView(): void {
   unreadAlertCount.set(0);
 }
 
+const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
+
 export async function checkForAppUpdate(silent = false): Promise<UpdateStatus | null> {
   checkingForUpdate.set(true);
   try {
@@ -166,6 +168,15 @@ export async function checkForAppUpdate(silent = false): Promise<UpdateStatus | 
     updateInfo.set(status);
     if (status.available) {
       updateBannerDismissed.set(false);
+      const settings = get(appSettings);
+      if (
+        silent &&
+        status.signedUpdateReady &&
+        settings?.autoInstallUpdates &&
+        !get(installingUpdate)
+      ) {
+        void installAppUpdate();
+      }
     } else if (!silent) {
       notifyUi(`Dropilot v${status.currentVersion} is up to date`);
     }
@@ -181,6 +192,7 @@ export async function checkForAppUpdate(silent = false): Promise<UpdateStatus | 
 }
 
 export async function installAppUpdate(): Promise<void> {
+  if (get(installingUpdate)) return;
   installingUpdate.set(true);
   updateProgress.set({
     stage: 'downloading',
@@ -403,10 +415,20 @@ export async function initializeAppStores(): Promise<() => void> {
     void checkForAppUpdate(true);
   }
 
+  const updateTimer = setInterval(() => {
+    const currentSettings = get(appSettings);
+    if (currentSettings?.updateCheck && !get(installingUpdate)) {
+      void checkForAppUpdate(true);
+    }
+  }, UPDATE_CHECK_INTERVAL_MS);
+
   void api
     .getEpicFreeGames()
     .then((feed) => epicFeed.set(feed))
     .catch(() => {});
 
-  return unlisten;
+  return () => {
+    clearInterval(updateTimer);
+    unlisten();
+  };
 }

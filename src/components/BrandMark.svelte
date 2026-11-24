@@ -28,7 +28,7 @@
   </svg>
 
   {#if showWordmark}
-    <span class="wm-console">dropilot<span class="wm-ver">_0.1</span></span>
+    <span class="wm-console">dropilot<span class="wm-ver">_v{__APP_VERSION__}</span></span>
   {/if}
 </div>
 

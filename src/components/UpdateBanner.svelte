@@ -30,7 +30,7 @@
         <span class="ut-ico" aria-hidden="true"><ArrowDownToLine size={15} /></span>
         <div>
           <div class="ut-title">
-            <strong>Update available</strong>
+            <strong>{$installingUpdate ? 'Installing update' : 'Update available'}</strong>
             <Badge tone="accent">v{$updateInfo.latestVersion}</Badge>
           </div>
           <span class="ut-sub tabular">Current: v{$updateInfo.currentVersion}</span>

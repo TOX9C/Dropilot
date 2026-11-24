@@ -5,7 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use tracing::{info, warn};
 
-pub const CURRENT_SCHEMA_VERSION: u32 = 1;
+pub const CURRENT_SCHEMA_VERSION: u32 = 2;
 pub const CURRENT_DISCLAIMER_VERSION: u32 = 1;
 pub const MIN_REFRESH_MINUTES: u32 = 10;
 pub const MAX_REFRESH_MINUTES: u32 = 240;
@@ -187,7 +187,10 @@ pub struct Settings {
     pub refresh_minutes: u32,
     pub farm_unlinked: bool,
     pub compat_watch_mode: bool,
+    #[serde(default = "default_true")]
     pub update_check: bool,
+    #[serde(default = "default_true")]
+    pub auto_install_updates: bool,
     #[serde(default = "default_true")]
     pub remote_config_enabled: bool,
     #[serde(default)]
@@ -218,7 +221,8 @@ impl Default for Settings {
             refresh_minutes: 30,
             farm_unlinked: false,
             compat_watch_mode: false,
-            update_check: false,
+            update_check: true,
+            auto_install_updates: true,
             remote_config_enabled: true,
             schedule: ScheduleSettings::default(),
             webhooks: WebhookSettings::default(),
@@ -311,15 +315,21 @@ pub fn load_from_path(path: &Path) -> Settings {
         }
     };
 
-    if let Err(err) = migrate_value(&mut value) {
-        backup_corrupt_file(path);
-        warn!(error = %err, "Unmigrated settings.json backed up and reset to defaults");
-        return Settings::default();
-    }
+    let migrated = match migrate_value(&mut value) {
+        Ok(m) => m,
+        Err(err) => {
+            backup_corrupt_file(path);
+            warn!(error = %err, "Unmigrated settings.json backed up and reset to defaults");
+            return Settings::default();
+        }
+    };
 
     match serde_json::from_value::<Settings>(value) {
         Ok(mut parsed) => {
             parsed.sanitize();
+            if migrated {
+                let _ = save_atomic_to_path(path, &parsed);
+            }
             parsed
         }
         Err(err) => {
@@ -378,7 +388,7 @@ pub fn save_atomic_to_path(path: &Path, settings: &Settings) -> Result<(), Strin
     Ok(())
 }
 
-fn migrate_value(value: &mut serde_json::Value) -> Result<(), String> {
+fn migrate_value(value: &mut serde_json::Value) -> Result<bool, String> {
     let obj = value
         .as_object_mut()
         .ok_or_else(|| "settings root is not a JSON object".to_string())?;
@@ -389,6 +399,8 @@ fn migrate_value(value: &mut serde_json::Value) -> Result<(), String> {
         .and_then(|v| v.as_u64())
         .unwrap_or(0) as u32;
 
+    let mut migrated = false;
+
     if version < 1 {
         // Fill missing v1 defaults cleanly while keeping any pre-existing user preferences.
         let defaults = serde_json::to_value(Settings::default())
@@ -398,14 +410,28 @@ fn migrate_value(value: &mut serde_json::Value) -> Result<(), String> {
                 obj.entry(k.clone()).or_insert_with(|| v.clone());
             }
         }
+        migrated = true;
+        info!("Migrated settings schema v0 -> v1");
+    }
+
+    if version < 2 {
+        obj.insert("updateCheck".to_string(), serde_json::Value::Bool(true));
+        obj.insert(
+            "autoInstallUpdates".to_string(),
+            serde_json::Value::Bool(true),
+        );
         obj.insert(
             "schemaVersion".to_string(),
             serde_json::Value::from(CURRENT_SCHEMA_VERSION),
         );
-        info!("Migrated settings schema v0 -> v1");
+        migrated = true;
+        info!(
+            from_version = version,
+            "Migrated settings schema -> v2 (auto-update enabled)"
+        );
     }
 
-    Ok(())
+    Ok(migrated)
 }
 
 fn backup_corrupt_file(path: &Path) {
@@ -535,6 +561,57 @@ mod tests {
         let reloaded = load_from_path(&path);
         assert_eq!(reloaded.font_family, FontFamily::Inter);
         assert_eq!(reloaded.font_scale, FontScale::Comfortable);
+
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn migrates_v1_to_v2_enabling_auto_update_and_preserves_subsequent_opt_out() {
+        let dir = temp_dir("migrate_v1_v2");
+        let path = dir.join("settings.json");
+
+        let v1_json = serde_json::json!({
+            "schemaVersion": 1,
+            "theme": "light",
+            "autostart": false,
+            "startMinimized": false,
+            "closeToTray": true,
+            "notifications": true,
+            "autoClaim": true,
+            "idleBehavior": "stay_idle",
+            "refreshMinutes": 45,
+            "farmUnlinked": false,
+            "compatWatchMode": false,
+            "updateCheck": false,
+            "disclaimerAcceptedVersion": 1,
+            "logLevel": "info",
+            "mockMode": false,
+            "windowBounds": null,
+            "twitch": PlatformSettings::default(),
+            "kick": PlatformSettings::default()
+        });
+        fs::write(
+            &path,
+            serde_json::to_string_pretty(&v1_json).expect("serialize v1"),
+        )
+        .expect("write v1");
+
+        let mut migrated = load_from_path(&path);
+        assert_eq!(migrated.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(migrated.update_check);
+        assert!(migrated.auto_install_updates);
+        assert_eq!(migrated.theme, ThemeMode::Light);
+        assert_eq!(migrated.refresh_minutes, 45);
+
+        // User explicitly disables auto-updates under v2; preference must stick on next load.
+        migrated.update_check = false;
+        migrated.auto_install_updates = false;
+        save_atomic_to_path(&path, &migrated).expect("save opted-out v2");
+
+        let reloaded = load_from_path(&path);
+        assert_eq!(reloaded.schema_version, CURRENT_SCHEMA_VERSION);
+        assert!(!reloaded.update_check);
+        assert!(!reloaded.auto_install_updates);
 
         let _ = fs::remove_dir_all(&dir);
     }

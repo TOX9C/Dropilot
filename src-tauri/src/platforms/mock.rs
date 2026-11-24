@@ -5,8 +5,8 @@ use async_trait::async_trait;
 use chrono::{Duration, Utc};
 
 use crate::platforms::{
-    Account, AppError, Campaign, CampaignStatus, Channel, ChannelRef, Drop, DropProgress, Game,
-    Platform, PlatformId, Reward, WatchTickResult,
+    Account, AppError, Campaign, CampaignStatus, Channel, ChannelRef, ClaimResult, Drop,
+    DropProgress, Game, Platform, PlatformId, Reward, WatchTickResult,
 };
 
 #[derive(Debug)]
@@ -478,7 +478,12 @@ impl Platform for MockPlatform {
         Ok(WatchTickResult::Watched)
     }
 
-    async fn claim(&self, _token: &str, campaign: &Campaign, drop: &Drop) -> Result<(), AppError> {
+    async fn claim(
+        &self,
+        _token: &str,
+        campaign: &Campaign,
+        drop: &Drop,
+    ) -> Result<ClaimResult, AppError> {
         let mut guard = self
             .state
             .lock()
@@ -493,7 +498,7 @@ impl Platform for MockPlatform {
                 }
             }
         }
-        Ok(())
+        Ok(ClaimResult::default())
     }
 
     async fn logout(&self, _token: Option<&str>) -> Result<(), AppError> {

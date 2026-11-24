@@ -6,6 +6,8 @@
   import SettingsIcon from 'lucide-svelte/icons/settings';
   import Sparkles from 'lucide-svelte/icons/sparkles';
   import Terminal from 'lucide-svelte/icons/terminal';
+  import { slowNowMs } from '../lib/clock';
+  import { isCampaignActiveNow } from '../lib/selectors';
   import { epicFeed, sidebarCollapsed, unreadAlertCount } from '../lib/stores';
   import type { AppSnapshot, NavRoute, PlatformSnapshot } from '../lib/types';
   import BrandMark from './BrandMark.svelte';
@@ -22,14 +24,18 @@
   const kk = $derived(snapshot?.kick ?? null);
 
   const twActiveCount = $derived(
-    tw ? tw.campaigns.filter((c) => c.status === 'active').length : 0,
+    tw ? tw.campaigns.filter((c) => isCampaignActiveNow(c, $slowNowMs)).length : 0,
   );
   const kkActiveCount = $derived(
-    kk ? kk.campaigns.filter((c) => c.status === 'active').length : 0,
+    kk ? kk.campaigns.filter((c) => isCampaignActiveNow(c, $slowNowMs)).length : 0,
   );
   const totalActiveCount = $derived(twActiveCount + kkActiveCount);
   const epicUnclaimedCount = $derived(
-    ($epicFeed?.games ?? []).filter((g) => g.status === 'active' && !g.claimed).length,
+    ($epicFeed?.games ?? []).filter((g) => {
+      if (g.status !== 'active' || g.claimed) return false;
+      const ts = new Date(g.endsAt).getTime();
+      return Number.isNaN(ts) || ts > $slowNowMs;
+    }).length,
   );
 
   function stateLabel(snap: PlatformSnapshot | null): string {
@@ -396,6 +402,9 @@
   }
 
   .nav-count {
+    min-width: 26px;
+    text-align: center;
+    flex-shrink: 0;
     font-size: 10.5px;
     font-weight: 600;
     padding: 0 5px;
@@ -415,6 +424,10 @@
   }
 
   .kbd-hint {
+    min-width: 18px;
+    text-align: right;
+    flex-shrink: 0;
+    opacity: 0.65;
     font-family: var(--font-mono);
     font-size: 10px;
     color: var(--text-faint);

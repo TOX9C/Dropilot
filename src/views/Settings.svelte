@@ -263,7 +263,7 @@
       <h1>Settings</h1>
     </div>
     <div class="page-actions">
-      <Badge tone="neutral">v0.1.0</Badge>
+      <Badge tone="neutral">v{__APP_VERSION__}</Badge>
     </div>
   </header>
 
@@ -924,15 +924,30 @@
               <Button variant="secondary" size="sm" disabled={$checkingForUpdate} onclick={handleCheckUpdates}>
                 {$checkingForUpdate ? 'Checking...' : 'Check'}
               </Button>
-              <Toggle
-                checked={settings.updateCheck}
-                ariaLabel="Check for signed updates on startup"
-                onchange={(v) => savePatch((d) => (d.updateCheck = v))}
-              />
             </div>
           </div>
           <h3>Signed auto-updater</h3>
-          <p>Checks cryptographically verified releases on startup and lets you install with one click.</p>
+          <p>Checks cryptographically verified releases on startup and every 4 hours, and installs signed updates automatically.</p>
+          <div class="sub-divider"></div>
+          <div class="pref-toggle-list">
+            <div class="pref-toggle-row">
+              <span>Check for updates</span>
+              <Toggle
+                checked={settings.updateCheck}
+                ariaLabel="Check for signed updates"
+                onchange={(v) => savePatch((d) => (d.updateCheck = v))}
+              />
+            </div>
+            <div class="pref-toggle-row">
+              <span>Auto-install signed updates</span>
+              <Toggle
+                checked={settings.autoInstallUpdates}
+                disabled={!settings.updateCheck}
+                ariaLabel="Auto-install signed updates"
+                onchange={(v) => savePatch((d) => (d.autoInstallUpdates = v))}
+              />
+            </div>
+          </div>
         </div>
 
         <div class="card pref-card pref-wide">
@@ -990,7 +1005,7 @@
           <div class="pref-ico"><Info size={15} /></div>
           <div>
             <h2>About Dropilot</h2>
-            <p class="studio-sub">Version 0.1.0 · MIT License · Standard user privileges (asInvoker)</p>
+            <p class="studio-sub">Version {__APP_VERSION__} · MIT License · Standard user privileges (asInvoker)</p>
           </div>
         </div>
         <p class="about-note">
@@ -1714,6 +1729,22 @@
     align-items: center;
     gap: 8px;
     flex-wrap: wrap;
+  }
+
+  .pref-toggle-list {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+
+  .pref-toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    font-size: var(--text-xs);
+    font-weight: 500;
+    color: var(--text);
   }
 
   .webhook-card {

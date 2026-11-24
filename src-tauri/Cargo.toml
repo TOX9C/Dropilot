@@ -1,6 +1,6 @@
 [package]
 name = "dropilot"
-version = "0.1.0"
+version = "0.2.0"
 description = "Lightweight Windows desktop app that automatically farms Twitch Drops and Kick Drops for your own logged-in accounts."
 authors = ["Dropilot Contributors"]
 license = "MIT"

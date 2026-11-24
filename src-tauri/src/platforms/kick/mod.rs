@@ -28,7 +28,7 @@ use crate::platforms::kick::models::{
 use crate::platforms::kick::watch::KickWatchSession;
 use crate::platforms::twitch::twitch_game_slug;
 use crate::platforms::{
-    Account, AppError, Campaign, Channel, Drop, DropProgress, Platform, PlatformId,
+    Account, AppError, Campaign, Channel, ClaimResult, Drop, DropProgress, Platform, PlatformId,
     WatchTickResult,
 };
 use crate::state::BridgeWaiters;
@@ -469,7 +469,12 @@ impl Platform for KickPlatform {
         }
     }
 
-    async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<(), AppError> {
+    async fn claim(
+        &self,
+        token: &str,
+        campaign: &Campaign,
+        drop: &Drop,
+    ) -> Result<ClaimResult, AppError> {
         claim::claim_drop(
             &self.http,
             self.app.as_ref(),

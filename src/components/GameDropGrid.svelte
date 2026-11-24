@@ -565,7 +565,7 @@
 
   .detail-head {
     display: flex;
-    flex-wrap: wrap;
+    flex-wrap: nowrap;
     align-items: center;
     justify-content: space-between;
     gap: 12px;
@@ -578,6 +578,7 @@
     align-items: center;
     gap: 12px;
     min-width: 0;
+    flex: 1;
   }
 
   .detail-art-btn {
@@ -656,6 +657,7 @@
     display: flex;
     align-items: center;
     gap: 8px;
+    flex-shrink: 0;
   }
 
   .close-detail-btn {
@@ -677,15 +679,28 @@
   }
 
   .detail-campaigns {
-    display: flex;
-    flex-direction: column;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(340px, 1fr));
     gap: 10px;
+    align-items: stretch;
+  }
+
+  @media (max-width: 760px) {
+    .detail-head {
+      flex-wrap: wrap;
+    }
+
+    .detail-campaigns {
+      grid-template-columns: 1fr;
+    }
   }
 
   .camp-block {
     display: flex;
     flex-direction: column;
     gap: 9px;
+    min-width: 0;
+    height: 100%;
     padding: 12px;
     border-radius: var(--radius-md);
     background: var(--surface-2);
@@ -879,7 +894,7 @@
 
   .rewards-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
     gap: 8px;
   }
 

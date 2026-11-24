@@ -2,9 +2,10 @@ use chrono::{DateTime, Duration as ChronoDuration, TimeZone, Utc};
 use serde_json::Value;
 
 use crate::miner::selector::game_names_match;
+use crate::platforms::kick::claim::extract_single_reward;
 use crate::platforms::{
-    Account, AppError, Campaign, CampaignStatus, Channel, ChannelRef, Drop, DropProgress, Game,
-    PlatformId, Reward,
+    Account, AppError, Campaign, CampaignStatus, Channel, ChannelRef, ClaimResult, Drop,
+    DropProgress, Game, PlatformId, Reward,
 };
 
 pub const KICK_GAMIFICATION_PREFIX: &str = "gamification:";
@@ -394,7 +395,7 @@ pub fn parse_channel_v2(v: &Value, expected_game: &str) -> Result<Channel, AppEr
     })
 }
 
-fn normalize_kick_image_url(raw: &str) -> String {
+pub(crate) fn normalize_kick_image_url(raw: &str) -> String {
     let trimmed = raw.trim();
     if trimmed.starts_with("https://") || trimmed.starts_with("http://") {
         trimmed.to_string()
@@ -671,6 +672,87 @@ fn extract_challenge_minutes(item: &Value) -> Option<(u32, u32)> {
     Some((current, required))
 }
 
+fn extract_won_challenge_reward(item: &Value, inner: &Value) -> ClaimResult {
+    const WON_KEYS: &[&str] = &[
+        "claimed_reward",
+        "won_reward",
+        "granted_reward",
+        "user_reward",
+        "outcome",
+        "claim_result",
+        "reward_received",
+    ];
+    let mut out = ClaimResult::default();
+    for source in [item, inner] {
+        for &key in WON_KEYS {
+            if let Some(val) = source.get(key) {
+                let extracted = extract_single_reward(val);
+                if out.reward_name.is_none() {
+                    out.reward_name = extracted.reward_name;
+                }
+                if out.reward_image_url.is_none() {
+                    out.reward_image_url = extracted.reward_image_url;
+                }
+                if out.reward_name.is_some() && out.reward_image_url.is_some() {
+                    return out;
+                }
+            }
+        }
+    }
+    out
+}
+
+fn extract_preview_challenge_rewards(
+    item: &Value,
+    inner: &Value,
+    fallback_img: Option<&str>,
+) -> Vec<Reward> {
+    const PREVIEW_ARRAY_KEYS: &[&str] =
+        &["rewards", "prizes", "items", "possible_rewards", "loot_table"];
+    const PREVIEW_OBJ_KEYS: &[&str] = &["reward", "prize"];
+
+    let mut rewards = Vec::new();
+    for source in [inner, item] {
+        for &key in PREVIEW_ARRAY_KEYS {
+            if let Some(arr) = source.get(key).and_then(|v| v.as_array()) {
+                for entry in arr {
+                    let parsed = extract_single_reward(entry);
+                    if let Some(name) = parsed.reward_name {
+                        rewards.push(Reward {
+                            name,
+                            image_url: parsed
+                                .reward_image_url
+                                .or_else(|| fallback_img.map(str::to_string)),
+                        });
+                    }
+                }
+                if !rewards.is_empty() {
+                    return rewards;
+                }
+            }
+        }
+    }
+
+    for source in [inner, item] {
+        for &key in PREVIEW_OBJ_KEYS {
+            if let Some(obj) = source.get(key).filter(|v| v.is_object() || v.is_string()) {
+                let parsed = extract_single_reward(obj);
+                if let Some(name) = parsed.reward_name {
+                    rewards.push(Reward {
+                        name,
+                        image_url: parsed
+                            .reward_image_url
+                            .or_else(|| fallback_img.map(str::to_string)),
+                    });
+                    return rewards;
+                }
+            }
+        }
+    }
+
+    rewards
+}
+
 pub fn parse_gamification_challenges(v: &Value, now: DateTime<Utc>) -> Vec<Campaign> {
     let mut raw_items = Vec::new();
     collect_challenge_objects(v, &mut raw_items, 0);
@@ -903,18 +985,64 @@ pub fn parse_gamification_challenges(v: &Value, now: DateTime<Utc>) -> Vec<Campa
         let drops = if !tier_drops.is_empty() {
             tier_drops
         } else {
+            let won_res = if claimed {
+                extract_won_challenge_reward(item, inner)
+            } else {
+                ClaimResult::default()
+            };
+            let fallback_banner = image_url
+                .as_deref()
+                .or(Some(KICK_GTA_BANNER_URL));
+            let preview_rewards = extract_preview_challenge_rewards(item, inner, fallback_banner);
+
+            let won_name_opt = if claimed {
+                won_res
+                    .reward_name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+            } else {
+                None
+            };
+
+            let (drop_name, drop_rewards) = if let Some(won_name) = won_name_opt {
+                let formatted = if won_name.eq_ignore_ascii_case(&title) {
+                    title.clone()
+                } else {
+                    format!("{title} — {won_name}")
+                };
+                let img = won_res
+                    .reward_image_url
+                    .or_else(|| image_url.clone())
+                    .or_else(|| Some(KICK_GTA_BANNER_URL.to_string()));
+                (
+                    formatted.clone(),
+                    vec![Reward {
+                        name: formatted,
+                        image_url: img,
+                    }],
+                )
+            } else if !preview_rewards.is_empty() {
+                (title.clone(), preview_rewards)
+            } else {
+                (
+                    title.clone(),
+                    vec![Reward {
+                        name: if is_sunset && !title.to_ascii_lowercase().contains("gta") {
+                            format!("{title} (GTA VI Box)")
+                        } else {
+                            title.clone()
+                        },
+                        image_url: image_url.or_else(|| Some(KICK_GTA_BANNER_URL.to_string())),
+                    }],
+                )
+            };
+
             vec![Drop {
                 id: raw_id,
                 instance_id: None,
-                name: title.clone(),
-                rewards: vec![Reward {
-                    name: if is_sunset && !title.to_ascii_lowercase().contains("gta") {
-                        format!("{title} (GTA VI Box)")
-                    } else {
-                        title.clone()
-                    },
-                    image_url: image_url.or_else(|| Some(KICK_GTA_BANNER_URL.to_string())),
-                }],
+                name: drop_name,
+                rewards: drop_rewards,
                 required_minutes,
                 current_minutes,
                 claimable,
@@ -1417,5 +1545,69 @@ mod tests {
         // Integer progress=1 must stay 1 minute, NOT be multiplied by threshold=180!
         assert_eq!(camps[1].drops[0].required_minutes, 180);
         assert_eq!(camps[1].drops[0].current_minutes, 1);
+    }
+
+    #[test]
+    fn parses_challenge_won_reward_and_preview_rewards_array() {
+        let now = Utc::now();
+        let ends = (now + Duration::hours(12)).to_rfc3339();
+        let payload = json!({
+            "data": [
+                {
+                    "id": "case-preview-1",
+                    "title": "Daily Reward Case",
+                    "status": "in_progress",
+                    "ends_at": ends,
+                    "condition": { "threshold": 60, "progress": 15 },
+                    "rewards": [
+                        { "amount": 500, "currency": "Kicks", "image_url": "rewards/kicks.png" },
+                        { "name": "Golden Crown", "rarity": "Legendary" }
+                    ]
+                },
+                {
+                    "id": "case-won-1",
+                    "title": "Sunset Reward Case",
+                    "status": "claimed",
+                    "ends_at": ends,
+                    "condition": { "threshold": 180, "progress": 180 },
+                    "claimed_reward": {
+                        "name": "Vice City Badge",
+                        "rarity": "Epic",
+                        "image_url": "https://files.kick.com/vice-badge.png"
+                    },
+                    "rewards": [
+                        { "name": "Vice City Badge" },
+                        { "amount": 1000, "currency": "Kicks" }
+                    ]
+                }
+            ]
+        });
+
+        let camps = parse_gamification_challenges(&payload, now);
+        assert_eq!(camps.len(), 2);
+
+        // Unclaimed case expands concrete preview rewards
+        assert_eq!(camps[0].drops[0].rewards.len(), 2);
+        assert_eq!(camps[0].drops[0].rewards[0].name, "500 Kicks");
+        assert_eq!(
+            camps[0].drops[0].rewards[0].image_url.as_deref(),
+            Some("https://ext.cdn.kick.com/rewards/kicks.png")
+        );
+        assert_eq!(camps[0].drops[0].rewards[1].name, "Golden Crown (Legendary)");
+
+        // Claimed case formats won reward into the drop & reward name and uses won image
+        assert!(camps[1].drops[0].claimed);
+        assert_eq!(
+            camps[1].drops[0].name,
+            "Sunset Reward Case — Vice City Badge (Epic)"
+        );
+        assert_eq!(
+            camps[1].drops[0].rewards[0].name,
+            "Sunset Reward Case — Vice City Badge (Epic)"
+        );
+        assert_eq!(
+            camps[1].drops[0].rewards[0].image_url.as_deref(),
+            Some("https://files.kick.com/vice-badge.png")
+        );
     }
 }

@@ -29,7 +29,7 @@ use crate::platforms::twitch::models::{
 };
 use crate::platforms::twitch::watch::TwitchWatchSession;
 use crate::platforms::{
-    Account, AppError, Campaign, Channel, Drop, DropProgress, Platform, PlatformId,
+    Account, AppError, Campaign, Channel, ClaimResult, Drop, DropProgress, Platform, PlatformId,
     WatchTickResult,
 };
 
@@ -797,9 +797,14 @@ impl Platform for TwitchPlatform {
             .and_then(|g| g.get(campaign_id).cloned())
     }
 
-    async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<(), AppError> {
+    async fn claim(
+        &self,
+        token: &str,
+        campaign: &Campaign,
+        drop: &Drop,
+    ) -> Result<ClaimResult, AppError> {
         match claim::claim_drop(&self.http, token, drop).await {
-            Ok(()) => Ok(()),
+            Ok(()) => Ok(ClaimResult::default()),
             Err(AppError::Blocked(_)) | Err(AppError::NotFound(_)) if self.app.is_some() => {
                 let _guard = self.bridge_lock.lock().await;
                 let app_handle = self
@@ -817,7 +822,8 @@ impl Platform for TwitchPlatform {
                     &reward_names,
                     drop.instance_id.as_deref(),
                 )
-                .await
+                .await?;
+                Ok(ClaimResult::default())
             }
             Err(err) => Err(err),
         }

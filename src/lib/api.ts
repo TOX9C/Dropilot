@@ -50,7 +50,7 @@ function createPreviewData(): {
     });
     return {
       settings: {
-        schemaVersion: 1,
+        schemaVersion: 2,
         theme: 'dark',
         fontFamily: 'plex',
         fontScale: 'default',
@@ -63,7 +63,8 @@ function createPreviewData(): {
         refreshMinutes: 30,
         farmUnlinked: false,
         compatWatchMode: false,
-        updateCheck: false,
+        updateCheck: true,
+        autoInstallUpdates: true,
         remoteConfigEnabled: true,
         schedule: {
           quietHoursEnabled: false,
@@ -97,7 +98,7 @@ function createPreviewData(): {
   const previewNow = Date.now();
   return {
     settings: {
-      schemaVersion: 1,
+      schemaVersion: 2,
       theme: 'dark',
       fontFamily: 'plex',
       fontScale: 'default',
@@ -110,7 +111,8 @@ function createPreviewData(): {
       refreshMinutes: 30,
       farmUnlinked: false,
       compatWatchMode: false,
-      updateCheck: false,
+      updateCheck: true,
+      autoInstallUpdates: true,
       remoteConfigEnabled: true,
       schedule: {
         quietHoursEnabled: false,
@@ -493,8 +495,8 @@ export const api = {
   checkUpdate: () =>
     call<UpdateStatus>('check_update', undefined, () => ({
       available: false,
-      currentVersion: '0.1.0',
-      latestVersion: '0.1.0',
+      currentVersion: '0.2.0',
+      latestVersion: '0.2.0',
       releaseUrl: 'https://github.com/theflash1211/dropilot/releases',
       publishedAt: null,
       notes: null,
