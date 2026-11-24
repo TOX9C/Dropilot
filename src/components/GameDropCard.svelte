@@ -7,6 +7,7 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import Gift from 'lucide-svelte/icons/gift';
   import Link2 from 'lucide-svelte/icons/link-2';
+  import Maximize2 from 'lucide-svelte/icons/maximize-2';
   import Play from 'lucide-svelte/icons/play';
   import Unlink from 'lucide-svelte/icons/unlink';
   import { slowNowMs } from '../lib/clock';
@@ -14,8 +15,10 @@
     formatEndCountdown,
     formatExactDateTime,
     formatStartsIn,
+    upgradeArtworkUrl,
   } from '../lib/format';
   import type { GameDropGroup } from '../lib/selectors';
+  import { openLightbox } from '../lib/stores';
   import Badge from './Badge.svelte';
   import Monogram from './Monogram.svelte';
 
@@ -57,6 +60,19 @@
       ? `${group.totalDrops} ${group.totalDrops === 1 ? 'reward' : 'rewards'}`
       : 'Inspect rewards',
   );
+  const cardArtUrl = $derived(upgradeArtworkUrl(group.game.boxArtUrl, 420, 560));
+  const fullArtUrl = $derived(upgradeArtworkUrl(group.game.boxArtUrl, 600, 800));
+
+  function previewArt() {
+    if (!fullArtUrl) return;
+    const subParts = [platLabel, campaignCountLabel];
+    if (group.totalDrops > 0) subParts.push(rewardSummaryLabel);
+    openLightbox({
+      src: fullArtUrl,
+      title: group.game.name,
+      subtitle: subParts.join(' · '),
+    });
+  }
 </script>
 
 <article
@@ -64,55 +80,70 @@
   class:farming-active={group.isFarming}
   class:is-expanded={expanded}
 >
-  <button
-    type="button"
-    class="art-stage"
-    aria-expanded={expanded}
-    aria-label={expanded ? `Collapse ${group.game.name} campaigns` : `Expand ${group.game.name} campaigns`}
-    onclick={onToggleExpand}
-  >
-    {#if group.game.boxArtUrl && !imgFailed}
-      <img
-        class="box-art"
-        src={group.game.boxArtUrl}
-        alt={group.game.name}
-        loading="lazy"
-        onerror={() => (imgFailed = true)}
-      />
-    {:else}
-      <div class="art-fallback">
-        <Monogram src={null} name={group.game.name} width={56} height={56} />
+  <div class="card-main">
+    <div class="art-col">
+      {#if cardArtUrl && !imgFailed}
+        <button
+          type="button"
+          class="art-stage art-preview-btn"
+          title="Click to view full artwork"
+          aria-label={`View full artwork for ${group.game.name}`}
+          onclick={previewArt}
+        >
+          <img
+            class="box-art"
+            src={cardArtUrl}
+            alt={group.game.name}
+            loading="lazy"
+            decoding="async"
+            onerror={() => (imgFailed = true)}
+          />
+          <span class="art-zoom-badge" aria-hidden="true">
+            <Maximize2 size={11} />
+          </span>
+        </button>
+      {:else}
+        <button
+          type="button"
+          class="art-stage art-fallback-btn"
+          aria-expanded={expanded}
+          aria-label={expanded ? `Collapse ${group.game.name} campaigns` : `Expand ${group.game.name} campaigns`}
+          onclick={onToggleExpand}
+        >
+          <Monogram src={null} name={group.game.name} width={52} height={52} />
+        </button>
+      {/if}
+    </div>
+
+    <div class="card-body">
+      {#if showPlatformBadge || group.claimableCount > 0 || group.allCompleted}
+        <div class="meta-top">
+          {#if showPlatformBadge}
+            <span class="plat-chip" title={platLabel}>
+              <span class="plat-dot dot-{group.platform}" aria-hidden="true"></span>
+              <span>{platLabel}</span>
+            </span>
+          {/if}
+
+          {#if group.claimableCount > 0}
+            <Badge tone="info">{group.claimableCount} ready</Badge>
+          {:else if group.allCompleted}
+            <Badge tone="success"><Check size={10} /> Done</Badge>
+          {/if}
+        </div>
+      {/if}
+
+      <div class="title-row">
+        <button
+          type="button"
+          class="game-title-btn"
+          aria-expanded={expanded}
+          onclick={onToggleExpand}
+          title={group.game.name}
+        >
+          <span class="game-title">{group.game.name}</span>
+        </button>
       </div>
-    {/if}
-
-    <div class="art-top-strip">
-      {#if showPlatformBadge}
-        <span class="plat-chip" title={platLabel}>
-          <span class="plat-dot dot-{group.platform}" aria-hidden="true"></span>
-          <span>{platLabel}</span>
-        </span>
-      {/if}
-
-      {#if group.claimableCount > 0}
-        <Badge tone="info">{group.claimableCount} ready</Badge>
-      {:else if group.allCompleted}
-        <Badge tone="success"><Check size={10} /> Done</Badge>
-      {/if}
-    </div>
-  </button>
-
-  <div class="card-body">
-    <div class="title-row">
-      <button
-        type="button"
-        class="game-title-btn"
-        aria-expanded={expanded}
-        onclick={onToggleExpand}
-        title={group.game.name}
-      >
-        <span class="game-title">{group.game.name}</span>
-      </button>
-    </div>
 
     <div class="status-row">
       {#if group.linkState === 'ready'}
@@ -171,6 +202,7 @@
         </span>
       {/if}
     </div>
+    </div>
   </div>
 
   <footer class="card-footer">
@@ -224,56 +256,92 @@
     box-shadow: inset 0 0 0 1px var(--accent);
   }
 
+  .card-main {
+    flex: 1;
+    display: flex;
+    align-items: stretch;
+    min-width: 0;
+  }
+
+  .art-col {
+    padding: 8px;
+    background: var(--surface-2);
+    border-right: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+  }
+
   .art-stage {
     position: relative;
-    width: 100%;
-    height: 144px;
-    border: none;
-    border-bottom: 1px solid var(--border);
+    width: 96px;
+    aspect-ratio: 3 / 4;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-xs);
     padding: 0;
-    background: var(--surface-2);
+    background: var(--sidebar-bg);
     overflow: hidden;
     display: flex;
     align-items: center;
     justify-content: center;
   }
 
+  .art-preview-btn:hover,
+  .art-preview-btn:focus-visible {
+    border-color: var(--accent);
+  }
+
+  .art-fallback-btn:hover {
+    border-color: var(--border-hover);
+  }
+
   .box-art {
     width: 100%;
     height: 100%;
-    object-fit: cover;
-    object-position: center 22%;
+    object-fit: contain;
     display: block;
   }
 
-  .art-fallback {
-    width: 100%;
-    height: 100%;
-    display: flex;
+  .art-zoom-badge {
+    position: absolute;
+    right: 4px;
+    bottom: 4px;
+    width: 22px;
+    height: 22px;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
+    background: rgba(9, 12, 16, 0.88);
+    color: var(--text);
+    display: inline-flex;
     align-items: center;
     justify-content: center;
-    background: var(--surface-2);
+    opacity: 0;
+    pointer-events: none;
   }
 
-  .art-top-strip {
-    position: absolute;
-    top: 7px;
-    left: 7px;
-    right: 7px;
+  .art-preview-btn:hover .art-zoom-badge,
+  .art-preview-btn:focus-visible .art-zoom-badge {
+    opacity: 1;
+    border-color: var(--accent);
+    color: var(--accent-text);
+  }
+
+  .meta-top {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: space-between;
     gap: 6px;
-    pointer-events: none;
   }
 
   .plat-chip {
     display: inline-flex;
     align-items: center;
     gap: 5px;
-    padding: 2px 7px;
+    padding: 1px 6px;
     border-radius: var(--radius-xs);
-    background: var(--surface);
+    background: var(--surface-2);
     border: 1px solid var(--border);
     color: var(--text);
     font-family: var(--font-mono);
@@ -285,7 +353,7 @@
     flex: 1;
     display: flex;
     flex-direction: column;
-    gap: 7px;
+    gap: 6px;
     padding: 10px 11px;
     min-width: 0;
   }

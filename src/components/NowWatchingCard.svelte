@@ -20,7 +20,10 @@
     formatMinutes,
     formatViewerCount,
   } from '../lib/format';
-  import { computeLiveCampaignProgress } from '../lib/selectors';
+  import {
+    computeLiveCampaignProgress,
+  } from '../lib/selectors';
+  import { openLightbox } from '../lib/stores';
   import type { Campaign, Channel, Drop, MinerState, PlatformId } from '../lib/types';
   import Badge from './Badge.svelte';
   import Button from './Button.svelte';
@@ -214,7 +217,20 @@
           <div class="prog-head">
             <div class="prog-identity">
               {#if skin.imageUrl}
-                <img src={skin.imageUrl} alt={skin.skinName} class="skin-thumb" />
+                <button
+                  type="button"
+                  class="skin-thumb-btn"
+                  title="Click to view full artwork"
+                  aria-label={`View full artwork for ${skin.skinName}`}
+                  onclick={() =>
+                    openLightbox({
+                      src: skin.imageUrl!,
+                      title: skin.skinName,
+                      subtitle: campaign ? `${campaign.game.name} · ${campaign.name}` : undefined,
+                    })}
+                >
+                  <img src={skin.imageUrl} alt={skin.skinName} class="skin-thumb" decoding="async" />
+                </button>
               {:else}
                 <span class="prog-icon"><Gift size={15} /></span>
               {/if}
@@ -513,14 +529,30 @@
     min-width: 0;
   }
 
-  .skin-thumb {
-    width: 34px;
-    height: 34px;
+  .skin-thumb-btn {
+    width: 36px;
+    height: 36px;
+    padding: 2px;
     border-radius: var(--radius-sm);
-    object-fit: cover;
     background: var(--surface);
     border: 1px solid var(--border);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
+    overflow: hidden;
+  }
+
+  .skin-thumb-btn:hover,
+  .skin-thumb-btn:focus-visible {
+    border-color: var(--accent);
+  }
+
+  .skin-thumb {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
   }
 
   .prog-icon {

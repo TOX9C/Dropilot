@@ -9,6 +9,65 @@ use crate::platforms::{
 pub const GAME_LINKED_ID_PREFIX: &str = "__game_linked_id__:";
 pub const GAME_LINKED_NAME_PREFIX: &str = "__game_linked_name__:";
 
+const BOX_ART_WIDTH: &str = "450";
+const BOX_ART_HEIGHT: &str = "600";
+
+/// Upgrades Twitch `boxArtURL` strings—whether templated with `{width}x{height}` or
+/// pre-baked with tiny dimensions like `-52x72.jpg` / `-120x160.jpg`—to crisp `450x600` (3:4).
+pub fn normalize_box_art_url(raw: &str) -> String {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return String::new();
+    }
+
+    let replaced = trimmed
+        .replace("{width}", BOX_ART_WIDTH)
+        .replace("{height}", BOX_ART_HEIGHT)
+        .replace("%7Bwidth%7D", BOX_ART_WIDTH)
+        .replace("%7Bheight%7D", BOX_ART_HEIGHT)
+        .replace("%7bwidth%7d", BOX_ART_WIDTH)
+        .replace("%7bheight%7d", BOX_ART_HEIGHT);
+
+    let split_idx = replaced.find(['?', '#']).unwrap_or(replaced.len());
+    let (path, suffix) = replaced.split_at(split_idx);
+    let lower_path = path.to_ascii_lowercase();
+    if !(lower_path.contains("jtvnw.net") || lower_path.contains("ttv-boxart")) {
+        return replaced;
+    }
+
+    let Some(dot_idx) = path.rfind('.') else {
+        return replaced;
+    };
+    let ext = &path[dot_idx..];
+    let lower_ext = ext.to_ascii_lowercase();
+    if !matches!(lower_ext.as_str(), ".jpg" | ".jpeg" | ".png" | ".webp") {
+        return replaced;
+    }
+
+    let stem = &path[..dot_idx];
+    let Some(dash_idx) = stem.rfind('-') else {
+        return replaced;
+    };
+    let dims = &stem[dash_idx + 1..];
+    let Some(x_idx) = dims.find(['x', 'X']) else {
+        return replaced;
+    };
+    let w_part = &dims[..x_idx];
+    let h_part = &dims[x_idx + 1..];
+    if w_part.is_empty()
+        || h_part.is_empty()
+        || !w_part.bytes().all(|b| b.is_ascii_digit())
+        || !h_part.bytes().all(|b| b.is_ascii_digit())
+    {
+        return replaced;
+    }
+
+    format!(
+        "{}-{BOX_ART_WIDTH}x{BOX_ART_HEIGHT}{ext}{suffix}",
+        &stem[..dash_idx]
+    )
+}
+
 pub fn parse_campaigns_dashboard(payload: &Value) -> Result<Vec<Campaign>, AppError> {
     let campaigns_val = payload
         .pointer("/data/currentUser/dropCampaigns")
@@ -91,7 +150,8 @@ fn parse_single_campaign(v: &Value, is_dashboard_summary: bool) -> Option<Campai
         box_art_url: game_obj
             .and_then(|g| g.get("boxArtURL"))
             .and_then(|s| s.as_str())
-            .map(|url| url.replace("{width}", "285").replace("{height}", "380")),
+            .map(normalize_box_art_url)
+            .filter(|s| !s.is_empty()),
     };
 
     let drops = v
@@ -853,5 +913,67 @@ mod tests {
         let (_, done) =
             parse_drop_current_session_progress(&done_payload).expect("completed session");
         assert!(done);
+    }
+
+    #[test]
+    fn normalizes_twitch_box_art_urls_to_high_res() {
+        assert_eq!(
+            normalize_box_art_url("https://static-cdn.jtvnw.net/ttv-boxart/515025-52x72.jpg"),
+            "https://static-cdn.jtvnw.net/ttv-boxart/515025-450x600.jpg"
+        );
+        assert_eq!(
+            normalize_box_art_url("https://static-cdn.jtvnw.net/ttv-boxart/515025-120x160.jpg"),
+            "https://static-cdn.jtvnw.net/ttv-boxart/515025-450x600.jpg"
+        );
+        assert_eq!(
+            normalize_box_art_url(
+                "https://static-cdn.jtvnw.net/ttv-boxart/515025_IGDB-{width}x{height}.jpg"
+            ),
+            "https://static-cdn.jtvnw.net/ttv-boxart/515025_IGDB-450x600.jpg"
+        );
+        assert_eq!(
+            normalize_box_art_url(
+                "https://static-cdn.jtvnw.net/ttv-boxart/515025-%7Bwidth%7Dx%7Bheight%7D.webp?v=2"
+            ),
+            "https://static-cdn.jtvnw.net/ttv-boxart/515025-450x600.webp?v=2"
+        );
+        assert_eq!(
+            normalize_box_art_url("https://static-cdn.jtvnw.net/ttv-boxart/515025.jpg"),
+            "https://static-cdn.jtvnw.net/ttv-boxart/515025.jpg"
+        );
+        assert_eq!(
+            normalize_box_art_url("https://example.com/other-52x72.jpg"),
+            "https://example.com/other-52x72.jpg"
+        );
+
+        let now = Utc::now();
+        let future = (now + Duration::hours(6)).to_rfc3339();
+        let past = (now - Duration::hours(1)).to_rfc3339();
+        let payload = json!({
+            "data": {
+                "currentUser": {
+                    "dropCampaigns": [
+                        {
+                            "id": "pogo-1",
+                            "name": "Pokémon GO Drops",
+                            "status": "ACTIVE",
+                            "startAt": past,
+                            "endAt": future,
+                            "game": {
+                                "id": "490655",
+                                "displayName": "Pokémon GO",
+                                "boxArtURL": "https://static-cdn.jtvnw.net/ttv-boxart/490655-52x72.jpg"
+                            }
+                        }
+                    ]
+                }
+            }
+        });
+        let campaigns = parse_campaigns_dashboard(&payload).expect("campaigns");
+        assert_eq!(campaigns.len(), 1);
+        assert_eq!(
+            campaigns[0].game.box_art_url.as_deref(),
+            Some("https://static-cdn.jtvnw.net/ttv-boxart/490655-450x600.jpg")
+        );
     }
 }

@@ -82,6 +82,23 @@ export const sessionHistory = writable<number[]>([0]);
 export const unreadAlertCount = writable<number>(0);
 export const uiToasts = writable<ToastItem[]>([]);
 
+export interface LightboxImage {
+  src: string;
+  title: string;
+  subtitle?: string;
+}
+
+export const lightboxImage = writable<LightboxImage | null>(null);
+
+export function openLightbox(image: LightboxImage): void {
+  if (!image.src) return;
+  lightboxImage.set(image);
+}
+
+export function closeLightbox(): void {
+  lightboxImage.set(null);
+}
+
 let currentRoute: NavRoute = readRoute();
 let nextToastId = 1;
 const previousDropMinutes = new Map<string, number>();

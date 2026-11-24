@@ -141,7 +141,7 @@ fn parse_single_campaign(v: &Value) -> Option<Campaign> {
             })
             .and_then(|s| s.as_str())
             .filter(|s| !s.trim().is_empty())
-            .map(str::to_string),
+            .map(normalize_kick_image_url),
     };
 
     let explicit_linked = v

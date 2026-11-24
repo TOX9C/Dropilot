@@ -7,6 +7,7 @@
   import Button from './components/Button.svelte';
   import Countdown from './components/Countdown.svelte';
   import DisclaimerModal from './components/DisclaimerModal.svelte';
+  import ImageLightbox from './components/ImageLightbox.svelte';
   import Modal from './components/Modal.svelte';
   import Sidebar from './components/Sidebar.svelte';
   import Skeleton from './components/Skeleton.svelte';
@@ -19,7 +20,9 @@
     appLogs,
     appSettings,
     appSnapshot,
+    closeLightbox,
     initializeAppStores,
+    lightboxImage,
     mockFeatureAvailable,
     notifyUi,
     remoteConfigStatus,
@@ -296,6 +299,13 @@
 
 <UpdateBanner />
 <Toast />
+<ImageLightbox
+  open={Boolean($lightboxImage)}
+  src={$lightboxImage?.src ?? null}
+  title={$lightboxImage?.title ?? ''}
+  subtitle={$lightboxImage?.subtitle}
+  onclose={closeLightbox}
+/>
 
 <style>
   .app-shell {

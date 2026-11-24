@@ -173,3 +173,49 @@ export function formatRelativeTime(isoDate: string | number, now = Date.now()): 
   if (hours < 24) return `${hours}h ago`;
   return `${Math.floor(hours / 24)}d ago`;
 }
+
+export function upgradeArtworkUrl(url: string, width?: number, height?: number): string;
+export function upgradeArtworkUrl(
+  url: string | null | undefined,
+  width?: number,
+  height?: number,
+): string | null;
+export function upgradeArtworkUrl(
+  url: string | null | undefined,
+  width = 420,
+  height = 560,
+): string | null {
+  if (!url) return null;
+  const trimmed = url.trim();
+  if (!trimmed) return null;
+
+  let next = trimmed
+    .replace(/\{width\}|%7Bwidth%7D/gi, String(width))
+    .replace(/\{height\}|%7Bheight%7D/gi, String(height));
+
+  if (/jtvnw\.net|ttv-boxart/i.test(next)) {
+    next = next.replace(
+      /-\d+x\d+(\.(?:jpg|jpeg|png|webp))(?=$|[?#])/i,
+      `-${width}x${height}$1`,
+    );
+  } else if (/kick\.com/i.test(next)) {
+    next = next.replace(
+      /-\d+x\d+(\.(?:jpg|jpeg|png|webp))(?=$|[?#])/i,
+      `-${width}x${height}$1`,
+    );
+    try {
+      const parsed = new URL(next);
+      if (parsed.searchParams.has('w') || parsed.searchParams.has('width')) {
+        if (parsed.searchParams.has('w')) parsed.searchParams.set('w', String(width));
+        if (parsed.searchParams.has('width')) parsed.searchParams.set('width', String(width));
+        if (parsed.searchParams.has('h')) parsed.searchParams.set('h', String(height));
+        if (parsed.searchParams.has('height')) parsed.searchParams.set('height', String(height));
+        next = parsed.toString();
+      }
+    } catch {
+      // keep non-URL strings untouched
+    }
+  }
+
+  return next;
+}

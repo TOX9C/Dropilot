@@ -5,6 +5,7 @@
   import ExternalLink from 'lucide-svelte/icons/external-link';
   import Link2 from 'lucide-svelte/icons/link-2';
   import LoaderCircle from 'lucide-svelte/icons/loader-circle';
+  import Maximize2 from 'lucide-svelte/icons/maximize-2';
   import Play from 'lucide-svelte/icons/play';
   import Star from 'lucide-svelte/icons/star';
   import Unlink from 'lucide-svelte/icons/unlink';
@@ -16,6 +17,7 @@
     formatMinutes,
     formatStartsIn,
     progressPercent,
+    upgradeArtworkUrl,
   } from '../lib/format';
   import {
     getCampaignTotalMinutes,
@@ -23,6 +25,7 @@
     isCampaignFarmed,
     type GameDropGroup,
   } from '../lib/selectors';
+  import { openLightbox } from '../lib/stores';
   import type { Campaign, PlatformId, Settings } from '../lib/types';
   import Badge from './Badge.svelte';
   import Button from './Button.svelte';
@@ -204,18 +207,49 @@
     />
 
     {#if expandedGroup && idx === expandedRowEndIndex}
+      {@const headerThumb = upgradeArtworkUrl(expandedGroup.game.boxArtUrl, 420, 560)}
+      {@const headerFull = upgradeArtworkUrl(expandedGroup.game.boxArtUrl, 600, 800)}
+      {@const headerImgKey = `header:${expandedGroup.key}`}
       <section
         class="card game-detail-panel"
         aria-label={`${expandedGroup.game.name} drop campaigns and rewards`}
       >
         <header class="detail-head">
           <div class="detail-identity">
-            <Monogram
-              src={expandedGroup.game.boxArtUrl}
-              name={expandedGroup.game.name}
-              width={40}
-              height={52}
-            />
+            {#if headerThumb && !brokenImages[headerImgKey]}
+              <button
+                type="button"
+                class="detail-art-btn"
+                title="Click to view full artwork"
+                aria-label={`View full artwork for ${expandedGroup.game.name}`}
+                onclick={() =>
+                  openLightbox({
+                    src: headerFull!,
+                    title: expandedGroup.game.name,
+                    subtitle: `${expandedGroup.platform === 'twitch' ? 'Twitch' : 'Kick'} · ${expandedGroup.campaigns.length} ${expandedGroup.campaigns.length === 1 ? 'campaign' : 'campaigns'}`,
+                  })}
+              >
+                <img
+                  src={headerThumb}
+                  alt={expandedGroup.game.name}
+                  class="detail-art-img"
+                  decoding="async"
+                  onerror={() => {
+                    brokenImages = { ...brokenImages, [headerImgKey]: true };
+                  }}
+                />
+                <span class="detail-art-zoom" aria-hidden="true">
+                  <Maximize2 size={10} />
+                </span>
+              </button>
+            {:else}
+              <Monogram
+                src={null}
+                name={expandedGroup.game.name}
+                width={45}
+                height={60}
+              />
+            {/if}
             <div class="detail-title-col">
               <div class="detail-title-row">
                 {#if showPlatformBadge}
@@ -436,22 +470,40 @@
                       : progressPercent(tile.currentMinutes, tile.requiredMinutes)}
                     {@const showImg = Boolean(tile.imageUrl && !brokenImages[tile.key])}
                     <div class="reward-tile">
-                      <div class="reward-stage">
-                        {#if showImg}
+                      {#if showImg}
+                        <button
+                          type="button"
+                          class="reward-stage reward-stage-btn"
+                          title="Click to view full artwork"
+                          aria-label={`View full artwork for ${tile.skinName}`}
+                          onclick={() =>
+                            openLightbox({
+                              src: tile.imageUrl!,
+                              title: tile.skinName,
+                              subtitle: `${expandedGroup.game.name} · ${camp.name} · ${formatMinutes(tile.requiredMinutes)}`,
+                            })}
+                        >
                           <img
                             class="reward-img"
                             src={tile.imageUrl!}
                             alt={tile.skinName}
                             loading="lazy"
+                            decoding="async"
                             onerror={() => {
                               brokenImages = { ...brokenImages, [tile.key]: true };
                             }}
                           />
-                        {:else}
-                          <Monogram src={null} name={tile.skinName} width={40} height={40} />
-                        {/if}
-                        <span class="reward-time tabular">{formatMinutes(tile.requiredMinutes)}</span>
-                      </div>
+                          <span class="stage-zoom-badge" aria-hidden="true">
+                            <Maximize2 size={11} />
+                          </span>
+                          <span class="reward-time tabular">{formatMinutes(tile.requiredMinutes)}</span>
+                        </button>
+                      {:else}
+                        <div class="reward-stage">
+                          <Monogram src={null} name={tile.skinName} width={44} height={44} />
+                          <span class="reward-time tabular">{formatMinutes(tile.requiredMinutes)}</span>
+                        </div>
+                      {/if}
 
                       <div class="reward-meta">
                         <div class="reward-name" title={tile.skinName}>{tile.skinName}</div>
@@ -496,7 +548,7 @@
 <style>
   .game-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(228px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(268px, 1fr));
     gap: var(--grid-gap, 10px);
     align-items: stretch;
   }
@@ -526,6 +578,55 @@
     align-items: center;
     gap: 12px;
     min-width: 0;
+  }
+
+  .detail-art-btn {
+    position: relative;
+    width: 45px;
+    height: 60px;
+    padding: 0;
+    border-radius: var(--radius-sm);
+    border: 1px solid var(--border);
+    background: var(--sidebar-bg);
+    overflow: hidden;
+    flex-shrink: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .detail-art-btn:hover,
+  .detail-art-btn:focus-visible {
+    border-color: var(--accent);
+  }
+
+  .detail-art-img {
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    display: block;
+  }
+
+  .detail-art-zoom {
+    position: absolute;
+    right: 2px;
+    bottom: 2px;
+    width: 16px;
+    height: 16px;
+    border-radius: var(--radius-xs);
+    background: rgba(9, 12, 16, 0.88);
+    border: 1px solid var(--border);
+    color: var(--accent-text);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .detail-art-btn:hover .detail-art-zoom,
+  .detail-art-btn:focus-visible .detail-art-zoom {
+    opacity: 1;
   }
 
   .detail-title-col {
@@ -778,7 +879,7 @@
 
   .rewards-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(156px, 1fr));
+    grid-template-columns: repeat(auto-fill, minmax(168px, 1fr));
     gap: 8px;
   }
 
@@ -793,20 +894,51 @@
 
   .reward-stage {
     position: relative;
-    height: 76px;
+    width: 100%;
+    height: 112px;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 6px;
+    padding: 8px;
     background: var(--surface-2);
+    border: none;
     border-bottom: 1px solid var(--border);
+  }
+
+  .reward-stage-btn:hover,
+  .reward-stage-btn:focus-visible {
+    background: var(--surface-hover);
   }
 
   .reward-img {
     max-width: 100%;
-    max-height: 62px;
+    max-height: 94px;
+    width: auto;
+    height: auto;
     object-fit: contain;
     border-radius: var(--radius-xs);
+  }
+
+  .stage-zoom-badge {
+    position: absolute;
+    left: 5px;
+    bottom: 5px;
+    width: 20px;
+    height: 20px;
+    border-radius: var(--radius-xs);
+    border: 1px solid var(--border);
+    background: rgba(9, 12, 16, 0.88);
+    color: var(--accent-text);
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .reward-stage-btn:hover .stage-zoom-badge,
+  .reward-stage-btn:focus-visible .stage-zoom-badge {
+    opacity: 1;
   }
 
   .reward-time {
