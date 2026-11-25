@@ -249,9 +249,9 @@ impl HistoryStore {
     }
 
     pub fn begin_watch_save(&mut self, now: Instant) -> bool {
-        let due = self
-            .last_watch_save
-            .map_or(true, |last| now.duration_since(last) >= WATCH_HISTORY_SAVE_INTERVAL);
+        let due = self.last_watch_save.map_or(true, |last| {
+            now.duration_since(last) >= WATCH_HISTORY_SAVE_INTERVAL
+        });
         if due {
             self.last_watch_save = Some(now);
         }

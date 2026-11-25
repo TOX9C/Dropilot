@@ -96,7 +96,10 @@ pub fn spawn_miner_supervisor(
     app: AppHandle,
     state: Arc<AppState>,
     backend: PlatformBackend,
-) -> (mpsc::Sender<MinerControl>, tauri::async_runtime::JoinHandle<()>) {
+) -> (
+    mpsc::Sender<MinerControl>,
+    tauri::async_runtime::JoinHandle<()>,
+) {
     let (tx, mut rx) = mpsc::channel::<MinerControl>(32);
 
     let task = tauri::async_runtime::spawn(async move {

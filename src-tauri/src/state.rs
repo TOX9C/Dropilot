@@ -9,7 +9,9 @@ use tokio::sync::{mpsc, oneshot, Mutex, RwLock};
 use tracing::warn;
 
 use crate::events::EventHub;
-use crate::history::{history_path, ClaimHistoryEntry, ClaimPlatform, ClaimRecordStatus, HistoryStore};
+use crate::history::{
+    history_path, ClaimHistoryEntry, ClaimPlatform, ClaimRecordStatus, HistoryStore,
+};
 use crate::logging::{LogBuffer, LogHandle};
 use crate::net::client::AllowlistedClient;
 use crate::platforms::{
@@ -246,7 +248,8 @@ impl AppState {
         let _save_guard = self.history_save_lock.lock().await;
         *self.history.write().await = HistoryStore::default();
         self.recent_claims.write().await.clear();
-        self.save_history_snapshot(HistoryStore::default(), "clear").await;
+        self.save_history_snapshot(HistoryStore::default(), "clear")
+            .await;
     }
 
     pub async fn delete_history(&self) {
@@ -473,12 +476,10 @@ mod tests {
 
         let clear = state.clear_history();
         tokio::pin!(clear);
-        let completed_early = tokio::time::timeout(
-            std::time::Duration::from_millis(100),
-            &mut clear,
-        )
-        .await
-        .is_ok();
+        let completed_early =
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut clear)
+                .await
+                .is_ok();
         release_tx.send(()).unwrap();
         assert!(!completed_early, "clear bypassed the in-flight save");
         clear.await;
