@@ -426,10 +426,16 @@ impl HistoryStore {
 }
 
 fn csv_escape(field: &str) -> String {
+    let formula = field
+        .chars()
+        .skip_while(|c| c.is_whitespace() || c.is_control())
+        .next()
+        .is_some_and(|c| matches!(c, '=' | '+' | '-' | '@'));
+    let prefix = if formula { "'" } else { "" };
     if field.contains([',', '"', '\n', '\r']) {
-        format!("\"{}\"", field.replace('"', "\"\""))
+        format!("\"{prefix}{}\"", field.replace('"', "\"\""))
     } else {
-        field.to_string()
+        format!("{prefix}{field}")
     }
 }
 
@@ -481,6 +487,28 @@ mod tests {
         assert_eq!(compute_streaks(&dates, d(12)), (3, 4));
         assert_eq!(compute_streaks(&dates, d(13)), (3, 4));
         assert_eq!(compute_streaks(&dates, d(15)), (0, 4));
+    }
+
+    #[test]
+    fn csv_escaping_neutralizes_formulas_after_leading_whitespace_and_controls() {
+        let cases = [
+            ("=1+1", "'=1+1"),
+            ("+1", "'+1"),
+            ("-2+3", "'-2+3"),
+            ("@SUM(1,2)", "\"'@SUM(1,2)\""),
+            (" \t=1+1", "' \t=1+1"),
+            ("\n+1", "\"'\n+1\""),
+            ("\0-1", "'\0-1"),
+            ("\u{2003}@command", "'\u{2003}@command"),
+            ("ordinary", "ordinary"),
+            ("1+1", "1+1"),
+            ("Hoodie, \"Pro\"", "\"Hoodie, \"\"Pro\"\"\""),
+            ("Rüst", "Rüst"),
+        ];
+
+        for (input, expected) in cases {
+            assert_eq!(csv_escape(input), expected, "input: {input:?}");
+        }
     }
 
     #[test]

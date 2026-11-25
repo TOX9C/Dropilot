@@ -185,19 +185,14 @@ pub async fn remove_account_profile(
 
     let updated = {
         let mut guard = state.settings.write().await;
-        remove_profile_after_credential_deletion(
-            &mut guard,
-            platform,
-            &profile_id,
-            || {
-                if state.mock_active.load(Ordering::Relaxed) {
-                    Ok(())
-                } else {
-                    SecretStore::delete_profile_token(platform, &profile_id)
-                        .map_err(|error| error.user_message())
-                }
-            },
-        )?;
+        remove_profile_after_credential_deletion(&mut guard, platform, &profile_id, || {
+            if state.mock_active.load(Ordering::Relaxed) {
+                Ok(())
+            } else {
+                SecretStore::delete_profile_token(platform, &profile_id)
+                    .map_err(|error| error.user_message())
+            }
+        })?;
         guard.sanitize();
         guard.clone()
     };
@@ -305,15 +300,12 @@ pub async fn logout(
     }
     let _ = state.persist_settings().await;
     if !state.mock_active.load(Ordering::Relaxed) {
-        SecretStore::delete_profile_token(platform, &pid)
-            .map_err(|error| error.user_message())?;
+        SecretStore::delete_profile_token(platform, &pid).map_err(|error| error.user_message())?;
         if let Err(err) = clear_profile_webview_browsing_data(&app, platform, &pid).await {
             warn!(profile_id = %pid, error = %err, "Could not clear WebView2 browsing data on logout");
         }
     }
-    state
-        .send_profile_miner(&pid, MinerControl::Logout)
-        .await;
+    state.send_profile_miner(&pid, MinerControl::Logout).await;
     Ok(())
 }
 
@@ -1215,10 +1207,7 @@ mod tests {
 
         assert_eq!(result.unwrap_err(), "injected deletion failure");
         assert!(settings.profile_by_id("twitch-alt").is_some());
-        assert_eq!(
-            settings.active_profile_id(PlatformId::Twitch),
-            "twitch-alt"
-        );
+        assert_eq!(settings.active_profile_id(PlatformId::Twitch), "twitch-alt");
 
         remove_profile_after_credential_deletion(
             &mut settings,
