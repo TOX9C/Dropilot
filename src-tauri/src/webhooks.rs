@@ -132,9 +132,30 @@ impl WebhookDispatcher {
             .map_err(|e| e.user_message())
     }
 
-    pub fn clear_all_secrets() {
-        let _ = SecretStore::delete_named_secret(WEBHOOK_DISCORD_SECRET_KEY);
-        let _ = SecretStore::delete_named_secret(LEGACY_WEBHOOK_TELEGRAM_SECRET_KEY);
+    fn clear_secrets_with(
+        mut delete: impl FnMut(&str) -> Result<(), crate::platforms::AppError>,
+    ) -> Result<(), String> {
+        let mut errors = Vec::new();
+        for key in [
+            WEBHOOK_DISCORD_SECRET_KEY,
+            LEGACY_WEBHOOK_TELEGRAM_SECRET_KEY,
+        ] {
+            if let Err(error) = delete(key) {
+                errors.push(format!("{key}: {}", error.user_message()));
+            }
+        }
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "Failed deleting webhook credentials: {}",
+                errors.join("; ")
+            ))
+        }
+    }
+
+    pub fn clear_all_secrets() -> Result<(), String> {
+        Self::clear_secrets_with(SecretStore::delete_named_secret)
     }
 
     fn should_send_event(&self, settings: &WebhookSettings, event: &WebhookEvent) -> bool {
@@ -454,6 +475,32 @@ mod tests {
         };
         assert!(dispatcher.should_send_event(&settings, &ev));
         assert!(!dispatcher.should_send_event(&settings, &ev));
+    }
+
+    #[test]
+    fn credential_deletion_failures_are_aggregated() {
+        let mut attempted = Vec::new();
+        let result = WebhookDispatcher::clear_secrets_with(|key| {
+            attempted.push(key.to_string());
+            if key == WEBHOOK_DISCORD_SECRET_KEY {
+                Err(crate::platforms::AppError::Internal(
+                    "injected deletion failure".to_string(),
+                ))
+            } else {
+                Ok(())
+            }
+        });
+
+        let error = result.expect_err("deletion failure must be returned");
+        assert!(error.contains(WEBHOOK_DISCORD_SECRET_KEY));
+        assert!(error.contains("injected deletion failure"));
+        assert_eq!(
+            attempted,
+            vec![
+                WEBHOOK_DISCORD_SECRET_KEY,
+                LEGACY_WEBHOOK_TELEGRAM_SECRET_KEY
+            ]
+        );
     }
 
     #[test]

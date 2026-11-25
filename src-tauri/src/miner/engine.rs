@@ -453,9 +453,6 @@ async fn handle_control(
         MinerControl::Logout => {
             let plat = backend.active(state);
             let _ = plat.logout(ctx.token.as_deref()).await;
-            if !state.mock_active.load(Ordering::Relaxed) {
-                let _ = SecretStore::delete_profile_token(platform_id, profile_id);
-            }
             ctx.paused = false;
             ctx.last_error = None;
             ctx.reset_session("Logged out");

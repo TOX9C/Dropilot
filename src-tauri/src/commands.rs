@@ -132,6 +132,27 @@ pub async fn add_account_profile(
     Ok(updated)
 }
 
+fn remove_profile_after_credential_deletion(
+    settings: &mut Settings,
+    platform: PlatformId,
+    profile_id: &str,
+    delete: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    delete()?;
+    settings.profiles.retain(|profile| profile.id != profile_id);
+    if settings.active_profile_id(platform) == profile_id {
+        if let Some(first) = settings
+            .profiles
+            .iter()
+            .find(|profile| profile.platform == platform)
+        {
+            let next_id = first.id.clone();
+            settings.set_active_profile_id(platform, next_id);
+        }
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn remove_account_profile(
     app: AppHandle,
@@ -155,10 +176,6 @@ pub async fn remove_account_profile(
     state.unregister_miner_for_profile(&profile_id).await;
     close_profile_windows(&app, platform, &profile_id);
 
-    if !state.mock_active.load(Ordering::Relaxed) {
-        let _ = SecretStore::delete_profile_token(platform, &profile_id);
-    }
-
     if !is_default_profile(&profile_id) {
         let dir = profile_webview_data_dir(&profile_id);
         if dir.exists() {
@@ -168,13 +185,19 @@ pub async fn remove_account_profile(
 
     let updated = {
         let mut guard = state.settings.write().await;
-        guard.profiles.retain(|p| p.id != profile_id);
-        if guard.active_profile_id(platform) == profile_id {
-            if let Some(first) = guard.profiles.iter().find(|p| p.platform == platform) {
-                let next_id = first.id.clone();
-                guard.set_active_profile_id(platform, next_id);
-            }
-        }
+        remove_profile_after_credential_deletion(
+            &mut guard,
+            platform,
+            &profile_id,
+            || {
+                if state.mock_active.load(Ordering::Relaxed) {
+                    Ok(())
+                } else {
+                    SecretStore::delete_profile_token(platform, &profile_id)
+                        .map_err(|error| error.user_message())
+                }
+            },
+        )?;
         guard.sanitize();
         guard.clone()
     };
@@ -281,15 +304,16 @@ pub async fn logout(
         guard.sync_legacy_mirrors();
     }
     let _ = state.persist_settings().await;
-    state
-        .send_profile_miner(&pid, MinerControl::Logout)
-        .await;
     if !state.mock_active.load(Ordering::Relaxed) {
-        let _ = SecretStore::delete_profile_token(platform, &pid);
+        SecretStore::delete_profile_token(platform, &pid)
+            .map_err(|error| error.user_message())?;
         if let Err(err) = clear_profile_webview_browsing_data(&app, platform, &pid).await {
             warn!(profile_id = %pid, error = %err, "Could not clear WebView2 browsing data on logout");
         }
     }
+    state
+        .send_profile_miner(&pid, MinerControl::Logout)
+        .await;
     Ok(())
 }
 
@@ -790,6 +814,36 @@ pub async fn clear_app_data(
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
     let existing_profiles = state.settings.read().await.profiles.clone();
+    let mut credential_errors = Vec::new();
+    for prof in &existing_profiles {
+        if let Err(error) = SecretStore::delete_profile_token(prof.platform, &prof.id) {
+            credential_errors.push(format!(
+                "{} profile '{}': {}",
+                prof.platform.display_name(),
+                prof.id,
+                error.user_message()
+            ));
+        }
+    }
+    for platform in [PlatformId::Twitch, PlatformId::Kick] {
+        if let Err(error) = SecretStore::delete_token(platform) {
+            credential_errors.push(format!(
+                "default {} credential: {}",
+                platform.display_name(),
+                error.user_message()
+            ));
+        }
+    }
+    if let Err(error) = WebhookDispatcher::clear_all_secrets() {
+        credential_errors.push(error);
+    }
+    if !credential_errors.is_empty() {
+        return Err(format!(
+            "Could not clear all credentials: {}",
+            credential_errors.join("; ")
+        ));
+    }
+
     for prof in &existing_profiles {
         if is_default_profile(&prof.id) {
             state
@@ -802,11 +856,7 @@ pub async fn clear_app_data(
             state.unregister_miner_for_profile(&prof.id).await;
             close_profile_windows(&app, prof.platform, &prof.id);
         }
-        let _ = SecretStore::delete_profile_token(prof.platform, &prof.id);
     }
-    let _ = SecretStore::delete_token(PlatformId::Twitch);
-    let _ = SecretStore::delete_token(PlatformId::Kick);
-    WebhookDispatcher::clear_all_secrets();
     let _ = clear_webview_browsing_data(&app).await;
     let profiles_dir = dirs::data_local_dir()
         .unwrap_or_else(|| std::path::PathBuf::from("."))
@@ -1139,4 +1189,48 @@ pub async fn mark_epic_game_claimed(
         state.remove_epic_claim(&game_id).await;
     }
     Ok(state.epic.snapshot().await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn credential_deletion_failure_preserves_profile_for_retry() {
+        let mut settings = Settings::default();
+        settings.profiles.push(AccountProfile {
+            id: "twitch-alt".to_string(),
+            label: "Alt".to_string(),
+            platform: PlatformId::Twitch,
+            settings: PlatformSettings::default(),
+        });
+        settings.active_twitch_profile_id = "twitch-alt".to_string();
+
+        let result = remove_profile_after_credential_deletion(
+            &mut settings,
+            PlatformId::Twitch,
+            "twitch-alt",
+            || Err("injected deletion failure".to_string()),
+        );
+
+        assert_eq!(result.unwrap_err(), "injected deletion failure");
+        assert!(settings.profile_by_id("twitch-alt").is_some());
+        assert_eq!(
+            settings.active_profile_id(PlatformId::Twitch),
+            "twitch-alt"
+        );
+
+        remove_profile_after_credential_deletion(
+            &mut settings,
+            PlatformId::Twitch,
+            "twitch-alt",
+            || Ok(()),
+        )
+        .expect("successful deletion removes profile");
+        assert!(settings.profile_by_id("twitch-alt").is_none());
+        assert_eq!(
+            settings.active_profile_id(PlatformId::Twitch),
+            crate::settings::DEFAULT_TWITCH_PROFILE_ID
+        );
+    }
 }
