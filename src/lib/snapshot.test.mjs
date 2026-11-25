@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { normalizeSnapshot } from './snapshot.ts';
 
+function platformSnapshot(platform, login) {
   return {
     platform,
     state: 'Idle',
@@ -23,6 +25,7 @@ test('rehydrates only active profile snapshots omitted by the backend', () => {
   const twitch = platformSnapshot('twitch', 'active-twitch');
   const kick = platformSnapshot('kick', 'active-kick');
   const inactive = platformSnapshot('twitch', 'inactive-twitch');
+  const wire = {
     twitch,
     kick,
     profiles: [
