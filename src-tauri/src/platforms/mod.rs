@@ -68,6 +68,8 @@ pub struct Channel {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Reward {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
     pub name: String,
     pub image_url: Option<String>,
 }
@@ -113,6 +115,15 @@ pub struct Campaign {
     pub drops: Vec<Drop>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ClaimedBenefit {
+    pub benefit_id: Option<String>,
+    pub name: String,
+    pub game_id: Option<String>,
+    pub game_name: Option<String>,
+    pub last_awarded_at: DateTime<Utc>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DropProgress {
@@ -134,6 +145,8 @@ pub struct DropProgress {
     pub campaign_name: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_name: Option<String>,
+    #[serde(skip)]
+    pub claimed_benefit: Option<ClaimedBenefit>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

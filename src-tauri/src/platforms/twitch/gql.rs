@@ -694,7 +694,7 @@ pub async fn fetch_channels_available_drops_data(
         chunk: &[String],
     ) -> Result<Vec<Value>, AppError> {
         const PLAIN_QUERY: &str =
-            "query($id: ID!) { channel(id: $id) { id viewerDropCampaigns { id timeBasedDrops { id name requiredMinutesWatched benefitEdges { benefit { name imageAssetURL } } } } } }";
+            "query($id: ID!) { channel(id: $id) { id viewerDropCampaigns { id timeBasedDrops { id name requiredMinutesWatched benefitEdges { benefit { id name imageAssetURL } } } } } }";
         let headers = build_twitch_headers(token)?;
         let batch_payload = Value::Array(
             chunk

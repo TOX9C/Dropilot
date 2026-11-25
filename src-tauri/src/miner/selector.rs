@@ -419,6 +419,7 @@ mod tests {
             instance_id: None,
             name: id.to_string(),
             rewards: vec![Reward {
+                id: None,
                 name: "Skin".to_string(),
                 image_url: None,
             }],

@@ -22,7 +22,8 @@ use crate::miner::scheduler::{
     MOCK_WATCH_TICK_SECS, PROGRESS_POLL_SECS, WATCH_TICK_SECS,
 };
 use crate::miner::selector::{
-    evaluate_switch, ordered_target_campaigns, select_best_channel, SwitchContext, SwitchDecision,
+    evaluate_switch, game_names_match, ordered_target_campaigns, select_best_channel,
+    SwitchContext, SwitchDecision,
 };
 use crate::net::backoff::Backoff;
 use crate::platforms::kick::models::is_kick_fallback_case_id;
@@ -33,8 +34,8 @@ use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::{GAME_LINKED_ID_PREFIX, GAME_LINKED_NAME_PREFIX};
 use crate::platforms::twitch::TwitchPlatform;
 use crate::platforms::{
-    Account, AppError, Campaign, CampaignStatus, Channel, Drop, DropProgress, MinerState, Platform,
-    PlatformId, PlatformSnapshot, RecentClaim, WatchTickResult,
+    Account, AppError, Campaign, CampaignStatus, Channel, ClaimedBenefit, Drop, DropProgress,
+    MinerState, Platform, PlatformId, PlatformSnapshot, RecentClaim, Reward, WatchTickResult,
 };
 use crate::secrets::SecretStore;
 use crate::settings::is_default_profile;
@@ -181,6 +182,7 @@ struct RuntimeContext {
     retry_not_before: Option<Instant>,
     paused: bool,
     hydrated_campaign_ids: HashSet<String>,
+    claimed_benefits: Vec<ClaimedBenefit>,
     no_live_channels_until: HashMap<String, Instant>,
     avoid_channels_until: HashMap<String, Instant>,
 }
@@ -216,6 +218,7 @@ impl RuntimeContext {
             retry_not_before: None,
             paused: false,
             hydrated_campaign_ids: HashSet::new(),
+            claimed_benefits: Vec::new(),
             no_live_channels_until: HashMap::new(),
             avoid_channels_until: HashMap::new(),
         }
@@ -234,6 +237,7 @@ impl RuntimeContext {
         self.candidates.clear();
         self.campaigns.clear();
         self.hydrated_campaign_ids.clear();
+        self.claimed_benefits.clear();
         self.no_live_channels_until.clear();
         self.avoid_channels_until.clear();
         self.last_campaign_fetch = None;
@@ -570,6 +574,7 @@ async fn handle_control(
             if let Some(camp) = ctx.campaigns.iter_mut().find(|c| c.id == detailed.id) {
                 apply_campaign_details(camp, *detailed);
             }
+            reconcile_claimed_benefits(&mut ctx.campaigns, &ctx.claimed_benefits);
             propagate_linked_games(&mut ctx.campaigns);
         }
     }
@@ -772,6 +777,7 @@ async fn step_miner(
                         }
                     }
                 }
+                reconcile_claimed_benefits(&mut fetched, &ctx.claimed_benefits);
                 propagate_linked_games(&mut fetched);
                 ctx.campaigns = fetched;
                 ctx.last_campaign_fetch = Some(Instant::now());
@@ -801,7 +807,9 @@ async fn step_miner(
         match plat.fetch_progress(&token).await {
             Ok(progress_list) => {
                 if !progress_list.is_empty() {
+                    merge_claimed_benefits(&mut ctx.claimed_benefits, &progress_list);
                     apply_progress(&mut ctx.campaigns, &progress_list);
+                    reconcile_claimed_benefits(&mut ctx.campaigns, &ctx.claimed_benefits);
                     ctx.progress_synced_at = Some(Utc::now());
                 } else if ctx.watching.is_some() || ctx.progress_synced_at.is_none() {
                     // Always re-anchor sync timestamp when watching so UI interpolation does not
@@ -1428,6 +1436,7 @@ async fn claim_ready_drops(
                                 }
                             } else {
                                 d.rewards.push(crate::platforms::Reward {
+                                    id: None,
                                     name: final_drop_name.clone(),
                                     image_url: final_reward_img.clone(),
                                 });
@@ -1817,7 +1826,132 @@ fn apply_progress(campaigns: &mut [Campaign], progress_list: &[DropProgress]) {
         }
     }
 
+    let claimed_from_progress: Vec<ClaimedBenefit> = progress_list
+        .iter()
+        .filter_map(|p| p.claimed_benefit.clone())
+        .collect();
+    if !claimed_from_progress.is_empty() {
+        reconcile_claimed_benefits(campaigns, &claimed_from_progress);
+    }
+
     propagate_linked_games(campaigns);
+}
+
+fn merge_claimed_benefits(existing: &mut Vec<ClaimedBenefit>, progress_list: &[DropProgress]) {
+    for p in progress_list {
+        let Some(ref cb) = p.claimed_benefit else {
+            continue;
+        };
+        if let Some(slot) = existing.iter_mut().find(|e| {
+            match (e.benefit_id.as_deref(), cb.benefit_id.as_deref()) {
+                (Some(a), Some(b)) => a == b,
+                _ => {
+                    !e.name.is_empty()
+                        && e.name.eq_ignore_ascii_case(&cb.name)
+                        && e.game_id == cb.game_id
+                }
+            }
+        }) {
+            if cb.last_awarded_at >= slot.last_awarded_at {
+                *slot = cb.clone();
+            }
+        } else {
+            existing.push(cb.clone());
+        }
+    }
+}
+
+fn claimed_benefit_matches_game(cb: &ClaimedBenefit, game: &crate::platforms::Game) -> bool {
+    let same_game_id = !game.id.is_empty() && cb.game_id.as_deref() == Some(game.id.as_str());
+    let same_game_name = cb
+        .game_name
+        .as_deref()
+        .map(|gn| game_names_match(&game.name, gn))
+        .unwrap_or(false);
+    same_game_id || same_game_name
+}
+
+fn claimed_benefit_matches_reward(
+    cb: &ClaimedBenefit,
+    reward: &Reward,
+    game: &crate::platforms::Game,
+) -> bool {
+    if let (Some(cb_id), Some(r_id)) = (cb.benefit_id.as_deref(), reward.id.as_deref()) {
+        if cb_id == r_id {
+            return true;
+        }
+    }
+    if !claimed_benefit_matches_game(cb, game) {
+        return false;
+    }
+    let r_name = reward.name.trim();
+    let cb_name = cb.name.trim();
+    !r_name.is_empty() && !cb_name.is_empty() && r_name.eq_ignore_ascii_case(cb_name)
+}
+
+fn reconcile_claimed_benefits(campaigns: &mut [Campaign], claimed_benefits: &[ClaimedBenefit]) {
+    if claimed_benefits.is_empty() {
+        return;
+    }
+
+    for camp in campaigns.iter_mut() {
+        if camp.drops.is_empty() {
+            continue;
+        }
+        let window_start = camp.starts_at - ChronoDuration::hours(1);
+        let window_end = camp.ends_at + ChronoDuration::hours(1);
+        let window_claims: Vec<&ClaimedBenefit> = claimed_benefits
+            .iter()
+            .filter(|cb| cb.last_awarded_at >= window_start && cb.last_awarded_at <= window_end)
+            .collect();
+        if window_claims.is_empty() {
+            continue;
+        }
+
+        let game = camp.game.clone();
+        let mut newly_marked = 0usize;
+        for drop in &mut camp.drops {
+            if drop.claimed {
+                continue;
+            }
+            let all_claimed = if !drop.rewards.is_empty() {
+                drop.rewards.iter().all(|reward| {
+                    window_claims
+                        .iter()
+                        .any(|cb| claimed_benefit_matches_reward(cb, reward, &game))
+                })
+            } else {
+                let d_name = drop.name.trim();
+                !d_name.is_empty()
+                    && window_claims.iter().any(|cb| {
+                        claimed_benefit_matches_game(cb, &game)
+                            && cb.name.trim().eq_ignore_ascii_case(d_name)
+                    })
+            };
+
+            if all_claimed {
+                drop.claimed = true;
+                drop.claimable = false;
+                drop.needs_manual_claim = false;
+                drop.current_minutes = drop.required_minutes;
+                newly_marked += 1;
+            }
+        }
+
+        if newly_marked > 0 {
+            if camp.requires_link {
+                camp.linked = true;
+                camp.link_verified = true;
+            }
+            info!(
+                campaign = %camp.name,
+                campaign_id = %camp.id,
+                marked_drops = newly_marked,
+                "Marked {newly_marked} already-claimed Twitch drops from Inventory history (campaign={})",
+                camp.name
+            );
+        }
+    }
 }
 
 const AUTO_COMPAT_ESCALATION_SECS: i64 = 120;
@@ -1995,6 +2129,7 @@ mod tests {
             instance_id: Some("inst-1".to_string()),
             name: "Drop 1".to_string(),
             rewards: vec![crate::platforms::Reward {
+                id: None,
                 name: "Common".to_string(),
                 image_url: None,
             }],
@@ -2038,6 +2173,7 @@ mod tests {
             drop: Some(drop),
             campaign_name: Some("Tarkov City day 6".to_string()),
             game_name: Some("Escape from Tarkov".to_string()),
+            claimed_benefit: None,
         }];
         apply_progress(&mut campaigns, &ended_progress);
         assert_eq!(campaigns.len(), 1);
@@ -2056,6 +2192,7 @@ mod tests {
             drop: None,
             campaign_name: None,
             game_name: None,
+            claimed_benefit: None,
         }];
         apply_progress(&mut campaigns, &claimed_progress);
         assert!(campaigns[0].drops[0].claimed);
@@ -2158,5 +2295,269 @@ mod tests {
         ctx.reset_session("Logged out");
         assert!(!ctx.auto_compat_fallback);
         assert!(ctx.confirmed_progress_at.is_none());
+    }
+
+    fn make_twitch_drop(id: &str, benefit_id: Option<&str>, reward_name: &str, mins: u32) -> Drop {
+        Drop {
+            id: id.to_string(),
+            instance_id: None,
+            name: reward_name.to_string(),
+            rewards: vec![Reward {
+                id: benefit_id.map(str::to_string),
+                name: reward_name.to_string(),
+                image_url: None,
+            }],
+            required_minutes: mins,
+            current_minutes: 0,
+            claimable: false,
+            claimed: false,
+            needs_manual_claim: false,
+        }
+    }
+
+    fn make_claimed_progress(
+        benefit_id: Option<&str>,
+        name: &str,
+        game_id: Option<&str>,
+        game_name: Option<&str>,
+        last_awarded_at: DateTime<Utc>,
+    ) -> DropProgress {
+        DropProgress {
+            campaign_id: format!(
+                "{}{}",
+                crate::platforms::twitch::models::CLAIMED_BENEFIT_PREFIX,
+                benefit_id.unwrap_or(name)
+            ),
+            drop_id: String::new(),
+            instance_id: None,
+            current_minutes: 0,
+            progress_bps: None,
+            claimable: false,
+            claimed: true,
+            linked: Some(true),
+            drop: None,
+            campaign_name: None,
+            game_name: game_name.map(str::to_string),
+            claimed_benefit: Some(ClaimedBenefit {
+                benefit_id: benefit_id.map(str::to_string),
+                name: name.to_string(),
+                game_id: game_id.map(str::to_string),
+                game_name: game_name.map(str::to_string),
+                last_awarded_at,
+            }),
+        }
+    }
+
+    #[test]
+    fn reconciles_already_claimed_twitch_campaign_from_game_event_drops_and_skips_it() {
+        let now = Utc::now();
+        let starts_at = now - ChronoDuration::days(22);
+        let ends_at = now + ChronoDuration::days(6);
+        let awarded_at = now - ChronoDuration::days(20);
+
+        let ow_rewards = [
+            ("b-river", "River Spray", 60),
+            ("b-fika", "Lounging Fika Spray", 120),
+            ("b-sakura", "Sakura Love Spray", 180),
+            ("b-loot", "RoT Lootbox", 240),
+            ("b-starry", "Starry Peace Spray", 300),
+            ("b-epic", "RoT Epic Lootbox", 360),
+        ];
+        let ow_camp = Campaign {
+            id: "ow-talon-s5".to_string(),
+            platform: PlatformId::Twitch,
+            game: crate::platforms::Game {
+                id: "515025".to_string(),
+                name: "Overwatch".to_string(),
+                slug: None,
+                box_art_url: None,
+            },
+            name: "Reign of Talon S5 Mid".to_string(),
+            starts_at,
+            ends_at,
+            status: CampaignStatus::Active,
+            requires_link: true,
+            linked: true,
+            link_verified: true,
+            link_url: None,
+            allowed_channels: None,
+            drops: ow_rewards
+                .iter()
+                .enumerate()
+                .map(|(i, (bid, rname, mins))| {
+                    make_twitch_drop(&format!("ow-d-{i}"), Some(bid), rname, *mins)
+                })
+                .collect(),
+        };
+
+        let rust_camp = Campaign {
+            id: "rust-next".to_string(),
+            platform: PlatformId::Twitch,
+            game: crate::platforms::Game {
+                id: "263490".to_string(),
+                name: "Rust".to_string(),
+                slug: None,
+                box_art_url: None,
+            },
+            name: "Rust Next".to_string(),
+            starts_at: now - ChronoDuration::hours(2),
+            ends_at: now + ChronoDuration::days(8),
+            status: CampaignStatus::Active,
+            requires_link: false,
+            linked: true,
+            link_verified: true,
+            link_url: None,
+            allowed_channels: None,
+            drops: vec![make_twitch_drop("rust-d-1", Some("b-rust"), "Rust Door", 60)],
+        };
+
+        let mut campaigns = vec![ow_camp, rust_camp];
+        let progress: Vec<DropProgress> = ow_rewards
+            .iter()
+            .map(|(bid, rname, _)| {
+                make_claimed_progress(Some(bid), rname, Some("515025"), Some("Overwatch"), awarded_at)
+            })
+            .collect();
+
+        apply_progress(&mut campaigns, &progress);
+
+        assert!(campaigns[0].drops.iter().all(|d| d.claimed && !d.claimable && d.current_minutes == d.required_minutes));
+        assert!(!campaigns[1].drops[0].claimed);
+
+        let mut settings = Settings::default();
+        settings.disclaimer_accepted_version = 1;
+        settings.idle_behavior = IdleBehavior::FarmAny;
+
+        let target = select_target_campaign(&campaigns, &settings, &settings.twitch, now)
+            .expect("should pick next eligible campaign");
+        assert_eq!(target.id, "rust-next");
+    }
+
+    #[test]
+    fn reconciles_claimed_benefits_by_game_and_reward_name_fallback_when_id_absent() {
+        let now = Utc::now();
+        let mut drop_empty_rewards = make_twitch_drop("d-empty", None, "Legacy Drop", 90);
+        drop_empty_rewards.rewards.clear();
+
+        let mut campaigns = vec![Campaign {
+            id: "camp-fallback".to_string(),
+            platform: PlatformId::Twitch,
+            game: crate::platforms::Game {
+                id: "515025".to_string(),
+                name: "Overwatch".to_string(),
+                slug: None,
+                box_art_url: None,
+            },
+            name: "Fallback Test".to_string(),
+            starts_at: now - ChronoDuration::days(2),
+            ends_at: now + ChronoDuration::days(2),
+            status: CampaignStatus::Active,
+            requires_link: false,
+            linked: true,
+            link_verified: true,
+            link_url: None,
+            allowed_channels: None,
+            drops: vec![
+                make_twitch_drop("d-named", None, "River Spray", 60),
+                drop_empty_rewards,
+            ],
+        }];
+
+        let progress = vec![
+            make_claimed_progress(None, "  river spray  ", Some("515025"), Some("Overwatch 2"), now),
+            make_claimed_progress(None, "legacy drop", None, Some("Overwatch"), now),
+        ];
+
+        apply_progress(&mut campaigns, &progress);
+        assert!(campaigns[0].drops[0].claimed);
+        assert_eq!(campaigns[0].drops[0].current_minutes, 60);
+        assert!(campaigns[0].drops[1].claimed);
+        assert_eq!(campaigns[0].drops[1].current_minutes, 90);
+    }
+
+    #[test]
+    fn does_not_mark_new_campaign_claimed_from_old_game_event_drops_before_window() {
+        let now = Utc::now();
+        let starts_at = now - ChronoDuration::hours(2);
+        let ends_at = now + ChronoDuration::days(5);
+        let old_awarded_at = starts_at - ChronoDuration::hours(2);
+
+        let mut campaigns = vec![Campaign {
+            id: "new-camp".to_string(),
+            platform: PlatformId::Twitch,
+            game: crate::platforms::Game {
+                id: "515025".to_string(),
+                name: "Overwatch".to_string(),
+                slug: None,
+                box_art_url: None,
+            },
+            name: "New Season".to_string(),
+            starts_at,
+            ends_at,
+            status: CampaignStatus::Active,
+            requires_link: false,
+            linked: true,
+            link_verified: true,
+            link_url: None,
+            allowed_channels: None,
+            drops: vec![make_twitch_drop("d-1", Some("b-loot"), "RoT Lootbox", 120)],
+        }];
+
+        let old_progress = vec![make_claimed_progress(
+            Some("b-loot"),
+            "RoT Lootbox",
+            Some("515025"),
+            Some("Overwatch"),
+            old_awarded_at,
+        )];
+
+        apply_progress(&mut campaigns, &old_progress);
+        assert!(!campaigns[0].drops[0].claimed);
+        assert_eq!(campaigns[0].drops[0].current_minutes, 0);
+    }
+
+    #[test]
+    fn campaign_refresh_preserves_claimed_benefits_from_runtime_context() {
+        let now = Utc::now();
+        let mut ctx = RuntimeContext::new();
+        let make_fresh_campaign = || Campaign {
+            id: "ow-talon-s5".to_string(),
+            platform: PlatformId::Twitch,
+            game: crate::platforms::Game {
+                id: "515025".to_string(),
+                name: "Overwatch".to_string(),
+                slug: None,
+                box_art_url: None,
+            },
+            name: "Reign of Talon S5 Mid".to_string(),
+            starts_at: now - ChronoDuration::days(10),
+            ends_at: now + ChronoDuration::days(5),
+            status: CampaignStatus::Active,
+            requires_link: true,
+            linked: false,
+            link_verified: true,
+            link_url: None,
+            allowed_channels: None,
+            drops: vec![make_twitch_drop("ow-d-1", Some("b-river"), "River Spray", 60)],
+        };
+
+        ctx.campaigns = vec![make_fresh_campaign()];
+        let progress = vec![make_claimed_progress(
+            Some("b-river"),
+            "River Spray",
+            Some("515025"),
+            Some("Overwatch"),
+            now - ChronoDuration::days(5),
+        )];
+        merge_claimed_benefits(&mut ctx.claimed_benefits, &progress);
+        apply_progress(&mut ctx.campaigns, &progress);
+        assert!(ctx.campaigns[0].drops[0].claimed);
+
+        // Simulate periodic fetch_campaigns returning fresh 0/6 drops.
+        ctx.campaigns = vec![make_fresh_campaign()];
+        reconcile_claimed_benefits(&mut ctx.campaigns, &ctx.claimed_benefits);
+        assert!(ctx.campaigns[0].drops[0].claimed);
+        assert_eq!(ctx.campaigns[0].drops[0].current_minutes, 60);
+        assert!(ctx.campaigns[0].linked);
     }
 }

@@ -249,7 +249,7 @@ fn parse_reward_as_drop(r: &Value) -> Option<Drop> {
         id,
         instance_id: None,
         name: name.clone(),
-        rewards: vec![Reward { name, image_url }],
+        rewards: vec![Reward { id: None, name, image_url }],
         required_minutes,
         current_minutes: 0,
         claimable: false,
@@ -332,6 +332,7 @@ pub fn parse_progress(v: &Value) -> Result<Vec<DropProgress>, AppError> {
                 drop: None,
                 campaign_name: None,
                 game_name: None,
+                claimed_benefit: None,
             });
         }
     }
@@ -719,6 +720,7 @@ fn extract_preview_challenge_rewards(
                     let parsed = extract_single_reward(entry);
                     if let Some(name) = parsed.reward_name {
                         rewards.push(Reward {
+                            id: None,
                             name,
                             image_url: parsed
                                 .reward_image_url
@@ -739,6 +741,7 @@ fn extract_preview_challenge_rewards(
                 let parsed = extract_single_reward(obj);
                 if let Some(name) = parsed.reward_name {
                     rewards.push(Reward {
+                        id: None,
                         name,
                         image_url: parsed
                             .reward_image_url
@@ -968,6 +971,7 @@ pub fn parse_gamification_challenges(v: &Value, now: DateTime<Utc>) -> Vec<Campa
                             instance_id: None,
                             name: t_name.clone(),
                             rewards: vec![Reward {
+                                id: None,
                                 name: t_name,
                                 image_url: t_img,
                             }],
@@ -1018,6 +1022,7 @@ pub fn parse_gamification_challenges(v: &Value, now: DateTime<Utc>) -> Vec<Campa
                 (
                     formatted.clone(),
                     vec![Reward {
+                        id: None,
                         name: formatted,
                         image_url: img,
                     }],
@@ -1028,6 +1033,7 @@ pub fn parse_gamification_challenges(v: &Value, now: DateTime<Utc>) -> Vec<Campa
                 (
                     title.clone(),
                     vec![Reward {
+                        id: None,
                         name: if is_sunset && !title.to_ascii_lowercase().contains("gta") {
                             format!("{title} (GTA VI Box)")
                         } else {
@@ -1098,6 +1104,7 @@ pub fn parse_gamification_progress(v: &Value, now: DateTime<Utc>) -> Vec<DropPro
                 drop: Some(d),
                 campaign_name: Some(camp_name.clone()),
                 game_name: Some(game_name.clone()),
+                claimed_benefit: None,
             })
         })
         .collect()
@@ -1150,6 +1157,7 @@ pub fn build_kick_reward_cases_fallback(
                         instance_id: None,
                         name: "Sunset Reward Case (GTA VI Box)".to_string(),
                         rewards: vec![Reward {
+                            id: None,
                             name: "Sunset Reward Case (GTA VI Box)".to_string(),
                             image_url: Some(KICK_GTA_BANNER_URL.to_string()),
                         }],
@@ -1189,6 +1197,7 @@ pub fn build_kick_reward_cases_fallback(
                 instance_id: None,
                 name: "Daily Reward Case".to_string(),
                 rewards: vec![Reward {
+                    id: None,
                     name: "Kick Daily Reward Case (1h)".to_string(),
                     image_url: Some("https://ext.kick.com/drops/organization/kickdrops.png".to_string()),
                 }],
@@ -1226,6 +1235,7 @@ pub fn build_kick_reward_cases_fallback(
                 instance_id: None,
                 name: "Weekly Reward Case".to_string(),
                 rewards: vec![Reward {
+                    id: None,
                     name: "Kick Weekly Reward Case (5h)".to_string(),
                     image_url: Some("https://ext.kick.com/drops/organization/kickdrops.png".to_string()),
                 }],

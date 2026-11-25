@@ -2,12 +2,13 @@ use chrono::{DateTime, Utc};
 use serde_json::Value;
 
 use crate::platforms::{
-    AppError, Campaign, CampaignStatus, Channel, ChannelRef, Drop, DropProgress, Game, PlatformId,
-    Reward,
+    AppError, Campaign, CampaignStatus, Channel, ChannelRef, ClaimedBenefit, Drop, DropProgress,
+    Game, PlatformId, Reward,
 };
 
 pub const GAME_LINKED_ID_PREFIX: &str = "__game_linked_id__:";
 pub const GAME_LINKED_NAME_PREFIX: &str = "__game_linked_name__:";
+pub const CLAIMED_BENEFIT_PREFIX: &str = "__claimed_benefit__:";
 
 const BOX_ART_WIDTH: &str = "450";
 const BOX_ART_HEIGHT: &str = "600";
@@ -248,6 +249,12 @@ pub(crate) fn parse_drop(d: &Value) -> Option<Drop> {
                 .filter_map(|edge| {
                     let b = edge.get("benefit")?;
                     Some(Reward {
+                        id: b
+                            .get("id")
+                            .and_then(|s| s.as_str())
+                            .map(str::trim)
+                            .filter(|s| !s.is_empty())
+                            .map(str::to_string),
                         name: b.get("name")?.as_str()?.to_string(),
                         image_url: b.get("imageAssetURL").and_then(|s| s.as_str()).map(str::to_string),
                     })
@@ -374,25 +381,34 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
                     drop: parse_drop(drop),
                     campaign_name: camp_name.clone(),
                     game_name: game_name.clone(),
+                    claimed_benefit: None,
                 });
             }
         }
     }
 
     // Also inspect `gameEventDrops` (every drop previously claimed on this Twitch account):
-    // any game with claimed history in Inventory is confirmed linked to the user's account.
+    // 1. Any game with claimed history in Inventory is confirmed linked to the user's account.
+    // 2. Claimed benefit entries let the engine detect campaigns whose drops are already 100%
+    //    claimed even after Twitch removes them from `dropCampaignsInProgress`.
     if let Some(claimed_history) = inventory.get("gameEventDrops").and_then(|v| v.as_array()) {
         let mut seen_keys = std::collections::HashSet::new();
         for ev in claimed_history {
-            let Some(game) = ev.get("game").filter(|g| g.is_object()) else {
-                continue;
-            };
-            if let Some(gid) = game
-                .get("id")
+            let game = ev.get("game").filter(|g| g.is_object());
+            let game_id = game
+                .and_then(|g| g.get("id"))
                 .and_then(|v| v.as_str())
                 .map(str::trim)
                 .filter(|s| !s.is_empty())
-            {
+                .map(str::to_string);
+            let game_name = game
+                .and_then(|g| g.get("displayName").or_else(|| g.get("name")))
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+
+            if let Some(ref gid) = game_id {
                 let key = format!("{GAME_LINKED_ID_PREFIX}{gid}");
                 if seen_keys.insert(key.clone()) {
                     progress.push(DropProgress {
@@ -407,16 +423,11 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
                         drop: None,
                         campaign_name: None,
                         game_name: None,
+                        claimed_benefit: None,
                     });
                 }
             }
-            if let Some(gname) = game
-                .get("displayName")
-                .or_else(|| game.get("name"))
-                .and_then(|v| v.as_str())
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
+            if let Some(ref gname) = game_name {
                 let key = format!("{GAME_LINKED_NAME_PREFIX}{}", gname.to_ascii_lowercase());
                 if seen_keys.insert(key.clone()) {
                     progress.push(DropProgress {
@@ -431,8 +442,58 @@ pub fn parse_inventory_progress(payload: &Value) -> Result<Vec<DropProgress>, Ap
                         drop: None,
                         campaign_name: None,
                         game_name: None,
+                        claimed_benefit: None,
                     });
                 }
+            }
+
+            let total_count = ev.get("totalCount").and_then(|n| n.as_u64()).unwrap_or(1);
+            if total_count == 0 {
+                continue;
+            }
+            let benefit_id = ev
+                .get("id")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let name = ev
+                .get("name")
+                .and_then(|v| v.as_str())
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .map(str::to_string);
+            let last_awarded_at = ev
+                .get("lastAwardedAt")
+                .and_then(|v| v.as_str())
+                .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+                .map(|dt| dt.with_timezone(&Utc));
+
+            if let (Some(awarded_at), true) = (last_awarded_at, benefit_id.is_some() || name.is_some()) {
+                let marker = benefit_id
+                    .as_deref()
+                    .or(name.as_deref())
+                    .unwrap_or_default();
+                progress.push(DropProgress {
+                    campaign_id: format!("{CLAIMED_BENEFIT_PREFIX}{marker}"),
+                    drop_id: String::new(),
+                    instance_id: None,
+                    current_minutes: 0,
+                    progress_bps: None,
+                    claimable: false,
+                    claimed: true,
+                    linked: Some(true),
+                    drop: None,
+                    campaign_name: None,
+                    game_name: game_name.clone(),
+                    claimed_benefit: Some(ClaimedBenefit {
+                        benefit_id,
+                        name: name.unwrap_or_default(),
+                        game_id,
+                        game_name,
+                        last_awarded_at: awarded_at,
+                    }),
+                });
             }
         }
     }
@@ -474,6 +535,7 @@ pub fn parse_drop_current_session_progress(payload: &Value) -> Option<(DropProgr
             drop: None,
             campaign_name: None,
             game_name: None,
+            claimed_benefit: None,
         },
         completed,
     ))
@@ -975,5 +1037,88 @@ mod tests {
             campaigns[0].game.box_art_url.as_deref(),
             Some("https://static-cdn.jtvnw.net/ttv-boxart/490655-450x600.jpg")
         );
+    }
+
+    #[test]
+    fn parses_drop_benefit_id_and_inventory_game_event_drops() {
+        let drop_val = json!({
+            "id": "drop-ow-1",
+            "name": "River Spray",
+            "requiredMinutesWatched": 120,
+            "benefitEdges": [
+                {
+                    "benefit": {
+                        "id": "benefit-river-spray",
+                        "name": "River Spray",
+                        "imageAssetURL": "https://example.com/river.png"
+                    }
+                }
+            ],
+            "self": {
+                "currentMinutesWatched": 0,
+                "isClaimed": false
+            }
+        });
+        let parsed_drop = parse_drop(&drop_val).expect("drop");
+        assert_eq!(parsed_drop.rewards.len(), 1);
+        assert_eq!(
+            parsed_drop.rewards[0].id.as_deref(),
+            Some("benefit-river-spray")
+        );
+        assert_eq!(parsed_drop.rewards[0].name, "River Spray");
+
+        let awarded_at = "2026-11-04T18:30:00Z";
+        let inv_payload = json!({
+            "data": {
+                "currentUser": {
+                    "inventory": {
+                        "dropCampaignsInProgress": [],
+                        "gameEventDrops": [
+                            {
+                                "id": "benefit-river-spray",
+                                "name": "River Spray",
+                                "lastAwardedAt": awarded_at,
+                                "totalCount": 1,
+                                "game": {
+                                    "id": "515025",
+                                    "displayName": "Overwatch"
+                                }
+                            },
+                            {
+                                "id": "benefit-zero-count",
+                                "name": "Unclaimed Zero",
+                                "lastAwardedAt": awarded_at,
+                                "totalCount": 0,
+                                "game": {
+                                    "id": "515025",
+                                    "displayName": "Overwatch"
+                                }
+                            }
+                        ]
+                    }
+                }
+            }
+        });
+
+        let progress = parse_inventory_progress(&inv_payload).expect("inventory progress");
+        assert!(progress
+            .iter()
+            .any(|p| p.campaign_id == format!("{GAME_LINKED_ID_PREFIX}515025")));
+        assert!(progress
+            .iter()
+            .any(|p| p.campaign_id == format!("{GAME_LINKED_NAME_PREFIX}overwatch")));
+
+        let claimed_entries: Vec<_> = progress
+            .iter()
+            .filter_map(|p| p.claimed_benefit.as_ref())
+            .collect();
+        assert_eq!(claimed_entries.len(), 1);
+        assert_eq!(
+            claimed_entries[0].benefit_id.as_deref(),
+            Some("benefit-river-spray")
+        );
+        assert_eq!(claimed_entries[0].name, "River Spray");
+        assert_eq!(claimed_entries[0].game_id.as_deref(), Some("515025"));
+        assert_eq!(claimed_entries[0].game_name.as_deref(), Some("Overwatch"));
     }
 }

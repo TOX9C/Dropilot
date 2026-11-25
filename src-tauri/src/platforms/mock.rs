@@ -61,6 +61,7 @@ impl MockPlatform {
                             instance_id: Some("inst-tw-rust-d1".to_string()),
                             name: "Cobalt Garage Door".to_string(),
                             rewards: vec![Reward {
+                                id: None,
                                 name: "Cobalt Garage Door".to_string(),
                                 image_url: None,
                             }],
@@ -75,6 +76,7 @@ impl MockPlatform {
                             instance_id: Some("inst-tw-rust-d2".to_string()),
                             name: "Rivals Hoodie".to_string(),
                             rewards: vec![Reward {
+                                id: None,
                                 name: "Rivals Hoodie".to_string(),
                                 image_url: None,
                             }],
@@ -109,6 +111,7 @@ impl MockPlatform {
                         instance_id: Some("inst-tw-poe2-d1".to_string()),
                         name: "Executioner's Portal Effect".to_string(),
                         rewards: vec![Reward {
+                            id: None,
                             name: "Executioner's Portal".to_string(),
                             image_url: None,
                         }],
@@ -142,6 +145,7 @@ impl MockPlatform {
                         instance_id: Some("inst-tw-cs2-d1".to_string()),
                         name: "Championship Sticker Capsule".to_string(),
                         rewards: vec![Reward {
+                            id: None,
                             name: "Sticker Capsule".to_string(),
                             image_url: None,
                         }],
@@ -175,6 +179,7 @@ impl MockPlatform {
                         instance_id: None,
                         name: "Playoffs Spray".to_string(),
                         rewards: vec![Reward {
+                            id: None,
                             name: "Playoffs Spray".to_string(),
                             image_url: None,
                         }],
@@ -210,6 +215,7 @@ impl MockPlatform {
                         instance_id: Some("inst-kk-rust-d1".to_string()),
                         name: "Emerald Sleeping Bag".to_string(),
                         rewards: vec![Reward {
+                            id: None,
                             name: "Emerald Sleeping Bag".to_string(),
                             image_url: None,
                         }],
@@ -243,6 +249,7 @@ impl MockPlatform {
                         instance_id: Some("inst-kk-eft-d1".to_string()),
                         name: "Streamer Supply Case".to_string(),
                         rewards: vec![Reward {
+                            id: None,
                             name: "Streamer Supply Case".to_string(),
                             image_url: None,
                         }],
@@ -276,6 +283,7 @@ impl MockPlatform {
                         instance_id: None,
                         name: "Verdant Weapon Effect".to_string(),
                         rewards: vec![Reward {
+                            id: None,
                             name: "Verdant Weapon Effect".to_string(),
                             image_url: None,
                         }],
@@ -424,6 +432,7 @@ impl Platform for MockPlatform {
                     drop: None,
                     campaign_name: Some(c.name.clone()),
                     game_name: Some(c.game.name.clone()),
+                    claimed_benefit: None,
                 });
             }
         }
