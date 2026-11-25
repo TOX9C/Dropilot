@@ -337,6 +337,7 @@ pub fn select_best_channel<'a>(
 pub struct SwitchContext<'a> {
     pub current_channel: &'a Channel,
     pub current_campaign: &'a Campaign,
+    pub current_campaign_eligible: bool,
     pub top_campaign: Option<&'a Campaign>,
     pub pinned_login: Option<&'a str>,
     pub now: DateTime<Utc>,
@@ -345,6 +346,12 @@ pub struct SwitchContext<'a> {
 }
 
 pub fn evaluate_switch(ctx: SwitchContext<'_>) -> SwitchDecision {
+    if !ctx.current_campaign_eligible {
+        return SwitchDecision::SwitchImmediate(
+            "Current campaign is no longer selected for farming".to_string(),
+        );
+    }
+
     if !ctx.current_channel.is_live {
         return SwitchDecision::SwitchImmediate("Channel went offline".to_string());
     }
@@ -548,6 +555,7 @@ mod tests {
         let dec = evaluate_switch(SwitchContext {
             current_channel: &ch,
             current_campaign: &c1,
+            current_campaign_eligible: true,
             top_campaign: Some(&c2),
             pinned_login: None,
             now,
@@ -560,6 +568,7 @@ mod tests {
         let dec2 = evaluate_switch(SwitchContext {
             current_channel: &ch,
             current_campaign: &c1,
+            current_campaign_eligible: true,
             top_campaign: Some(&c2),
             pinned_login: None,
             now,
@@ -572,6 +581,7 @@ mod tests {
         let stalled = evaluate_switch(SwitchContext {
             current_channel: &ch,
             current_campaign: &c1,
+            current_campaign_eligible: true,
             top_campaign: Some(&c1),
             pinned_login: None,
             now,
@@ -585,6 +595,7 @@ mod tests {
         let offline = evaluate_switch(SwitchContext {
             current_channel: &ch,
             current_campaign: &c1,
+            current_campaign_eligible: true,
             top_campaign: Some(&c1),
             pinned_login: None,
             now,
@@ -592,6 +603,44 @@ mod tests {
             last_voluntary_switch: Some(now - Duration::seconds(5)),
         });
         assert!(matches!(offline, SwitchDecision::SwitchImmediate(_)));
+    }
+
+    #[test]
+    fn excluded_or_deprioritized_current_campaign_switches_immediately() {
+        let now = Utc::now();
+        let current = mk_campaign("current", "g1", "Rust", true, 5);
+        let remaining = mk_campaign("remaining", "g2", "Tarkov", true, 5);
+        let channel = mk_channel("streamer", "Rust", 1000, false, true);
+        let campaigns = vec![current.clone(), remaining.clone()];
+
+        for exclude_current in [true, false] {
+            let mut settings = Settings::default();
+            settings.disclaimer_accepted_version = 1;
+            settings.idle_behavior = IdleBehavior::StayIdle;
+            settings.twitch.priority = vec![PriorityItem::Campaign {
+                campaign_id: remaining.id.clone(),
+                campaign_name: remaining.name.clone(),
+            }];
+            if exclude_current {
+                settings.twitch.excluded_campaigns.push(current.id.clone());
+            }
+
+            let queue = ordered_target_campaigns(&campaigns, &settings, &settings.twitch, now);
+            assert_eq!(queue.len(), 1);
+            assert_eq!(queue[0].id, remaining.id);
+
+            let decision = evaluate_switch(SwitchContext {
+                current_channel: &channel,
+                current_campaign: &current,
+                current_campaign_eligible: queue.iter().any(|c| c.id == current.id),
+                top_campaign: queue.first().copied(),
+                pinned_login: None,
+                now,
+                last_progress_advance: now,
+                last_voluntary_switch: Some(now),
+            });
+            assert!(matches!(decision, SwitchDecision::SwitchImmediate(_)));
+        }
     }
 
     #[test]
@@ -610,6 +659,7 @@ mod tests {
         let dec = evaluate_switch(SwitchContext {
             current_channel: &ch,
             current_campaign: &camp,
+            current_campaign_eligible: true,
             top_campaign: Some(&camp),
             pinned_login: None,
             now,

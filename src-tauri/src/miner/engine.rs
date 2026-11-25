@@ -742,7 +742,7 @@ async fn step_miner(
                 ctx.backoff.reset();
             }
             Err(err) => {
-                handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
+                handle_platform_error(profile_id, platform_id, app, state, &plat, ctx, err).await;
                 return;
             }
         }
@@ -784,7 +784,7 @@ async fn step_miner(
                 ctx.backoff.reset();
             }
             Err(err) => {
-                handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
+                handle_platform_error(profile_id, platform_id, app, state, &plat, ctx, err).await;
                 return;
             }
         }
@@ -845,7 +845,7 @@ async fn step_miner(
                 }
             }
             Err(err) => {
-                handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
+                handle_platform_error(profile_id, platform_id, app, state, &plat, ctx, err).await;
                 return;
             }
         }
@@ -972,7 +972,8 @@ async fn step_miner(
                     current_ch.is_live = false;
                 }
                 Err(err) => {
-                    handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
+                    handle_platform_error(profile_id, platform_id, app, state, &plat, ctx, err)
+                        .await;
                     return;
                 }
             }
@@ -988,7 +989,15 @@ async fn step_miner(
             .take(current_rank.unwrap_or(ordered_queue.len()))
             .find(|c| !ctx.no_live_channels_until.contains_key(&c.id));
 
-        let top_for_switch = higher_priority.unwrap_or(&current_camp);
+        let top_for_switch = higher_priority
+            .or_else(|| {
+                if current_rank.is_none() {
+                    ordered_queue.first()
+                } else {
+                    None
+                }
+            })
+            .unwrap_or(&current_camp);
 
         let pinned_if_live = plat_settings.pinned_channel.as_deref().and_then(|pin| {
             ctx.candidates
@@ -1000,6 +1009,7 @@ async fn step_miner(
         let decision = evaluate_switch(SwitchContext {
             current_channel: &current_ch,
             current_campaign: &current_camp,
+            current_campaign_eligible: current_rank.is_some(),
             top_campaign: Some(top_for_switch),
             pinned_login: pinned_if_live,
             now,
@@ -1017,8 +1027,7 @@ async fn step_miner(
                         Instant::now() + Duration::from_secs(IDLE_RETRY_SECS),
                     );
                 }
-                ctx.watching = None;
-                ctx.candidates.clear();
+                stop_watching_and_close(profile_id, platform_id, app, &plat, ctx).await;
             }
             SwitchDecision::SwitchVoluntary(reason) => {
                 if let Some(hi_camp) = higher_priority {
@@ -1205,7 +1214,8 @@ async fn step_miner(
                     last_empty_name = Some(cand_camp.game.name.clone());
                 }
                 Err(err) => {
-                    handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
+                    handle_platform_error(profile_id, platform_id, app, state, &plat, ctx, err)
+                        .await;
                     return;
                 }
             }
@@ -1340,7 +1350,8 @@ async fn step_miner(
                     ctx.candidates.clear();
                 }
                 Err(err) => {
-                    handle_platform_error(profile_id, platform_id, app, state, ctx, err).await;
+                    handle_platform_error(profile_id, platform_id, app, state, &plat, ctx, err)
+                        .await;
                 }
             }
         }
@@ -1555,14 +1566,50 @@ async fn claim_ready_drops(
     sync_snapshot(app, state, profile_id, platform_id, ctx, true).await;
 }
 
+fn error_requires_watch_stop(error: &AppError) -> bool {
+    matches!(
+        error,
+        AppError::Auth(_)
+            | AppError::Blocked(_)
+            | AppError::PlatformChanged(_)
+            | AppError::NoCandidates(_)
+            | AppError::NotFound(_)
+    )
+}
+
+async fn stop_watching_and_reset(plat: &Arc<dyn Platform>, ctx: &mut RuntimeContext) {
+    plat.stop_watching().await;
+    ctx.watching = None;
+    ctx.candidates.clear();
+    ctx.watching_since = None;
+    ctx.auto_compat_fallback = false;
+    ctx.confirmed_progress_at = None;
+}
+
+async fn stop_watching_and_close(
+    profile_id: &str,
+    platform_id: PlatformId,
+    app: &AppHandle,
+    plat: &Arc<dyn Platform>,
+    ctx: &mut RuntimeContext,
+) {
+    stop_watching_and_reset(plat, ctx).await;
+    close_compat_watch_window_for_profile(app, platform_id, profile_id);
+}
+
 async fn handle_platform_error(
     profile_id: &str,
     platform_id: PlatformId,
     app: &AppHandle,
     state: &AppState,
+    plat: &Arc<dyn Platform>,
     ctx: &mut RuntimeContext,
     err: AppError,
 ) {
+    if error_requires_watch_stop(&err) {
+        stop_watching_and_close(profile_id, platform_id, app, plat, ctx).await;
+    }
+
     match err {
         AppError::Auth(msg) => {
             warn!(
@@ -1592,7 +1639,6 @@ async fn handle_platform_error(
         }
         AppError::Blocked(msg) => {
             warn!(platform = platform_id.as_str(), reason = %msg, "Blocked by platform check");
-            ctx.watching = None;
             ctx.state = MinerState::Error;
             ctx.state_reason = Some("Platform security check requires your action".to_string());
             ctx.last_error = Some(msg.clone());
@@ -1622,7 +1668,6 @@ async fn handle_platform_error(
                     let _ = rc.refresh_now(&http).await;
                 });
             }
-            ctx.watching = None;
             ctx.state = MinerState::Error;
             ctx.state_reason = Some(format!(
                 "{} changed something; an update may be needed",
@@ -1641,10 +1686,11 @@ async fn handle_platform_error(
                 detail = %message,
                 "Rate limited; backing off"
             );
-            apply_backoff_or_error(ctx, delay, message);
+            if apply_backoff_or_error(ctx, delay, message) {
+                stop_watching_and_close(profile_id, platform_id, app, plat, ctx).await;
+            }
         }
         AppError::NoCandidates(msg) | AppError::NotFound(msg) => {
-            ctx.watching = None;
             ctx.state = MinerState::Idle;
             ctx.state_reason = Some(format!("{msg}; retrying in 5 min"));
             let dur = jittered_duration(IDLE_RETRY_SECS);
@@ -1661,26 +1707,29 @@ async fn handle_platform_error(
                 error = %msg,
                 "Platform request failed"
             );
-            apply_backoff_or_error(ctx, delay, msg);
+            if apply_backoff_or_error(ctx, delay, msg) {
+                stop_watching_and_close(profile_id, platform_id, app, plat, ctx).await;
+            }
         }
     }
 }
 
-fn apply_backoff_or_error(ctx: &mut RuntimeContext, delay: Duration, message: String) {
+fn apply_backoff_or_error(ctx: &mut RuntimeContext, delay: Duration, message: String) -> bool {
     if ctx.backoff.exceeded_threshold() {
-        ctx.watching = None;
         ctx.state = MinerState::Error;
         ctx.state_reason = Some("Repeated failures; automatic retry in 15 min".to_string());
         ctx.last_error = Some(message);
         let dur = Duration::from_secs(ERROR_RETRY_SECS);
         ctx.retry_not_before = Some(Instant::now() + dur);
         ctx.next_action_at = Some(Utc::now() + ChronoDuration::from_std(dur).unwrap_or_default());
+        true
     } else {
         ctx.state = MinerState::Idle;
         ctx.state_reason = Some(format!("{message}; retrying in {}s", delay.as_secs()));
         ctx.last_error = Some(message);
         ctx.retry_not_before = Some(Instant::now() + delay);
         ctx.next_action_at = Some(Utc::now() + ChronoDuration::from_std(delay).unwrap_or_default());
+        false
     }
 }
 
@@ -2198,6 +2247,131 @@ mod tests {
         assert!(campaigns[0].drops[0].claimed);
         assert!(!campaigns[0].drops[0].claimable);
         assert!(!campaigns[0].drops[0].needs_manual_claim);
+    }
+
+    #[test]
+    fn terminal_error_branches_require_watch_cleanup() {
+        for error in [
+            AppError::Auth("expired".to_string()),
+            AppError::Blocked("verify".to_string()),
+            AppError::PlatformChanged("schema".to_string()),
+            AppError::NoCandidates("offline".to_string()),
+            AppError::NotFound("missing".to_string()),
+        ] {
+            assert!(error_requires_watch_stop(&error));
+        }
+        assert!(!error_requires_watch_stop(&AppError::Network(
+            "timeout".to_string()
+        )));
+        assert!(!error_requires_watch_stop(&AppError::RateLimited {
+            retry_after_secs: None,
+            message: "limited".to_string(),
+        }));
+    }
+
+    #[test]
+    fn backoff_exhaustion_requests_watch_cleanup() {
+        let mut ctx = RuntimeContext::new();
+        for attempt in 0..5 {
+            let delay = ctx.backoff.record_failure(None);
+            let should_stop = apply_backoff_or_error(&mut ctx, delay, "failed".to_string());
+            assert_eq!(should_stop, attempt == 4);
+        }
+    }
+
+    #[derive(Default)]
+    struct StopCounter {
+        stops: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl Platform for StopCounter {
+        fn id(&self) -> PlatformId {
+            PlatformId::Twitch
+        }
+
+        async fn validate_session(&self, _: &str) -> Result<Account, AppError> {
+            unimplemented!()
+        }
+
+        async fn fetch_campaigns(&self, _: &str) -> Result<Vec<Campaign>, AppError> {
+            unimplemented!()
+        }
+
+        async fn fetch_progress(&self, _: &str) -> Result<Vec<DropProgress>, AppError> {
+            unimplemented!()
+        }
+
+        async fn find_candidate_channels(
+            &self,
+            _: &str,
+            _: &Campaign,
+        ) -> Result<Vec<Channel>, AppError> {
+            unimplemented!()
+        }
+
+        async fn check_live(&self, _: &str, _: &Channel) -> Result<Channel, AppError> {
+            unimplemented!()
+        }
+
+        async fn watch_tick(
+            &self,
+            _: &str,
+            _: &Channel,
+            _: bool,
+        ) -> Result<WatchTickResult, AppError> {
+            unimplemented!()
+        }
+
+        async fn stop_watching(&self) {
+            self.stops.fetch_add(1, Ordering::Relaxed);
+        }
+
+        async fn claim(
+            &self,
+            _: &str,
+            _: &Campaign,
+            _: &Drop,
+        ) -> Result<crate::platforms::ClaimResult, AppError> {
+            unimplemented!()
+        }
+
+        async fn logout(&self, _: Option<&str>) -> Result<(), AppError> {
+            unimplemented!()
+        }
+    }
+
+    #[tokio::test]
+    async fn error_watch_cleanup_stops_platform_and_resets_watch_state() {
+        let counter = Arc::new(StopCounter::default());
+        let platform: Arc<dyn Platform> = counter.clone();
+        let mut ctx = RuntimeContext::new();
+        let channel = Channel {
+            id: "channel".to_string(),
+            login: "channel".to_string(),
+            display_name: "Channel".to_string(),
+            avatar_url: None,
+            game_name: "Rust".to_string(),
+            viewer_count: 1,
+            is_live: true,
+            drops_enabled: true,
+            is_followed: false,
+            stream_id: None,
+        };
+        ctx.watching = Some(channel.clone());
+        ctx.candidates = vec![channel];
+        ctx.watching_since = Some(Utc::now());
+        ctx.auto_compat_fallback = true;
+        ctx.confirmed_progress_at = Some(Utc::now());
+
+        stop_watching_and_reset(&platform, &mut ctx).await;
+
+        assert_eq!(counter.stops.load(Ordering::Relaxed), 1);
+        assert!(ctx.watching.is_none());
+        assert!(ctx.candidates.is_empty());
+        assert!(ctx.watching_since.is_none());
+        assert!(!ctx.auto_compat_fallback);
+        assert!(ctx.confirmed_progress_at.is_none());
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
@@ -13,6 +14,9 @@ pub const MIN_REFRESH_MINUTES: u32 = 10;
 pub const MAX_REFRESH_MINUTES: u32 = 240;
 pub const DEFAULT_TWITCH_PROFILE_ID: &str = "default-twitch";
 pub const DEFAULT_KICK_PROFILE_ID: &str = "default-kick";
+
+// The single-instance app can save from commands, miners, and window events concurrently.
+static SETTINGS_SAVE_LOCK: Mutex<()> = Mutex::new(());
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -515,6 +519,10 @@ pub fn save_atomic_to_path(path: &Path, settings: &Settings) -> Result<(), Strin
     let mut sanitized = settings.clone();
     sanitized.sanitize();
 
+    let _save_guard = SETTINGS_SAVE_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)
             .map_err(|e| format!("Failed to create settings directory: {e}"))?;
@@ -629,6 +637,55 @@ mod tests {
         let dir = std::env::temp_dir().join(format!("dropilot_test_{name}_{ts}"));
         fs::create_dir_all(&dir).expect("create temp dir");
         dir
+    }
+
+    #[test]
+    fn overlapping_saves_are_serialized_without_errors() {
+        use std::sync::{Arc, Barrier};
+
+        let dir = temp_dir("concurrent_saves");
+        let path = dir.join("settings.json");
+        let small = Settings::default();
+        let mut big = Settings::default();
+        for i in 0..200 {
+            big.twitch.priority.push(PriorityItem::Game {
+                game_id: i.to_string(),
+                game_name: format!("Game number {i}"),
+            });
+        }
+        if let Some(profile) = big
+            .profiles
+            .iter_mut()
+            .find(|p| p.id == big.active_twitch_profile_id)
+        {
+            profile.settings = big.twitch.clone();
+        }
+
+        let mut errors = Vec::new();
+        for _ in 0..200 {
+            let barrier = Arc::new(Barrier::new(2));
+            let (path1, path2) = (path.clone(), path.clone());
+            let (barrier1, barrier2) = (barrier.clone(), barrier.clone());
+            let (big, small) = (big.clone(), small.clone());
+            let first = std::thread::spawn(move || {
+                barrier1.wait();
+                save_atomic_to_path(&path1, &big)
+            });
+            let second = std::thread::spawn(move || {
+                barrier2.wait();
+                save_atomic_to_path(&path2, &small)
+            });
+            for result in [first.join().unwrap(), second.join().unwrap()] {
+                if let Err(error) = result {
+                    errors.push(error);
+                }
+            }
+            let raw = fs::read_to_string(&path).expect("settings file exists");
+            serde_json::from_str::<Settings>(&raw).expect("settings remain parseable");
+        }
+
+        let _ = fs::remove_dir_all(&dir);
+        assert!(errors.is_empty(), "overlapping saves failed: {errors:?}");
     }
 
     #[test]
