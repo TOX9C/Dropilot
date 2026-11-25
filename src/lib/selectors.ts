@@ -422,6 +422,81 @@ export function computeDashboardStats(
   };
 }
 
+const ENDING_SOON_WINDOW_MINS = 24 * 60;
+const ENDING_SOON_SLACK_MINS = 12 * 60;
+
+function timeLeftMins(campaign: Campaign, now: number): number {
+  return Math.max(0, Math.trunc((new Date(campaign.endsAt).getTime() - now) / 60_000));
+}
+
+function campaignRemainingMins(campaign: Campaign): number {
+  if (campaign.drops.length === 0) return 60;
+  return Math.max(
+    0,
+    ...campaign.drops
+      .filter((drop) => !drop.claimed && !drop.needsManualClaim)
+      .map((drop) => Math.max(0, drop.requiredMinutes - drop.currentMinutes)),
+  );
+}
+
+function nextDropRemainingMins(campaign: Campaign): number {
+  if (campaign.drops.length === 0) return 15;
+  const remaining = campaign.drops
+    .filter((drop) => !drop.claimed && !drop.needsManualClaim)
+    .map((drop) => Math.max(0, drop.requiredMinutes - drop.currentMinutes))
+    .filter((minutes) => minutes > 0);
+  return remaining.length > 0 ? Math.min(...remaining) : 0;
+}
+
+function isEndingSoonBoostable(campaign: Campaign, now: number): boolean {
+  const timeLeft = timeLeftMins(campaign, now);
+  if (timeLeft <= 0 || nextDropRemainingMins(campaign) > timeLeft) return false;
+  const remaining = campaignRemainingMins(campaign);
+  return timeLeft <= ENDING_SOON_WINDOW_MINS || timeLeft - remaining <= ENDING_SOON_SLACK_MINS;
+}
+
+/** Keep this deadline-feasibility ordering in sync with miner/selector.rs. */
+function applyEndingSoonBoost<T extends { camp: Campaign }>(remaining: T[], now: number): T[] {
+  const pool = [...remaining];
+  if (pool.length <= 1) return pool;
+
+  const result: T[] = [];
+  let elapsedPlannedMins = 0;
+
+  while (pool.length > 0) {
+    let bestJump: { index: number; endsAt: number } | null = null;
+
+    for (let index = 1; index < pool.length; index += 1) {
+      const candidate = pool[index];
+      if (!isEndingSoonBoostable(candidate.camp, now)) continue;
+      const candidateTimeLeft = timeLeftMins(candidate.camp, now);
+      const candidateDuration = Math.min(campaignRemainingMins(candidate.camp), candidateTimeLeft);
+      const candidateEndsAt = new Date(candidate.camp.endsAt).getTime();
+
+      const canJumpAll = pool.slice(0, index).every((higher) => {
+        const higherTimeLeft = timeLeftMins(higher.camp, now);
+        const higherRemaining = campaignRemainingMins(higher.camp);
+        return candidateEndsAt < new Date(higher.camp.endsAt).getTime()
+          && higherTimeLeft >= elapsedPlannedMins + candidateDuration + higherRemaining;
+      });
+
+      if (canJumpAll && (bestJump === null || candidateEndsAt < bestJump.endsAt)) {
+        bestJump = { index, endsAt: candidateEndsAt };
+      }
+    }
+
+    const pickIndex = bestJump?.index ?? 0;
+    const [picked] = pool.splice(pickIndex, 1);
+    elapsedPlannedMins += Math.min(
+      campaignRemainingMins(picked.camp),
+      timeLeftMins(picked.camp, now),
+    );
+    result.push(picked);
+  }
+
+  return result;
+}
+
 export function computeUpNextQueue(
   snapshot: AppSnapshot,
   settings: Settings,
@@ -457,7 +532,13 @@ export function computeUpNextQueue(
       .filter((x): x is { camp: Campaign; rank: number } => x !== null)
       .sort((a, b) => a.rank - b.rank || new Date(a.camp.endsAt).getTime() - new Date(b.camp.endsAt).getTime());
 
-    for (const item of scored) {
+    const prioritized = scored.filter((item) => item.rank < 500);
+    const ordered = platSettings.prioritizeEndingSoon
+      ? applyEndingSoonBoost(prioritized, now).map((item, rank) => ({ ...item, rank }))
+      : prioritized;
+    ordered.push(...scored.filter((item) => item.rank >= 500));
+
+    for (const item of ordered) {
       // Skip the campaign currently being farmed on this platform; it is already shown in Now Farming.
       if (platSnap.currentCampaignId === item.camp.id && platSnap.watching) {
         continue;
