@@ -156,7 +156,7 @@ fn is_campaign_active_window(
         || campaign
             .drops
             .iter()
-            .any(|d| !d.claimed && !d.needs_manual_claim)
+            .any(|d| !d.claimed && !d.needs_manual_claim && (settings.auto_claim || !d.claimable))
 }
 
 pub fn is_campaign_eligible(
@@ -344,7 +344,7 @@ pub struct SwitchContext<'a> {
     pub last_voluntary_switch: Option<DateTime<Utc>>,
 }
 
-pub fn evaluate_switch(ctx: SwitchContext<'_>) -> SwitchDecision {
+pub fn evaluate_switch(ctx: SwitchContext<'_>, auto_claim: bool) -> SwitchDecision {
     if !ctx.current_channel.is_live {
         return SwitchDecision::SwitchImmediate("Channel went offline".to_string());
     }
@@ -367,7 +367,7 @@ pub fn evaluate_switch(ctx: SwitchContext<'_>) -> SwitchDecision {
             .current_campaign
             .drops
             .iter()
-            .all(|d| d.claimed || d.needs_manual_claim);
+            .all(|d| d.claimed || d.needs_manual_claim || (!auto_claim && d.claimable));
 
     if campaign_done
         || ctx.current_campaign.status != CampaignStatus::Active
@@ -545,53 +545,102 @@ mod tests {
         let mut ch = mk_channel("streamer", "Rust", 1000, false, true);
 
         // Voluntary switch blocked within 120s hysteresis
-        let dec = evaluate_switch(SwitchContext {
-            current_channel: &ch,
-            current_campaign: &c1,
-            top_campaign: Some(&c2),
-            pinned_login: None,
-            now,
-            last_progress_advance: now,
-            last_voluntary_switch: Some(now - Duration::seconds(60)),
-        });
+        let dec = evaluate_switch(
+            SwitchContext {
+                current_channel: &ch,
+                current_campaign: &c1,
+                top_campaign: Some(&c2),
+                pinned_login: None,
+                now,
+                last_progress_advance: now,
+                last_voluntary_switch: Some(now - Duration::seconds(60)),
+            },
+            true,
+        );
         assert_eq!(dec, SwitchDecision::Keep);
 
         // Voluntary switch allowed after 120s
-        let dec2 = evaluate_switch(SwitchContext {
-            current_channel: &ch,
-            current_campaign: &c1,
-            top_campaign: Some(&c2),
-            pinned_login: None,
-            now,
-            last_progress_advance: now,
-            last_voluntary_switch: Some(now - Duration::seconds(130)),
-        });
+        let dec2 = evaluate_switch(
+            SwitchContext {
+                current_channel: &ch,
+                current_campaign: &c1,
+                top_campaign: Some(&c2),
+                pinned_login: None,
+                now,
+                last_progress_advance: now,
+                last_voluntary_switch: Some(now - Duration::seconds(130)),
+            },
+            true,
+        );
         assert!(matches!(dec2, SwitchDecision::SwitchVoluntary(_)));
 
         // Stall >= 15 min triggers immediate switch even inside hysteresis window
-        let stalled = evaluate_switch(SwitchContext {
-            current_channel: &ch,
-            current_campaign: &c1,
-            top_campaign: Some(&c1),
-            pinned_login: None,
-            now,
-            last_progress_advance: now - Duration::minutes(16),
-            last_voluntary_switch: Some(now - Duration::seconds(10)),
-        });
+        let stalled = evaluate_switch(
+            SwitchContext {
+                current_channel: &ch,
+                current_campaign: &c1,
+                top_campaign: Some(&c1),
+                pinned_login: None,
+                now,
+                last_progress_advance: now - Duration::minutes(16),
+                last_voluntary_switch: Some(now - Duration::seconds(10)),
+            },
+            true,
+        );
         assert!(matches!(stalled, SwitchDecision::SwitchImmediate(_)));
 
         // Offline triggers immediate switch even inside hysteresis window
         ch.is_live = false;
-        let offline = evaluate_switch(SwitchContext {
-            current_channel: &ch,
-            current_campaign: &c1,
-            top_campaign: Some(&c1),
-            pinned_login: None,
-            now,
-            last_progress_advance: now,
-            last_voluntary_switch: Some(now - Duration::seconds(5)),
-        });
+        let offline = evaluate_switch(
+            SwitchContext {
+                current_channel: &ch,
+                current_campaign: &c1,
+                top_campaign: Some(&c1),
+                pinned_login: None,
+                now,
+                last_progress_advance: now,
+                last_voluntary_switch: Some(now - Duration::seconds(5)),
+            },
+            true,
+        );
         assert!(matches!(offline, SwitchDecision::SwitchImmediate(_)));
+    }
+
+    #[test]
+    fn claimable_campaign_is_done_when_auto_claim_is_disabled() {
+        let now = Utc::now();
+        let mut campaign = mk_campaign("claimable", "g1", "Rust", true, 6);
+        campaign.drops[0].current_minutes = campaign.drops[0].required_minutes;
+        campaign.drops[0].claimable = true;
+        let channel = mk_channel("streamer", "Rust", 1000, false, true);
+
+        let decision = evaluate_switch(
+            SwitchContext {
+                current_channel: &channel,
+                current_campaign: &campaign,
+                top_campaign: Some(&campaign),
+                pinned_login: None,
+                now,
+                last_progress_advance: now,
+                last_voluntary_switch: None,
+            },
+            false,
+        );
+        assert!(matches!(decision, SwitchDecision::SwitchImmediate(_)));
+
+        let auto_claim_decision = evaluate_switch(
+            SwitchContext {
+                current_channel: &channel,
+                current_campaign: &campaign,
+                top_campaign: Some(&campaign),
+                pinned_login: None,
+                now,
+                last_progress_advance: now,
+                last_voluntary_switch: None,
+            },
+            true,
+        );
+        assert_eq!(auto_claim_decision, SwitchDecision::Keep);
     }
 
     #[test]
@@ -607,15 +656,18 @@ mod tests {
         assert!(is_campaign_eligible(&camp, &settings, &settings.twitch, now));
 
         let ch = mk_channel("streamer", "Rust", 1000, false, true);
-        let dec = evaluate_switch(SwitchContext {
-            current_channel: &ch,
-            current_campaign: &camp,
-            top_campaign: Some(&camp),
-            pinned_login: None,
-            now,
-            last_progress_advance: now,
-            last_voluntary_switch: None,
-        });
+        let dec = evaluate_switch(
+            SwitchContext {
+                current_channel: &ch,
+                current_campaign: &camp,
+                top_campaign: Some(&camp),
+                pinned_login: None,
+                now,
+                last_progress_advance: now,
+                last_voluntary_switch: None,
+            },
+            true,
+        );
         assert_eq!(dec, SwitchDecision::Keep);
     }
 
@@ -671,6 +723,92 @@ mod tests {
             .map(|c| c.id.as_str())
             .collect();
         assert_eq!(ordered, vec!["eft-1", "ow-1", "ow-2", "rust-1"]);
+    }
+
+    #[test]
+    fn auto_claim_disabled_excludes_drops_that_need_no_watch_time() {
+        let now = Utc::now();
+        let mut claimable = mk_campaign("claimable", "g1", "Rust", true, 6);
+        claimable.drops[0].current_minutes = claimable.drops[0].required_minutes;
+        claimable.drops[0].claimable = true;
+        let mut manual = mk_campaign("manual", "g2", "Overwatch", true, 6);
+        manual.drops[0].current_minutes = manual.drops[0].required_minutes;
+        manual.drops[0].needs_manual_claim = true;
+        let incomplete = mk_campaign("incomplete", "g3", "VALORANT", true, 6);
+        let campaigns = vec![claimable.clone(), manual.clone(), incomplete.clone()];
+
+        let mut settings = Settings {
+            auto_claim: false,
+            disclaimer_accepted_version: 1,
+            idle_behavior: IdleBehavior::StayIdle,
+            ..Default::default()
+        };
+        settings.twitch.priority = vec![
+            PriorityItem::Game {
+                game_id: "g1".into(),
+                game_name: "Rust".into(),
+            },
+            PriorityItem::Game {
+                game_id: "g2".into(),
+                game_name: "Overwatch".into(),
+            },
+            PriorityItem::Game {
+                game_id: "g3".into(),
+                game_name: "VALORANT".into(),
+            },
+        ];
+
+        assert!(!is_campaign_active_window(
+            &claimable,
+            &settings,
+            &settings.twitch,
+            now
+        ));
+        assert!(!is_campaign_active_window(
+            &manual,
+            &settings,
+            &settings.twitch,
+            now
+        ));
+        assert_eq!(
+            select_target_campaign(&campaigns, &settings, &settings.twitch, now)
+                .map(|c| c.id.as_str()),
+            Some("incomplete")
+        );
+
+        let mut mixed = claimable;
+        mixed.drops.push(mk_drop("incomplete-drop", false));
+        assert!(is_campaign_active_window(
+            &mixed,
+            &settings,
+            &settings.twitch,
+            now
+        ));
+    }
+
+    #[test]
+    fn auto_claim_enabled_keeps_claimable_campaign_selected() {
+        let now = Utc::now();
+        let mut claimable = mk_campaign("claimable", "g1", "Rust", true, 6);
+        claimable.drops[0].current_minutes = claimable.drops[0].required_minutes;
+        claimable.drops[0].claimable = true;
+        let campaigns = vec![claimable];
+        let mut settings = Settings {
+            auto_claim: true,
+            disclaimer_accepted_version: 1,
+            idle_behavior: IdleBehavior::FarmAny,
+            ..Default::default()
+        };
+        settings.twitch.priority = vec![PriorityItem::Game {
+            game_id: "g1".into(),
+            game_name: "Rust".into(),
+        }];
+
+        assert_eq!(
+            select_target_campaign(&campaigns, &settings, &settings.twitch, now)
+                .map(|c| c.id.as_str()),
+            Some("claimable")
+        );
     }
 
     #[test]

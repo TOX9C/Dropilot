@@ -997,15 +997,18 @@ async fn step_miner(
                 .then_some(pin)
         });
 
-        let decision = evaluate_switch(SwitchContext {
-            current_channel: &current_ch,
-            current_campaign: &current_camp,
-            top_campaign: Some(top_for_switch),
-            pinned_login: pinned_if_live,
-            now,
-            last_progress_advance: ctx.last_progress_advance,
-            last_voluntary_switch: ctx.last_voluntary_switch,
-        });
+        let decision = evaluate_switch(
+            SwitchContext {
+                current_channel: &current_ch,
+                current_campaign: &current_camp,
+                top_campaign: Some(top_for_switch),
+                pinned_login: pinned_if_live,
+                now,
+                last_progress_advance: ctx.last_progress_advance,
+                last_voluntary_switch: ctx.last_voluntary_switch,
+            },
+            settings.auto_claim,
+        );
 
         match decision {
             SwitchDecision::Keep => {}
@@ -1042,7 +1045,8 @@ async fn step_miner(
                                     ctx.watching_since = Some(now);
                                     ctx.current_campaign_id = Some(hi_camp.id.clone());
                                     ctx.current_drop_id =
-                                        active_drop_for(hi_camp).map(|d| d.id.clone());
+                                        active_drop_for(hi_camp, settings.auto_claim)
+                                            .map(|d| d.id.clone());
                                     ctx.last_live_check = Some(Instant::now());
                                     ctx.last_watch_tick = None;
                                     ctx.last_progress_advance = now;
@@ -1171,7 +1175,8 @@ async fn step_miner(
                             .iter()
                             .find(|c| c.id == cand_camp.id)
                             .unwrap_or(cand_camp);
-                        ctx.current_drop_id = active_drop_for(active_camp_ref).map(|d| d.id.clone());
+                        ctx.current_drop_id = active_drop_for(active_camp_ref, settings.auto_claim)
+                            .map(|d| d.id.clone());
                         ctx.no_live_channels_until.remove(&cand_camp.id);
                         ctx.last_live_check = Some(Instant::now());
                         ctx.last_watch_tick = None;
@@ -1260,7 +1265,8 @@ async fn step_miner(
 
         ctx.state = MinerState::Mining;
         ctx.current_campaign_id = Some(active_camp.id.clone());
-        ctx.current_drop_id = active_drop_for(&active_camp).map(|d| d.id.clone());
+        ctx.current_drop_id =
+            active_drop_for(&active_camp, settings.auto_claim).map(|d| d.id.clone());
         ctx.state_reason = Some(if effective_compat_mode && platform_id == PlatformId::Twitch {
             format!(
                 "Watching {} ({}) [Compatibility Player]",
@@ -1317,7 +1323,7 @@ async fn step_miner(
 
                     // If a drop is right at completion threshold, fetch progress right away on next cycle
                     // (throttled to at most once every 2 minutes so unlinked drops never spam the bridge).
-                    if let Some(drop) = active_drop_for(&active_camp) {
+                    if let Some(drop) = active_drop_for(&active_camp, settings.auto_claim) {
                         if drop.current_minutes + 1 >= drop.required_minutes
                             && ctx
                                 .last_completion_bridge_reset
@@ -1985,11 +1991,11 @@ fn total_watched_minutes(campaigns: &[Campaign]) -> u32 {
         .sum()
 }
 
-fn active_drop_for(campaign: &Campaign) -> Option<&Drop> {
+fn active_drop_for(campaign: &Campaign, auto_claim: bool) -> Option<&Drop> {
     campaign
         .drops
         .iter()
-        .find(|d| !d.claimed && !d.needs_manual_claim)
+        .find(|d| !d.claimed && !d.needs_manual_claim && (auto_claim || !d.claimable))
 }
 
 async fn sync_snapshot(
@@ -2081,6 +2087,46 @@ mod tests {
         mock.claim("mock-session", updated_target, ready_drop)
             .await
             .expect("claim succeeds");
+    }
+
+    #[test]
+    fn active_drop_skips_claimable_when_auto_claim_is_disabled() {
+        let now = Utc::now();
+        let mut claimable = make_twitch_drop("claimable", None, "Claimable", 60);
+        claimable.current_minutes = claimable.required_minutes;
+        claimable.claimable = true;
+        let campaign = Campaign {
+            id: "camp".to_string(),
+            platform: PlatformId::Twitch,
+            game: crate::platforms::Game {
+                id: "g1".to_string(),
+                name: "Rust".to_string(),
+                slug: None,
+                box_art_url: None,
+            },
+            name: "Campaign".to_string(),
+            starts_at: now - ChronoDuration::hours(1),
+            ends_at: now + ChronoDuration::hours(6),
+            status: CampaignStatus::Active,
+            requires_link: true,
+            linked: true,
+            link_verified: true,
+            link_url: None,
+            allowed_channels: None,
+            drops: vec![
+                claimable,
+                make_twitch_drop("incomplete", None, "Incomplete", 60),
+            ],
+        };
+
+        assert_eq!(
+            active_drop_for(&campaign, false).map(|d| d.id.as_str()),
+            Some("incomplete")
+        );
+        assert_eq!(
+            active_drop_for(&campaign, true).map(|d| d.id.as_str()),
+            Some("claimable")
+        );
     }
 
     #[test]
