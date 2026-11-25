@@ -230,7 +230,8 @@ pub struct ProfileSnapshot {
     pub profile_id: String,
     pub label: String,
     pub platform: PlatformId,
-    pub snapshot: PlatformSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot: Option<PlatformSnapshot>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -367,4 +368,44 @@ pub trait Platform: Send + Sync {
     async fn claim(&self, token: &str, campaign: &Campaign, drop: &Drop) -> Result<ClaimResult, AppError>;
 
     async fn logout(&self, token: Option<&str>) -> Result<(), AppError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn omits_only_active_profile_snapshots_from_wire_json() {
+        let twitch = PlatformSnapshot::logged_out(PlatformId::Twitch);
+        let kick = PlatformSnapshot::logged_out(PlatformId::Kick);
+        let snapshot = AppSnapshot {
+            twitch: twitch.clone(),
+            kick: kick.clone(),
+            profiles: vec![
+                ProfileSnapshot {
+                    profile_id: "active-twitch".to_string(),
+                    label: "Main".to_string(),
+                    platform: PlatformId::Twitch,
+                    snapshot: None,
+                },
+                ProfileSnapshot {
+                    profile_id: "inactive-twitch".to_string(),
+                    label: "Alt".to_string(),
+                    platform: PlatformId::Twitch,
+                    snapshot: Some(twitch),
+                },
+            ],
+            recent_claims: Vec::new(),
+            mock_active: false,
+        };
+
+        let wire = serde_json::to_value(snapshot).unwrap();
+        assert!(wire["profiles"][0].get("snapshot").is_none());
+        assert_eq!(
+            wire["profiles"][1]["snapshot"]["account"],
+            serde_json::Value::Null
+        );
+        assert!(wire["twitch"].get("campaigns").is_some());
+        assert!(wire["kick"].get("campaigns").is_some());
+    }
 }

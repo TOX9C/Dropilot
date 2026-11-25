@@ -1,4 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
+import { normalizeSnapshot, type WireAppSnapshot } from './snapshot';
 import type {
   AppSnapshot,
   Campaign,
@@ -453,7 +454,7 @@ function syncPreviewProfiles(next: Settings) {
 }
 
 export const api = {
-  getSnapshot: () => call<AppSnapshot>('get_snapshot', undefined, () => {
+  getSnapshot: () => call<WireAppSnapshot>('get_snapshot', undefined, () => {
     const snap = structuredClone(previewSnapshot);
     if (!snap.profiles) {
       snap.profiles = [
@@ -462,7 +463,7 @@ export const api = {
       ];
     }
     return snap;
-  }),
+  }).then(normalizeSnapshot),
   addAccountProfile: (platform: PlatformId, label: string) =>
     call<Settings>('add_account_profile', { platform, label }, () => {
       const id = `${platform}-${Date.now()}`;

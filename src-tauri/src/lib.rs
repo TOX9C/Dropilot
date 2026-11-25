@@ -31,7 +31,7 @@ use crate::logging::{init_logging, LogBuffer};
 use crate::miner::engine::{build_platform_backend, spawn_miner_supervisor};
 use crate::net::client::AllowlistedClient;
 use crate::settings::{load_settings, save_settings};
-use crate::state::{AppState, MinerControl};
+use crate::state::AppState;
 use crate::tray::setup_tray;
 use crate::windows::{
     cached_main_bounds, capture_bounds_sync, destroy_main_to_tray, ensure_main_window,
@@ -203,7 +203,7 @@ pub fn run() {
                     &app_handle,
                     &state_for_setup,
                 );
-                let tx = spawn_miner_supervisor(
+                let (tx, task) = spawn_miner_supervisor(
                     profile.id.clone(),
                     profile.platform,
                     (idx as u64) * 350,
@@ -211,15 +211,16 @@ pub fn run() {
                     state_for_setup.clone(),
                     backend,
                 );
-                spawned_miners.push((profile.id.clone(), tx));
+                tauri::async_runtime::block_on(state_for_setup.register_miner_for_profile(
+                    &profile.id,
+                    tx,
+                    task,
+                ));
             }
 
             let reg_state = state_for_setup.clone();
             let win_app = app_handle.clone();
             tauri::async_runtime::spawn(async move {
-                for (profile_id, tx) in spawned_miners {
-                    reg_state.register_miner_for_profile(&profile_id, tx).await;
-                }
                 if !start_in_tray {
                     if let Err(err) = ensure_main_window(&win_app, &reg_state).await {
                         warn!(error = %err, "Failed opening initial main window");
@@ -322,7 +323,7 @@ pub fn run() {
                             }
                             st.events.reset_cache().await;
                             st.allow_exit.store(true, Ordering::SeqCst);
-                            st.send_all_miners(MinerControl::Shutdown).await;
+                            st.shutdown().await;
                             close_all_aux_windows(&app_c);
                             app_c.exit(0);
                         });

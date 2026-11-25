@@ -96,10 +96,10 @@ pub fn spawn_miner_supervisor(
     app: AppHandle,
     state: Arc<AppState>,
     backend: PlatformBackend,
-) -> mpsc::Sender<MinerControl> {
+) -> (mpsc::Sender<MinerControl>, tauri::async_runtime::JoinHandle<()>) {
     let (tx, mut rx) = mpsc::channel::<MinerControl>(32);
 
-    tauri::async_runtime::spawn(async move {
+    let task = tauri::async_runtime::spawn(async move {
         if startup_delay_ms > 0 {
             tokio::select! {
                 _ = sleep(Duration::from_millis(startup_delay_ms)) => {}
@@ -145,7 +145,7 @@ pub fn spawn_miner_supervisor(
         }
     });
 
-    tx
+    (tx, task)
 }
 
 enum ExitReason {

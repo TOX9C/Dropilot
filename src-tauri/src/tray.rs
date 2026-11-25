@@ -108,7 +108,7 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
                 "quit" => {
                     st.allow_exit.store(true, std::sync::atomic::Ordering::SeqCst);
                     tauri::async_runtime::spawn(async move {
-                        st.send_all_miners(MinerControl::Shutdown).await;
+                        st.shutdown().await;
                         close_all_aux_windows(&app_c);
                         app_c.exit(0);
                     });

@@ -15,7 +15,7 @@ pub const EVENT_SETTINGS: &str = "dropilot://settings";
 #[derive(Debug)]
 struct ThrottleState {
     last_sent_at: Option<Instant>,
-    last_payload_json: Option<String>,
+    last_payload: Option<Arc<AppSnapshot>>,
 }
 
 /// Throttles snapshot events to at most 1/sec, deduplicates identical payloads,
@@ -36,23 +36,24 @@ impl EventHub {
         Self {
             inner: Arc::new(Mutex::new(ThrottleState {
                 last_sent_at: None,
-                last_payload_json: None,
+                last_payload: None,
             })),
         }
     }
 
-    pub async fn emit_snapshot_throttled(&self, app: &AppHandle, snapshot: &AppSnapshot, force: bool) {
+    pub async fn emit_snapshot_throttled(
+        &self,
+        app: &AppHandle,
+        snapshot: Arc<AppSnapshot>,
+        force: bool,
+    ) {
         if app.get_webview_window("main").is_none() {
             return;
         }
 
-        let Ok(serialized) = serde_json::to_string(snapshot) else {
-            return;
-        };
-
         let should_emit = {
             let mut guard = self.inner.lock().await;
-            let changed = guard.last_payload_json.as_deref() != Some(&serialized);
+            let changed = guard.last_payload.as_deref() != Some(snapshot.as_ref());
             if !changed && !force {
                 false
             } else {
@@ -62,7 +63,7 @@ impl EventHub {
                 };
                 if elapsed_ok || force {
                     guard.last_sent_at = Some(Instant::now());
-                    guard.last_payload_json = Some(serialized);
+                    guard.last_payload = Some(snapshot.clone());
                     true
                 } else {
                     false
@@ -71,7 +72,7 @@ impl EventHub {
         };
 
         if should_emit {
-            let _ = app.emit_to("main", EVENT_SNAPSHOT, snapshot);
+            let _ = app.emit_to("main", EVENT_SNAPSHOT, snapshot.as_ref());
         }
     }
 
@@ -89,7 +90,7 @@ impl EventHub {
 
     pub async fn reset_cache(&self) {
         let mut guard = self.inner.lock().await;
-        guard.last_payload_json = None;
+        guard.last_payload = None;
         guard.last_sent_at = None;
     }
 }

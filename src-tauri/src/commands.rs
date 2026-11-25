@@ -17,7 +17,7 @@ use crate::edition::{
     current_edition, ensure_platform_enabled, ensure_profile_allowed, is_multi_account_enabled,
     EditionInfo,
 };
-use crate::history::{history_path, HistoryExportResult, HistoryStats, HistoryStore};
+use crate::history::{HistoryExportResult, HistoryStats};
 use crate::logging::{log_dir, LogEntry, LogLevel};
 use crate::miner::engine::{build_platform_backend, spawn_miner_supervisor};
 use crate::net::allowlist::{validate_url, AllowlistKind};
@@ -129,7 +129,7 @@ pub async fn add_account_profile(
         .await;
 
     let backend = build_platform_backend(&profile.id, platform, &app, state.inner());
-    let tx = spawn_miner_supervisor(
+    let (tx, task) = spawn_miner_supervisor(
         profile.id.clone(),
         platform,
         0,
@@ -137,7 +137,9 @@ pub async fn add_account_profile(
         state.inner().clone(),
         backend,
     );
-    state.register_miner_for_profile(&profile.id, tx).await;
+    state
+        .register_miner_for_profile(&profile.id, tx, task)
+        .await;
     state.publish_snapshot(&app, true).await;
     info!(
         platform = platform.as_str(),
@@ -847,14 +849,9 @@ pub async fn clear_app_data(
     }
     state.sync_active_platform_snapshot(PlatformId::Twitch).await;
     state.sync_active_platform_snapshot(PlatformId::Kick).await;
-    {
-        let mut hist = state.history.write().await;
-        *hist = HistoryStore::default();
-    }
-    state.recent_claims.write().await.clear();
+    state.delete_history().await;
     state.remote_config.reset_to_bundled().await;
     state.epic.clear_cache().await;
-    let _ = fs::remove_file(history_path());
     let _ = fs::remove_file(appdata_dir().join("settings.json"));
     state.persist_settings().await?;
     state.send_all_miners(MinerControl::SettingsUpdated).await;
@@ -1093,12 +1090,7 @@ pub async fn clear_history(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<(), String> {
-    {
-        let mut hist = state.history.write().await;
-        *hist = HistoryStore::default();
-        let _ = hist.save();
-    }
-    state.recent_claims.write().await.clear();
+    state.clear_history().await;
     state.publish_snapshot(&app, true).await;
     info!("Cleared persistent drop claim history and stats");
     Ok(())

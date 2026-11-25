@@ -1,6 +1,7 @@
 use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Duration as ChronoDuration, Local, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
@@ -12,6 +13,8 @@ use crate::settings::appdata_dir;
 const HISTORY_SCHEMA_VERSION: u32 = 1;
 const MAX_HISTORY_CLAIMS: usize = 5_000;
 const MAX_DAILY_BUCKETS: usize = 365;
+// The 90-second progress poll reaches this threshold after 4.5 minutes.
+const WATCH_HISTORY_SAVE_INTERVAL: Duration = Duration::from_secs(4 * 60 + 30);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -86,6 +89,8 @@ pub struct HistoryStore {
     pub daily_minutes: BTreeMap<String, u32>,
     #[serde(default)]
     pub claims: Vec<ClaimHistoryEntry>,
+    #[serde(skip)]
+    last_watch_save: Option<Instant>,
 }
 
 fn default_schema() -> u32 {
@@ -99,6 +104,7 @@ impl Default for HistoryStore {
             total_watch_minutes: 0,
             daily_minutes: BTreeMap::new(),
             claims: Vec::new(),
+            last_watch_save: None,
         }
     }
 }
@@ -240,6 +246,16 @@ impl HistoryStore {
 
     pub fn remove_claim(&mut self, id: &str) {
         self.claims.retain(|c| c.id != id);
+    }
+
+    pub fn begin_watch_save(&mut self, now: Instant) -> bool {
+        let due = self
+            .last_watch_save
+            .map_or(true, |last| now.duration_since(last) >= WATCH_HISTORY_SAVE_INTERVAL);
+        if due {
+            self.last_watch_save = Some(now);
+        }
+        due
     }
 
     pub fn record_watch_minutes(&mut self, delta_minutes: u32) {
@@ -481,6 +497,33 @@ mod tests {
         assert_eq!(compute_streaks(&dates, d(12)), (3, 4));
         assert_eq!(compute_streaks(&dates, d(13)), (3, 4));
         assert_eq!(compute_streaks(&dates, d(15)), (0, 4));
+    }
+
+    #[test]
+    fn debounces_watch_minute_writes_without_losing_minutes() {
+        let path = std::env::temp_dir().join(format!(
+            "dropilot-history-debounce-{}-{}.json",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let mut store = HistoryStore::default();
+        let started = std::time::Instant::now();
+
+        store.record_watch_minutes(1);
+        assert!(store.begin_watch_save(started));
+        store.save_to_path(&path).unwrap();
+        store.record_watch_minutes(2);
+        assert!(!store.begin_watch_save(started + std::time::Duration::from_secs(90)));
+        assert_eq!(HistoryStore::load_from_path(&path).total_watch_minutes, 1);
+
+        assert!(store.begin_watch_save(started + std::time::Duration::from_secs(300)));
+        store.save_to_path(&path).unwrap();
+        assert_eq!(HistoryStore::load_from_path(&path).total_watch_minutes, 3);
+
+        let _ = fs::remove_file(path);
     }
 
     #[test]

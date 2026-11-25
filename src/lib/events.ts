@@ -1,4 +1,5 @@
 import { listen, type UnlistenFn } from '@tauri-apps/api/event';
+import { normalizeSnapshot, type WireAppSnapshot } from './snapshot';
 import type { AppSnapshot, LogEntry, Settings, UpdateProgressEvent } from './types';
 
 function isTauriRuntime(): boolean {
@@ -17,8 +18,8 @@ export async function subscribeBackendEvents(
 
   const unlisteners: UnlistenFn[] = [];
   unlisteners.push(
-    await listen<AppSnapshot>('dropilot://snapshot', (ev) => {
-      onSnapshot(ev.payload);
+    await listen<WireAppSnapshot>('dropilot://snapshot', (ev) => {
+      onSnapshot(normalizeSnapshot(ev.payload));
     }),
   );
   unlisteners.push(

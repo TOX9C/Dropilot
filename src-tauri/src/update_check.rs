@@ -13,7 +13,7 @@ use crate::auth::login_window::{
 use crate::net::allowlist::{UPDATE_CHECK_HOST, UPDATE_CHECK_PATH};
 use crate::net::client::AllowlistedClient;
 use crate::platforms::AppError;
-use crate::state::{AppState, MinerControl};
+use crate::state::AppState;
 
 pub const RELEASES_PAGE_URL: &str = "https://github.com/theflash1211/dropilot-releases/releases";
 pub const UPDATE_PROGRESS_EVENT: &str = "dropilot://update-progress";
@@ -154,7 +154,7 @@ pub async fn install_signed_update(
 
     // Shut down miners and bridge windows cleanly so the updated executable launches smoothly.
     state.allow_exit.store(true, Ordering::SeqCst);
-    state.send_all_miners(MinerControl::Shutdown).await;
+    state.shutdown().await;
     close_kick_bridge_window(app);
     close_twitch_bridge_window(app);
     close_epic_claim_window(app);
