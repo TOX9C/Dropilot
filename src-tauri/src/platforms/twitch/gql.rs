@@ -258,6 +258,10 @@ pub fn build_twitch_headers_for_profile(
         let auth_val = HeaderValue::from_str(&format!("OAuth {tok}"))
             .map_err(|e| AppError::Internal(format!("Invalid auth token header: {e}")))?;
         headers.insert(AUTHORIZATION, auth_val);
+
+        let cookie_val = HeaderValue::from_str(&format!("unique_id={device_id}; auth-token={tok}"))
+            .map_err(|e| AppError::Internal(format!("Invalid Twitch cookie header: {e}")))?;
+        headers.insert(reqwest::header::COOKIE, cookie_val);
     }
 
     Ok(headers)
@@ -907,11 +911,16 @@ mod tests {
         assert_eq!(dev.len(), 32);
         assert!(dev.chars().all(|c| c.is_ascii_hexdigit()));
         assert!(!anon.contains_key(AUTHORIZATION));
+        assert!(!anon.contains_key(reqwest::header::COOKIE));
 
         let authed = build_twitch_headers(Some("tok123")).expect("authed headers");
         assert_eq!(
             authed.get(AUTHORIZATION).and_then(|v| v.to_str().ok()),
             Some("OAuth tok123")
+        );
+        assert_eq!(
+            authed.get(reqwest::header::COOKIE).and_then(|v| v.to_str().ok()),
+            Some(format!("unique_id={dev}; auth-token=tok123").as_str())
         );
         assert_eq!(
             authed.get("x-device-id").and_then(|v| v.to_str().ok()),

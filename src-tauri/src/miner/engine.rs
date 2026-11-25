@@ -1820,7 +1820,7 @@ fn apply_progress(campaigns: &mut [Campaign], progress_list: &[DropProgress]) {
     propagate_linked_games(campaigns);
 }
 
-const AUTO_COMPAT_ESCALATION_SECS: i64 = 180;
+const AUTO_COMPAT_ESCALATION_SECS: i64 = 120;
 
 fn should_escalate_to_compat_player(
     platform_id: PlatformId,
@@ -2064,29 +2064,29 @@ mod tests {
     }
 
     #[test]
-    fn auto_compat_escalation_triggers_after_180s_without_progress_and_resets_on_logout() {
+    fn auto_compat_escalation_triggers_after_120s_without_progress_and_resets_on_logout() {
         let now = Utc::now();
-        let since_179 = Some(now - ChronoDuration::seconds(179));
-        let since_180 = Some(now - ChronoDuration::seconds(180));
+        let since_119 = Some(now - ChronoDuration::seconds(119));
+        let since_120 = Some(now - ChronoDuration::seconds(120));
 
-        // Not yet 180s -> false.
+        // Not yet 120s -> false.
         assert!(!should_escalate_to_compat_player(
             PlatformId::Twitch,
             false,
             false,
             false,
-            since_179,
+            since_119,
             None,
             now,
         ));
 
-        // 180s elapsed with 0 confirmed progress -> true.
+        // 120s elapsed with 0 confirmed progress -> true.
         assert!(should_escalate_to_compat_player(
             PlatformId::Twitch,
             false,
             false,
             false,
-            since_180,
+            since_120,
             None,
             now,
         ));
@@ -2097,7 +2097,7 @@ mod tests {
             false,
             false,
             false,
-            since_180,
+            since_120,
             Some(now - ChronoDuration::seconds(300)),
             now,
         ));
@@ -2108,7 +2108,7 @@ mod tests {
             false,
             false,
             false,
-            since_180,
+            since_120,
             Some(now - ChronoDuration::seconds(60)),
             now,
         ));
@@ -2119,7 +2119,7 @@ mod tests {
             false,
             true,
             false,
-            since_180,
+            since_120,
             None,
             now,
         ));
@@ -2128,7 +2128,7 @@ mod tests {
             false,
             false,
             true,
-            since_180,
+            since_120,
             None,
             now,
         ));
@@ -2137,7 +2137,7 @@ mod tests {
             true,
             false,
             false,
-            since_180,
+            since_120,
             None,
             now,
         ));
@@ -2146,7 +2146,7 @@ mod tests {
             false,
             false,
             false,
-            since_180,
+            since_120,
             None,
             now,
         ));

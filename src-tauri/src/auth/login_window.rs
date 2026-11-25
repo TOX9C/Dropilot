@@ -221,7 +221,9 @@ const COMPAT_WATCH_SCRIPT: &str = r##"
       const selectors = [
         '[data-a-target="content-classification-gate-overlay-start-watching-button"]',
         '[data-a-target="player-overlay-mature-accept"]',
+        '[data-a-target="player-overlay-play-button"]',
         '[data-a-target="player-overlay-click-handler"] button[aria-label*="Play" i]',
+        'button[data-a-target="consent-banner-accept"]',
         'button[data-testid="mature-content-accept"]',
         'button[data-testid="accept-cookies"]'
       ];
@@ -239,12 +241,81 @@ const COMPAT_WATCH_SCRIPT: &str = r##"
         if (
           txt === "start watching" ||
           txt === "accept & continue" ||
+          txt === "accept" ||
           txt === "i am 18+" ||
           txt === "i'm 18+"
         ) {
           b.click();
         }
       }
+    } catch (_) {}
+  }
+
+  function detectPlayerError() {
+    try {
+      const errSelectors = [
+        '[data-a-target="player-error-message"]',
+        '.content-overlay-gate__content',
+        '[data-test-selector="content-overlay-gate"]'
+      ];
+      for (let i = 0; i < errSelectors.length; i++) {
+        const el = document.querySelector(errSelectors[i]);
+        if (el instanceof HTMLElement) {
+          const txt = (el.innerText || el.textContent || "").replace(/\s+/g, " ").trim();
+          if (txt) return txt.slice(0, 160);
+        }
+      }
+      const bodyText = (document.body && document.body.innerText) || "";
+      const m = bodyText.match(/Error\s*#\d{4}[^\n]*/i);
+      if (m && m[0]) return m[0].trim().slice(0, 160);
+    } catch (_) {}
+    return "";
+  }
+
+  let lastSentAt = 0;
+  let lastStateKey = "";
+
+  function postTelemetry(force) {
+    try {
+      if (!window.chrome || !window.chrome.webview || !window.chrome.webview.postMessage) return;
+      const cookies = document.cookie || "";
+      const hasAuthCookie = /(?:^|;\s*)(auth-token|twilight-user)=/.test(cookies);
+      const hasUserMenu = !!document.querySelector(
+        '[data-a-target="user-menu-toggle"], [data-test-selector="user-menu-toggle"], [data-testid="user-menu"]'
+      );
+      const loggedIn = hasAuthCookie || hasUserMenu;
+      const videos = document.querySelectorAll("video");
+      const v = videos.length > 0 ? videos[0] : null;
+      const playing = Boolean(v && !v.paused && !v.ended);
+      const currentTime = v ? Math.round(v.currentTime || 0) : 0;
+      const readyState = v ? (v.readyState || 0) : 0;
+      const muted = v ? Boolean(v.muted) : false;
+      const videoError = v && v.error ? (v.error.code || 0) : 0;
+      const playerError = detectPlayerError();
+      const path = window.location.pathname || "/";
+
+      const stateKey = [loggedIn, videos.length, playing, videoError, playerError, path].join("|");
+      const now = Date.now();
+      if (!force && stateKey === lastStateKey && now - lastSentAt < 60000) {
+        return;
+      }
+      lastStateKey = stateKey;
+      lastSentAt = now;
+
+      window.chrome.webview.postMessage(
+        JSON.stringify({
+          dpCompatStatus: true,
+          loggedIn: loggedIn,
+          videoCount: videos.length,
+          playing: playing,
+          currentTime: currentTime,
+          readyState: readyState,
+          muted: muted,
+          videoError: videoError,
+          playerError: playerError,
+          path: path
+        })
+      );
     } catch (_) {}
   }
 
@@ -297,11 +368,13 @@ const COMPAT_WATCH_SCRIPT: &str = r##"
         }
       });
     } catch (_) {}
+    postTelemetry(false);
   }
 
   setInterval(keepPlaybackAlive, 3000);
   document.addEventListener("DOMContentLoaded", keepPlaybackAlive);
   setTimeout(keepPlaybackAlive, 1500);
+  setTimeout(function () { postTelemetry(true); }, 5000);
 })();
 "##;
 
@@ -788,10 +861,67 @@ pub async fn clear_webview_browsing_data(app: &AppHandle) -> Result<(), AppError
     res
 }
 
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+struct CompatWatchStatus {
+    #[serde(default)]
+    dp_compat_status: bool,
+    #[serde(default)]
+    logged_in: bool,
+    #[serde(default)]
+    video_count: u32,
+    #[serde(default)]
+    playing: bool,
+    #[serde(default)]
+    current_time: u32,
+    #[serde(default)]
+    ready_state: u32,
+    #[serde(default)]
+    muted: bool,
+    #[serde(default)]
+    video_error: u32,
+    #[serde(default)]
+    player_error: String,
+    #[serde(default)]
+    path: String,
+}
+
+fn parse_compat_watch_status(raw: &str) -> Option<CompatWatchStatus> {
+    let parsed: CompatWatchStatus = serde_json::from_str(raw).ok()?;
+    if !parsed.dp_compat_status {
+        return None;
+    }
+    Some(parsed)
+}
+
 #[cfg(windows)]
 fn configure_hidden_muted_webview(win: &tauri::WebviewWindow) {
     use webview2_com::Microsoft::Web::WebView2::Win32::ICoreWebView2_8;
     use windows::core::Interface;
+    use windows_sys::Win32::UI::WindowsAndMessaging::{
+        GetWindowLongW, SetWindowLongW, SetWindowPos, GWL_EXSTYLE, SWP_FRAMECHANGED,
+        SWP_NOACTIVATE, SWP_NOZORDER, SWP_SHOWWINDOW, WS_EX_APPWINDOW, WS_EX_NOACTIVATE,
+        WS_EX_TOOLWINDOW,
+    };
+
+    if let Ok(hwnd) = win.hwnd() {
+        unsafe {
+            let raw_hwnd = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+            let ex_style = GetWindowLongW(raw_hwnd, GWL_EXSTYLE);
+            let new_ex_style = (ex_style | WS_EX_TOOLWINDOW as i32 | WS_EX_NOACTIVATE as i32)
+                & !(WS_EX_APPWINDOW as i32);
+            SetWindowLongW(raw_hwnd, GWL_EXSTYLE, new_ex_style);
+            SetWindowPos(
+                raw_hwnd,
+                std::ptr::null_mut(),
+                -32000,
+                -32000,
+                640,
+                360,
+                SWP_NOACTIVATE | SWP_NOZORDER | SWP_SHOWWINDOW | SWP_FRAMECHANGED,
+            );
+        }
+    }
 
     let _ = win.with_webview(|wv| unsafe {
         let controller = wv.controller();
@@ -801,6 +931,123 @@ fn configure_hidden_muted_webview(win: &tauri::WebviewWindow) {
                 let _ = core8.SetIsMuted(true);
             }
         }
+    });
+}
+
+#[cfg(windows)]
+fn attach_compat_watch_telemetry(
+    win: &tauri::WebviewWindow,
+    platform: PlatformId,
+    profile_id: &str,
+) {
+    use std::sync::Mutex as StdMutex;
+    use std::time::Instant;
+    use webview2_com::{take_pwstr, WebMessageReceivedEventHandler};
+    use windows::core::PWSTR;
+
+    struct TelemetryState {
+        last_playing: Option<bool>,
+        zero_time_since: Option<Instant>,
+        last_warn_at: Option<Instant>,
+    }
+
+    let state = Arc::new(StdMutex::new(TelemetryState {
+        last_playing: None,
+        zero_time_since: None,
+        last_warn_at: None,
+    }));
+    let platform_str = platform.as_str().to_string();
+    let profile_str = profile_id.to_string();
+
+    let _ = win.with_webview(move |wv| unsafe {
+        let controller = wv.controller();
+        let Ok(core) = controller.CoreWebView2() else {
+            return;
+        };
+        let mut token = 0i64;
+        let handler = WebMessageReceivedEventHandler::create(Box::new(move |_webview, args| {
+            let Some(args) = args else {
+                return Ok(());
+            };
+            let mut src_pwstr = PWSTR::null();
+            args.Source(&mut src_pwstr)?;
+            let src = take_pwstr(src_pwstr);
+            if !src.starts_with("https://") {
+                return Ok(());
+            }
+
+            let mut msg_pwstr = PWSTR::null();
+            if args.TryGetWebMessageAsString(&mut msg_pwstr).is_err() {
+                return Ok(());
+            }
+            let raw = take_pwstr(msg_pwstr);
+            let Some(status) = parse_compat_watch_status(&raw) else {
+                return Ok(());
+            };
+
+            let Ok(mut st) = state.lock() else {
+                return Ok(());
+            };
+            let first_or_transition = st.last_playing != Some(status.playing);
+            st.last_playing = Some(status.playing);
+
+            if status.current_time == 0 {
+                if st.zero_time_since.is_none() {
+                    st.zero_time_since = Some(Instant::now());
+                }
+            } else {
+                st.zero_time_since = None;
+            }
+            let stuck_zero = st
+                .zero_time_since
+                .map(|since| since.elapsed() > Duration::from_secs(30))
+                .unwrap_or(false);
+
+            if first_or_transition {
+                info!(
+                    platform = %platform_str,
+                    profile_id = %profile_str,
+                    path = %status.path,
+                    logged_in = status.logged_in,
+                    video_count = status.video_count,
+                    playing = status.playing,
+                    current_time = status.current_time,
+                    ready_state = status.ready_state,
+                    muted = status.muted,
+                    "Compatibility watch player status"
+                );
+            }
+
+            let has_problem = !status.logged_in
+                || !status.player_error.is_empty()
+                || status.video_error > 0
+                || stuck_zero;
+            if has_problem {
+                let warn_due = st
+                    .last_warn_at
+                    .map(|at| at.elapsed() >= Duration::from_secs(60))
+                    .unwrap_or(true);
+                if warn_due {
+                    st.last_warn_at = Some(Instant::now());
+                    warn!(
+                        platform = %platform_str,
+                        profile_id = %profile_str,
+                        path = %status.path,
+                        logged_in = status.logged_in,
+                        video_count = status.video_count,
+                        playing = status.playing,
+                        current_time = status.current_time,
+                        ready_state = status.ready_state,
+                        video_error = status.video_error,
+                        player_error = %status.player_error,
+                        "Compatibility watch player reported playback or auth issue"
+                    );
+                }
+            }
+
+            Ok(())
+        }));
+        let _ = core.add_WebMessageReceived(&handler, &mut token);
     });
 }
 
@@ -862,21 +1109,24 @@ pub fn ensure_compat_watch_window_for_profile(
 
     let win = WebviewWindowBuilder::new(app, &label, WebviewUrl::External(parsed))
         .title("Dropilot Compatibility Player")
-        .inner_size(960.0, 540.0)
-        .center()
-        .visible(false)
-        .focused(false)
+        .decorations(false)
         .skip_taskbar(true)
+        .focused(false)
+        .inner_size(640.0, 360.0)
+        .position(-32000.0, -32000.0)
+        .visible(false)
         .data_directory(profile_webview_data_dir(profile_id))
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .initialization_script(COMPAT_WATCH_SCRIPT)
-        .on_navigation(|url| handle_restricted_navigation(url, AllowlistKind::Platform))
+        .on_navigation(|url| handle_compat_watch_navigation(url))
         .build()
         .map_err(|e| AppError::Internal(format!("Failed starting compatibility watch window: {e}")))?;
 
-    apply_low_memory_mode(&win);
     #[cfg(windows)]
-    configure_hidden_muted_webview(&win);
+    {
+        configure_hidden_muted_webview(&win);
+        attach_compat_watch_telemetry(&win, platform, profile_id);
+    }
 
     info!(
         platform = platform.as_str(),
@@ -2735,6 +2985,30 @@ pub async fn twitch_bridge_claim_drop_for_profile(
     }
 }
 
+fn handle_compat_watch_navigation(url: &Url) -> bool {
+    if url.as_str() == "about:blank" {
+        return true;
+    }
+    if validate_url(url, AllowlistKind::Platform).is_ok() {
+        return true;
+    }
+    if url.scheme() == "https" && url.username().is_empty() && url.password().is_none() {
+        if let Some(host) = url.host_str() {
+            let normalized = host.trim_end_matches('.').to_ascii_lowercase();
+            let port_ok = url.port().map(|p| p == 443).unwrap_or(true);
+            if port_ok
+                && (normalized == "twitch.tv"
+                    || normalized.ends_with(".twitch.tv")
+                    || normalized == "kick.com"
+                    || normalized.ends_with(".kick.com"))
+            {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn handle_restricted_navigation(url: &Url, kind: AllowlistKind) -> bool {
     if validate_url(url, kind).is_ok() {
         return true;
@@ -3001,5 +3275,33 @@ mod tests {
             inspect_twitch_claim_payload(unauth_inv.to_string().as_bytes(), "d1", None),
             Some(TwitchGqlInspect::Unauthenticated(_))
         ));
+    }
+
+    #[test]
+    fn compat_watch_navigation_allows_about_blank_and_platform_subhosts_without_external_open() {
+        use super::{handle_compat_watch_navigation, parse_compat_watch_status};
+        use url::Url;
+
+        assert!(handle_compat_watch_navigation(&Url::parse("about:blank").unwrap()));
+        assert!(handle_compat_watch_navigation(&Url::parse("https://www.twitch.tv/k4sen").unwrap()));
+        assert!(handle_compat_watch_navigation(&Url::parse("https://player.twitch.tv/?channel=k4sen").unwrap()));
+        assert!(handle_compat_watch_navigation(&Url::parse("https://embed.twitch.tv/").unwrap()));
+        assert!(handle_compat_watch_navigation(&Url::parse("https://kick.com/streamer").unwrap()));
+        assert!(handle_compat_watch_navigation(&Url::parse("https://player.kick.com/streamer").unwrap()));
+
+        assert!(!handle_compat_watch_navigation(&Url::parse("http://www.twitch.tv/k4sen").unwrap()));
+        assert!(!handle_compat_watch_navigation(&Url::parse("https://evil-twitch.tv/").unwrap()));
+        assert!(!handle_compat_watch_navigation(&Url::parse("https://example.com/").unwrap()));
+        assert!(!handle_compat_watch_navigation(&Url::parse("javascript:alert(1)").unwrap()));
+
+        let parsed = parse_compat_watch_status(
+            r#"{"dpCompatStatus":true,"loggedIn":true,"videoCount":1,"playing":true,"currentTime":42,"readyState":4,"muted":false,"videoError":0,"playerError":"","path":"/k4sen"}"#,
+        )
+        .expect("should parse compat status");
+        assert!(parsed.logged_in);
+        assert!(parsed.playing);
+        assert_eq!(parsed.current_time, 42);
+        assert_eq!(parsed.path, "/k4sen");
+        assert!(parse_compat_watch_status(r#"{"dpCompatStatus":false}"#).is_none());
     }
 }

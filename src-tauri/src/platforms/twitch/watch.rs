@@ -56,6 +56,8 @@ struct BroadcastInfo {
 struct HlsVariantTarget {
     variant_url: String,
     refresh_after: Duration,
+    has_user_id: bool,
+    has_device_id: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -63,6 +65,7 @@ struct ParsedPlaybackAccessToken {
     value: String,
     signature: String,
     has_user_id: bool,
+    has_device_id: bool,
     refresh_after: Duration,
 }
 
@@ -226,6 +229,8 @@ impl TwitchWatchSession {
             channel = %channel.login,
             chunks = initial_chunks,
             has_integrity,
+            pat_user_id_present = initial_target.has_user_id,
+            pat_device_id_present = initial_target.has_device_id,
             "Connected lightweight Twitch stream-less HLS HEAD watcher (0 Mbps video)"
         );
 
@@ -717,6 +722,13 @@ fn parse_playback_access_token(
         })
         .unwrap_or(false);
 
+    let has_device_id = parsed_value
+        .as_ref()
+        .and_then(|v| v.get("device_id"))
+        .and_then(|d| d.as_str())
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+
     let refresh_after = parsed_value
         .as_ref()
         .and_then(|v| v.get("expires"))
@@ -732,6 +744,7 @@ fn parse_playback_access_token(
         value: value.to_string(),
         signature: signature.to_string(),
         has_user_id,
+        has_device_id,
         refresh_after,
     }))
 }
@@ -933,6 +946,8 @@ async fn fetch_hls_variant_url(
     Ok(extract_lowest_variant_url(&resp.body).map(|variant_url| HlsVariantTarget {
         variant_url,
         refresh_after: parsed_pat.refresh_after,
+        has_user_id: parsed_pat.has_user_id,
+        has_device_id: parsed_pat.has_device_id,
     }))
 }
 

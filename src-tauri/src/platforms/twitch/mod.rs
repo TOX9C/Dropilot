@@ -45,6 +45,8 @@ pub struct TwitchPlatform {
     bridge_lock: Arc<Mutex<()>>,
     watch: TwitchWatchSession,
     last_watched_channel: StdMutex<Option<(String, String)>>,
+    watching_started_at: StdMutex<Option<Instant>>,
+    last_zero_progress_diag_at: StdMutex<Option<Instant>>,
     last_inventory_bridge_at: StdMutex<Option<Instant>>,
     last_logged_progress: StdMutex<HashMap<String, u32>>,
     hydrated_drops: StdMutex<HashMap<String, Vec<Drop>>>,
@@ -72,6 +74,8 @@ impl TwitchPlatform {
             bridge_lock,
             watch: TwitchWatchSession::new(),
             last_watched_channel: StdMutex::new(None),
+            watching_started_at: StdMutex::new(None),
+            last_zero_progress_diag_at: StdMutex::new(None),
             last_inventory_bridge_at: StdMutex::new(None),
             last_logged_progress: StdMutex::new(HashMap::new()),
             hydrated_drops: StdMutex::new(HashMap::new()),
@@ -438,6 +442,10 @@ impl Platform for TwitchPlatform {
         {
             Ok(val) => {
                 let mut progress_list = parse_inventory_progress(&val)?;
+                let mut session_ctx_present = false;
+                let mut session_drop_id: Option<String> = None;
+                let mut session_minutes: Option<u32> = None;
+
                 if let Some((ref ch_id, ref ch_login)) = watched {
                     match execute_persisted_gql_for_profile(
                         &self.http,
@@ -455,6 +463,9 @@ impl Platform for TwitchPlatform {
                             if let Some((prog, _completed)) =
                                 parse_drop_current_session_progress(&sess_val)
                             {
+                                session_ctx_present = true;
+                                session_drop_id = Some(prog.drop_id.clone());
+                                session_minutes = Some(prog.current_minutes);
                                 self.log_progress_if_changed("DropCurrentSessionContext", Some(ch_login), &prog);
                                 if let Some(existing) =
                                     progress_list.iter_mut().find(|p| p.drop_id == prog.drop_id)
@@ -484,6 +495,73 @@ impl Platform for TwitchPlatform {
                         }
                     }
                 }
+
+                let inventory_in_progress_count = progress_list
+                    .iter()
+                    .filter(|p| !p.drop_id.is_empty())
+                    .count();
+                if inventory_in_progress_count == 0 && !session_ctx_present {
+                    let diag_due = self
+                        .last_zero_progress_diag_at
+                        .lock()
+                        .ok()
+                        .map(|g| g.map(|at| at.elapsed() >= Duration::from_secs(60)).unwrap_or(true))
+                        .unwrap_or(false);
+                    if diag_due {
+                        if let Ok(mut g) = self.last_zero_progress_diag_at.lock() {
+                            *g = Some(Instant::now());
+                        }
+                        tracing::info!(
+                            profile_id = %self.profile_id,
+                            inventory_in_progress_count,
+                            session_ctx_present,
+                            session_drop_id = session_drop_id.as_deref().unwrap_or("-"),
+                            session_minutes = session_minutes.unwrap_or(0),
+                            "Twitch GQL progress check returned 0 in-progress drops and empty session context"
+                        );
+                    }
+
+                    let watching_3m = self
+                        .watching_started_at
+                        .lock()
+                        .ok()
+                        .and_then(|g| *g)
+                        .map(|started| started.elapsed() >= Duration::from_secs(180))
+                        .unwrap_or(false);
+                    let bridge_due = self
+                        .last_inventory_bridge_at
+                        .lock()
+                        .ok()
+                        .and_then(|g| *g)
+                        .map(|at| at.elapsed() >= TWITCH_INVENTORY_BRIDGE_COOLDOWN)
+                        .unwrap_or(true);
+                    if watching_3m && bridge_due {
+                        if let Some(ref app_handle) = self.app {
+                            let _guard = self.bridge_lock.lock().await;
+                            if let Ok(payload) = twitch_bridge_capture_for_profile(
+                                app_handle,
+                                &self.profile_id,
+                                "https://www.twitch.tv/drops/inventory",
+                                "inventory",
+                            )
+                            .await
+                            {
+                                if let Ok(mut g) = self.last_inventory_bridge_at.lock() {
+                                    *g = Some(Instant::now());
+                                }
+                                if let Ok(bridge_list) = parse_inventory_progress(&payload) {
+                                    for prog in &bridge_list {
+                                        self.log_progress_if_changed("InventoryBridge", None, prog);
+                                    }
+                                    if !bridge_list.is_empty() {
+                                        return Ok(bridge_list);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
                 for prog in &progress_list {
                     self.log_progress_if_changed("Inventory", None, prog);
                 }
@@ -926,7 +1004,13 @@ impl Platform for TwitchPlatform {
         compat_mode: bool,
     ) -> Result<WatchTickResult, AppError> {
         if let Ok(mut g) = self.last_watched_channel.lock() {
+            let changed = g.as_ref().map(|(id, _)| id != &channel.id).unwrap_or(true);
             *g = Some((channel.id.clone(), channel.login.clone()));
+            if changed {
+                if let Ok(mut started) = self.watching_started_at.lock() {
+                    *started = Some(Instant::now());
+                }
+            }
         }
         self.watch
             .tick_for_profile(
@@ -946,10 +1030,16 @@ impl Platform for TwitchPlatform {
         if let Ok(mut g) = self.last_watched_channel.lock() {
             *g = None;
         }
+        if let Ok(mut started) = self.watching_started_at.lock() {
+            *started = None;
+        }
     }
 
     fn reset_progress_sync_cooldown(&self) {
         if let Ok(mut g) = self.last_inventory_bridge_at.lock() {
+            *g = None;
+        }
+        if let Ok(mut g) = self.last_zero_progress_diag_at.lock() {
             *g = None;
         }
         if let Ok(mut g) = self.last_logged_progress.lock() {
