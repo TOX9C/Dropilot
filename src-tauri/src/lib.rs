@@ -39,6 +39,10 @@ use crate::windows::{
     set_main_webview_low_memory, suspend_webview, update_cached_main_bounds,
 };
 
+pub(crate) fn should_refresh_remote_config(mock_active: bool, remote_enabled: bool) -> bool {
+    remote_enabled && !mock_active
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     migrate_legacy_webview_dir();
@@ -178,8 +182,19 @@ pub fn run() {
                     }
                     guard.remote_config_enabled
                 };
-                if remote_enabled {
-                    let _ = sync_state.remote_config.refresh_if_stale(&sync_state.http).await;
+                if should_refresh_remote_config(
+                    sync_state.mock_active.load(Ordering::Relaxed),
+                    remote_enabled,
+                ) {
+                    let _ = sync_state
+                        .remote_config
+                        .refresh_if_stale(&sync_state.http, || {
+                            should_refresh_remote_config(
+                                sync_state.mock_active.load(Ordering::Relaxed),
+                                remote_enabled,
+                            )
+                        })
+                        .await;
                 }
             });
 
@@ -348,4 +363,16 @@ pub fn run() {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_refresh_remote_config;
+
+    #[test]
+    fn mock_mode_disables_remote_config_refresh() {
+        assert!(!should_refresh_remote_config(true, true));
+        assert!(should_refresh_remote_config(false, true));
+        assert!(!should_refresh_remote_config(false, false));
+    }
 }

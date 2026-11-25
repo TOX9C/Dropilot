@@ -157,6 +157,11 @@ impl Default for RemoteConfigStatus {
     }
 }
 
+pub fn offline_refresh_status(mut status: RemoteConfigStatus) -> RemoteConfigStatus {
+    status.last_error = Some("Remote config sync is disabled in offline mock mode.".to_string());
+    status
+}
+
 static ACTIVE_CONFIG: OnceLock<StdRwLock<RemoteConfig>> = OnceLock::new();
 
 fn active_lock() -> &'static StdRwLock<RemoteConfig> {
@@ -248,14 +253,18 @@ impl RemoteConfigManager {
         let _ = fs::remove_file(cache_path());
     }
 
-    pub async fn refresh_if_stale(&self, http: &AllowlistedClient) -> RemoteConfigStatus {
+    pub async fn refresh_if_stale(
+        &self,
+        http: &AllowlistedClient,
+        should_refresh: impl FnOnce() -> bool,
+    ) -> RemoteConfigStatus {
         let is_fresh = {
             let st = self.status.read().await;
             st.fetched_at
                 .map(|t| Utc::now() - t < ChronoDuration::seconds(CACHE_TTL_SECS))
                 .unwrap_or(false)
         };
-        if is_fresh {
+        if is_fresh || !should_refresh() {
             return self.status().await;
         }
         self.refresh_now(http).await
@@ -393,5 +402,43 @@ mod tests {
             ..Default::default()
         };
         assert!(cfg.sanitize_and_validate().is_err());
+    }
+
+    #[tokio::test]
+    async fn stale_refresh_honors_the_final_offline_guard() {
+        let manager = RemoteConfigManager {
+            config: RwLock::new(RemoteConfig::default()),
+            status: RwLock::new(RemoteConfigStatus::default()),
+        };
+        let http = AllowlistedClient::new().expect("HTTP client");
+        let checked = std::cell::Cell::new(false);
+        let status = manager
+            .refresh_if_stale(&http, || {
+                checked.set(true);
+                false
+            })
+            .await;
+        assert!(checked.get());
+        assert_eq!(status.source, RemoteConfigSource::Bundled);
+        assert!(status.last_error.is_none());
+    }
+
+    #[test]
+    fn offline_refresh_preserves_cached_status_and_reports_the_skip() {
+        let fetched_at = Utc::now();
+        let cached = RemoteConfigStatus {
+            source: RemoteConfigSource::Cache,
+            fetched_at: Some(fetched_at),
+            overridden_hashes: 7,
+            ..Default::default()
+        };
+        let skipped = offline_refresh_status(cached);
+        assert_eq!(skipped.source, RemoteConfigSource::Cache);
+        assert_eq!(skipped.fetched_at, Some(fetched_at));
+        assert_eq!(skipped.overridden_hashes, 7);
+        assert_eq!(
+            skipped.last_error.as_deref(),
+            Some("Remote config sync is disabled in offline mock mode.")
+        );
     }
 }

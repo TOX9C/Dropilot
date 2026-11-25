@@ -286,12 +286,24 @@ impl EpicTracker {
     }
 }
 
+pub fn should_refresh_epic(mock_active: bool) -> bool {
+    !mock_active
+}
+
+pub fn offline_refresh_snapshot(mut snapshot: EpicFeedSnapshot) -> EpicFeedSnapshot {
+    snapshot.last_error = Some("Epic refresh is disabled in offline mock mode.".to_string());
+    snapshot
+}
+
 pub fn spawn_epic_poll_loop(app: AppHandle, state: Arc<AppState>) {
     tauri::async_runtime::spawn(async move {
         // Brief startup delay so Twitch/Kick miners initialize first.
         tokio::time::sleep(Duration::from_secs(4)).await;
         loop {
-            if state.epic.is_stale().await {
+            if should_refresh_epic(state.mock_active.load(std::sync::atomic::Ordering::Relaxed))
+                && state.epic.is_stale().await
+                && should_refresh_epic(state.mock_active.load(std::sync::atomic::Ordering::Relaxed))
+            {
                 let (_snap, newly_live) = state.epic.refresh_now(&state.http).await;
                 notify_newly_live_games(&app, &state, &newly_live).await;
             }
@@ -697,6 +709,29 @@ fn save_cache_to_path(path: &Path, cache: &EpicDiskCache) -> Result<(), String> 
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn mock_mode_disables_epic_network_refreshes() {
+        assert!(!should_refresh_epic(true));
+        assert!(should_refresh_epic(false));
+    }
+
+    #[test]
+    fn offline_refresh_preserves_cached_feed_and_reports_the_skip() {
+        let fetched_at = Utc::now();
+        let cached = EpicFeedSnapshot {
+            fetched_at: Some(fetched_at),
+            source: "cache".to_string(),
+            ..Default::default()
+        };
+        let skipped = offline_refresh_snapshot(cached);
+        assert_eq!(skipped.fetched_at, Some(fetched_at));
+        assert_eq!(skipped.source, "cache");
+        assert_eq!(
+            skipped.last_error.as_deref(),
+            Some("Epic refresh is disabled in offline mock mode.")
+        );
+    }
 
     #[test]
     fn parses_active_and_upcoming_free_games_and_skips_paid_sales() {

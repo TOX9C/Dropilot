@@ -176,6 +176,10 @@ export function clearLogsView(): void {
 const UPDATE_CHECK_INTERVAL_MS = 4 * 60 * 60 * 1000;
 
 export async function checkForAppUpdate(silent = false): Promise<UpdateStatus | null> {
+  if (get(appSnapshot)?.mockActive) {
+    if (!silent) notifyUi('Update checks are disabled in offline mock mode');
+    return null;
+  }
   checkingForUpdate.set(true);
   try {
     const status = await api.checkUpdate();
@@ -206,6 +210,10 @@ export async function checkForAppUpdate(silent = false): Promise<UpdateStatus | 
 }
 
 export async function installAppUpdate(): Promise<void> {
+  if (get(appSnapshot)?.mockActive) {
+    notifyUi('Updates are disabled in offline mock mode', 'error');
+    return;
+  }
   if (get(installingUpdate)) return;
   installingUpdate.set(true);
   updateProgress.set({
@@ -533,13 +541,17 @@ export async function initializeAppStores(): Promise<() => void> {
     },
   );
 
-  if (settings.updateCheck) {
+  if (!snap.mockActive && settings.updateCheck) {
     void checkForAppUpdate(true);
   }
 
   const updateTimer = setInterval(() => {
     const currentSettings = get(appSettings);
-    if (currentSettings?.updateCheck && !get(installingUpdate)) {
+    if (
+      !get(appSnapshot)?.mockActive &&
+      currentSettings?.updateCheck &&
+      !get(installingUpdate)
+    ) {
       void checkForAppUpdate(true);
     }
   }, UPDATE_CHECK_INTERVAL_MS);

@@ -47,17 +47,41 @@ pub struct UpdateProgressEvent {
     pub percent: Option<u8>,
 }
 
+pub fn updates_allowed(mock_active: bool) -> bool {
+    !mock_active
+}
+
+pub fn offline_update_status() -> UpdateStatus {
+    let current_version = env!("CARGO_PKG_VERSION").to_string();
+    UpdateStatus {
+        available: false,
+        latest_version: current_version.clone(),
+        current_version,
+        release_url: RELEASES_PAGE_URL.to_string(),
+        published_at: None,
+        notes: None,
+        signed_update_ready: false,
+    }
+}
+
 /// Checks for a signed Tauri update manifest (`latest.json`) first, falling back to
 /// the GitHub Releases API if no signed manifest is published yet.
 pub async fn check_signed_update(
     app: &AppHandle,
-    http: &AllowlistedClient,
+    state: &AppState,
 ) -> Result<UpdateStatus, AppError> {
+    if !updates_allowed(state.mock_active.load(Ordering::Relaxed)) {
+        return Ok(offline_update_status());
+    }
     let current_str = env!("CARGO_PKG_VERSION").to_string();
 
     let mut signed_err: Option<String> = None;
     if let Ok(updater) = app.updater() {
-        match updater.check().await {
+        let signed_check = updater.check().await;
+        if !updates_allowed(state.mock_active.load(Ordering::Relaxed)) {
+            return Ok(offline_update_status());
+        }
+        match signed_check {
             Ok(Some(update)) => {
                 let published_at = update.date.map(|d| d.to_string());
                 info!(
@@ -93,7 +117,10 @@ pub async fn check_signed_update(
         }
     }
 
-    match check_for_updates(http).await {
+    if !updates_allowed(state.mock_active.load(Ordering::Relaxed)) {
+        return Ok(offline_update_status());
+    }
+    match check_for_updates(&state.http).await {
         Ok(status) => Ok(status),
         Err(AppError::Network(msg)) if msg.contains("HTTP 404") => Ok(UpdateStatus {
             available: false,
@@ -115,19 +142,22 @@ pub async fn check_signed_update(
 
 /// Downloads, cryptographically verifies, and installs the latest signed update,
 /// emitting progress events to the UI and cleanly restarting Dropilot when finished.
-pub async fn install_signed_update(
-    app: &AppHandle,
-    state: &Arc<AppState>,
-) -> Result<(), String> {
+pub async fn install_signed_update(app: &AppHandle, state: &Arc<AppState>) -> Result<(), String> {
+    if !updates_allowed(state.mock_active.load(Ordering::Relaxed)) {
+        return Err("Updates are disabled in offline mock mode.".to_string());
+    }
     let updater = app
         .updater()
         .map_err(|e| format!("Updater unavailable: {e}"))?;
 
-    let Some(update) = updater
+    let update = updater
         .check()
         .await
-        .map_err(|e| format!("Failed checking signed update manifest: {e}"))?
-    else {
+        .map_err(|e| format!("Failed checking signed update manifest: {e}"))?;
+    if !updates_allowed(state.mock_active.load(Ordering::Relaxed)) {
+        return Err("Updates are disabled in offline mock mode.".to_string());
+    }
+    let Some(update) = update else {
         return Err("Dropilot is already on the latest version.".to_string());
     };
 
@@ -220,4 +250,24 @@ pub async fn check_for_updates(http: &AllowlistedClient) -> Result<UpdateStatus,
         notes: release.body.filter(|b| !b.trim().is_empty()),
         signed_update_ready: false,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{offline_update_status, updates_allowed};
+
+    #[test]
+    fn mock_mode_disables_update_network_requests() {
+        assert!(!updates_allowed(true));
+        assert!(updates_allowed(false));
+    }
+
+    #[test]
+    fn offline_update_status_cannot_trigger_an_install() {
+        let status = offline_update_status();
+        assert!(!status.available);
+        assert!(!status.signed_update_ready);
+        assert_eq!(status.current_version, env!("CARGO_PKG_VERSION"));
+        assert_eq!(status.latest_version, status.current_version);
+    }
 }

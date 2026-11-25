@@ -56,7 +56,7 @@ pub struct AppState {
     pub twitch_bridge_lock: Arc<Mutex<()>>,
     pub allow_exit: AtomicBool,
     pub close_to_tray: AtomicBool,
-    pub mock_active: AtomicBool,
+    pub mock_active: Arc<AtomicBool>,
 }
 
 impl AppState {
@@ -99,7 +99,7 @@ impl AppState {
             twitch_bridge_lock: Arc::new(Mutex::new(())),
             allow_exit: AtomicBool::new(false),
             close_to_tray: AtomicBool::new(close_to_tray),
-            mock_active: AtomicBool::new(mock_active),
+            mock_active: Arc::new(AtomicBool::new(mock_active)),
         }
     }
 

@@ -39,6 +39,7 @@ use crate::platforms::{
 };
 use crate::secrets::SecretStore;
 use crate::settings::{is_default_profile, PlatformSettings, PriorityItem};
+use crate::should_refresh_remote_config;
 use crate::state::{AppState, MinerControl};
 use crate::tray::update_tray_from_state;
 use crate::webhooks::WebhookEvent;
@@ -1763,11 +1764,17 @@ async fn handle_platform_error(
         }
         AppError::PlatformChanged(detail) => {
             error!(platform = platform_id.as_str(), detail = %detail, "Platform endpoint/schema changed");
-            if state.settings.read().await.remote_config_enabled {
+            if should_refresh_remote_config(
+                state.mock_active.load(Ordering::Relaxed),
+                state.settings.read().await.remote_config_enabled,
+            ) {
+                let mock_active = state.mock_active.clone();
                 let rc = state.remote_config.clone();
                 let http = state.http.clone();
                 tauri::async_runtime::spawn(async move {
-                    let _ = rc.refresh_now(&http).await;
+                    if should_refresh_remote_config(mock_active.load(Ordering::Relaxed), true) {
+                        let _ = rc.refresh_now(&http).await;
+                    }
                 });
             }
             ctx.watching = None;

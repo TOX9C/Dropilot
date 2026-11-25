@@ -24,18 +24,22 @@ use crate::net::allowlist::{validate_url, AllowlistKind};
 use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::parse_campaign_details;
 use crate::platforms::{AppSnapshot, Campaign, PlatformId, PlatformSnapshot};
-use crate::remote_config::RemoteConfigStatus;
+use crate::remote_config::{offline_refresh_status, RemoteConfigStatus};
 use crate::rewards::epic::{
-    launcher_url_for_game, notify_newly_live_games, EpicFeedSnapshot,
-    EPIC_FALLBACK_FREE_GAMES_URL, EPIC_LAUNCHER_FREE_GAMES_URL,
+    launcher_url_for_game, notify_newly_live_games, offline_refresh_snapshot, should_refresh_epic,
+    EpicFeedSnapshot, EPIC_FALLBACK_FREE_GAMES_URL, EPIC_LAUNCHER_FREE_GAMES_URL,
 };
 use crate::secrets::SecretStore;
 use crate::settings::{
     appdata_dir, is_default_profile, AccountProfile, PlatformSettings, PriorityItem, Settings,
     CURRENT_DISCLAIMER_VERSION,
 };
+use crate::should_refresh_remote_config;
 use crate::state::{AppState, MinerControl};
-use crate::update_check::{check_signed_update, install_signed_update, UpdateStatus};
+use crate::update_check::{
+    check_signed_update, install_signed_update, offline_update_status, updates_allowed,
+    UpdateStatus,
+};
 use crate::webhooks::{WebhookChannel, WebhookDispatcher, WebhookSecretsStatus};
 use crate::windows::{apply_window_theme, profile_webview_data_dir};
 
@@ -759,11 +763,21 @@ pub async fn update_settings(
     if new_settings.remote_config_enabled != prev_remote_cfg {
         if !new_settings.remote_config_enabled {
             state.remote_config.reset_to_bundled().await;
-        } else {
-            let rc = state.remote_config.clone();
-            let http = state.http.clone();
+        } else if should_refresh_remote_config(
+            state.mock_active.load(Ordering::Relaxed),
+            new_settings.remote_config_enabled,
+        ) {
+            let refresh_state = state.inner().clone();
             tauri::async_runtime::spawn(async move {
-                let _ = rc.refresh_now(&http).await;
+                if should_refresh_remote_config(
+                    refresh_state.mock_active.load(Ordering::Relaxed),
+                    true,
+                ) {
+                    let _ = refresh_state
+                        .remote_config
+                        .refresh_now(&refresh_state.http)
+                        .await;
+                }
             });
         }
     }
@@ -979,16 +993,19 @@ pub async fn check_update(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<UpdateStatus, String> {
-    check_signed_update(&app, &state.http)
+    if !updates_allowed(state.mock_active.load(Ordering::Relaxed)) {
+        return Ok(offline_update_status());
+    }
+    check_signed_update(&app, state.inner())
         .await
         .map_err(|e| e.user_message())
 }
 
 #[tauri::command]
-pub async fn install_update(
-    app: AppHandle,
-    state: State<'_, Arc<AppState>>,
-) -> Result<(), String> {
+pub async fn install_update(app: AppHandle, state: State<'_, Arc<AppState>>) -> Result<(), String> {
+    if !updates_allowed(state.mock_active.load(Ordering::Relaxed)) {
+        return Err("Updates are disabled in offline mock mode.".to_string());
+    }
     install_signed_update(&app, state.inner()).await
 }
 
@@ -1039,6 +1056,9 @@ pub async fn refresh_remote_config(
     if !enabled {
         state.remote_config.reset_to_bundled().await;
         return Ok(state.remote_config.status().await);
+    }
+    if state.mock_active.load(Ordering::Relaxed) {
+        return Ok(offline_refresh_status(state.remote_config.status().await));
     }
     Ok(state.remote_config.refresh_now(&state.http).await)
 }
@@ -1109,7 +1129,10 @@ pub async fn get_epic_free_games(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<EpicFeedSnapshot, String> {
-    if state.epic.is_stale().await {
+    if should_refresh_epic(state.mock_active.load(Ordering::Relaxed))
+        && state.epic.is_stale().await
+        && should_refresh_epic(state.mock_active.load(Ordering::Relaxed))
+    {
         let (snap, newly_live) = state.epic.refresh_now(&state.http).await;
         notify_newly_live_games(&app, state.inner(), &newly_live).await;
         return Ok(snap);
@@ -1122,6 +1145,9 @@ pub async fn refresh_epic_free_games(
     app: AppHandle,
     state: State<'_, Arc<AppState>>,
 ) -> Result<EpicFeedSnapshot, String> {
+    if !should_refresh_epic(state.mock_active.load(Ordering::Relaxed)) {
+        return Ok(offline_refresh_snapshot(state.epic.snapshot().await));
+    }
     let (snap, newly_live) = state.epic.refresh_now(&state.http).await;
     notify_newly_live_games(&app, state.inner(), &newly_live).await;
     Ok(snap)
