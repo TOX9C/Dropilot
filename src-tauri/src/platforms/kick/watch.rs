@@ -27,11 +27,19 @@ use crate::state::BridgeWaiters;
 
 struct ActiveKickWsTask {
     channel_id: String,
+    stream_id: Option<String>,
     alive: Arc<AtomicBool>,
     handle: JoinHandle<()>,
 }
 
 impl ActiveKickWsTask {
+    fn is_reusable(&self, channel: &Channel) -> bool {
+        self.channel_id == channel.id
+            && self.stream_id == channel.stream_id
+            && self.alive.load(Ordering::Relaxed)
+            && !self.handle.is_finished()
+    }
+
     fn stop(self) {
         self.alive.store(false, Ordering::Relaxed);
         self.handle.abort();
@@ -110,12 +118,8 @@ impl KickWatchSession {
         }
 
         let mut guard = self.ws_task.lock().await;
-        let needs_reconnect = match *guard {
-            Some(ref active) => {
-                active.channel_id != channel.id
-                    || !active.alive.load(Ordering::Relaxed)
-                    || active.handle.is_finished()
-            }
+        let needs_reconnect = match &*guard {
+            Some(active) => !active.is_reusable(channel),
             None => true,
         };
 
@@ -251,6 +255,7 @@ impl KickWatchSession {
 
         *guard = Some(ActiveKickWsTask {
             channel_id: channel.id.clone(),
+            stream_id: channel.stream_id.clone(),
             alive,
             handle,
         });
@@ -290,4 +295,66 @@ async fn fetch_viewer_token(
         .ok_or_else(|| {
             AppError::PlatformChanged("Missing /data/token in Kick viewer token response".to_string())
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn channel(id: &str, stream_id: Option<&str>) -> Channel {
+        Channel {
+            id: id.to_string(),
+            login: "streamer".to_string(),
+            display_name: "Streamer".to_string(),
+            avatar_url: None,
+            game_name: "Rust".to_string(),
+            viewer_count: 100,
+            is_live: true,
+            drops_enabled: true,
+            is_followed: false,
+            stream_id: stream_id.map(str::to_string),
+        }
+    }
+
+    fn active_task(channel: &Channel) -> ActiveKickWsTask {
+        ActiveKickWsTask {
+            channel_id: channel.id.clone(),
+            stream_id: channel.stream_id.clone(),
+            alive: Arc::new(AtomicBool::new(true)),
+            handle: tokio::spawn(std::future::pending()),
+        }
+    }
+
+    #[tokio::test]
+    async fn ws_reuse_requires_same_healthy_channel_and_livestream() {
+        let current = channel("42", Some("livestream-a"));
+        let active = active_task(&current);
+        assert!(active.is_reusable(&current));
+
+        let new_livestream = channel("42", Some("livestream-b"));
+        assert!(!active.is_reusable(&new_livestream));
+
+        let other_channel = channel("43", Some("livestream-a"));
+        assert!(!active.is_reusable(&other_channel));
+
+        active.alive.store(false, Ordering::Relaxed);
+        assert!(!active.is_reusable(&current));
+        active.alive.store(true, Ordering::Relaxed);
+        active.handle.abort();
+        tokio::task::yield_now().await;
+        assert!(!active.is_reusable(&current));
+    }
+
+    #[tokio::test]
+    async fn close_stops_and_removes_active_ws_task() {
+        let session = KickWatchSession::new();
+        let active = active_task(&channel("42", Some("livestream-a")));
+        let alive = active.alive.clone();
+        *session.ws_task.lock().await = Some(active);
+
+        session.close().await;
+
+        assert!(session.ws_task.lock().await.is_none());
+        assert!(!alive.load(Ordering::Relaxed));
+    }
 }
