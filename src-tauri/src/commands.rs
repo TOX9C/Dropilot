@@ -16,7 +16,7 @@ use crate::autostart::sync_autostart;
 use crate::history::{history_path, HistoryExportResult, HistoryStats, HistoryStore};
 use crate::logging::{log_dir, LogEntry, LogLevel};
 use crate::miner::engine::{build_platform_backend, spawn_miner_supervisor};
-use crate::net::allowlist::{validate_url, AllowlistKind};
+use crate::net::allowlist::{validate_campaign_link, validate_url, AllowlistKind};
 use crate::platforms::twitch::apply_campaign_details;
 use crate::platforms::twitch::models::parse_campaign_details;
 use crate::platforms::{AppSnapshot, Campaign, PlatformId, PlatformSnapshot};
@@ -884,7 +884,11 @@ pub async fn open_url(state: State<'_, Arc<AppState>>, url: String) -> Result<()
         false
     };
 
-    let allowlist_ok = campaign_link_ok || validate_url(&parsed, AllowlistKind::ExternalOpen).is_ok();
+    let allowlist_ok = if campaign_link_ok {
+        validate_campaign_link(&parsed).is_ok()
+    } else {
+        validate_url(&parsed, AllowlistKind::ExternalOpen).is_ok()
+    };
     if !allowlist_ok {
         return Err(format!(
             "Refused to open unverified external URL host: {}",

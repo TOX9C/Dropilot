@@ -642,6 +642,71 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn campaign_links_reject_unsafe_urls_without_blocking_third_party_hosts() {
+        use crate::net::allowlist::validate_campaign_link;
+        use url::Url;
+
+        let now = Utc::now();
+        let future = (now + Duration::hours(10)).to_rfc3339();
+        let past = (now - Duration::hours(2)).to_rfc3339();
+        let payload = json!({
+            "data": {
+                "currentUser": {
+                    "dropCampaigns": [
+                        {
+                            "id": "safe",
+                            "name": "Safe",
+                            "status": "ACTIVE",
+                            "startAt": past,
+                            "endAt": future,
+                            "accountLinkURL": "https://twitch.facepunch.com",
+                            "game": { "id": "1", "displayName": "Rust" }
+                        },
+                        {
+                            "id": "ip",
+                            "name": "IP",
+                            "status": "ACTIVE",
+                            "startAt": past,
+                            "endAt": future,
+                            "accountLinkURL": "https://127.0.0.1/account/link",
+                            "game": { "id": "1", "displayName": "Rust" }
+                        },
+                        {
+                            "id": "userinfo",
+                            "name": "Userinfo",
+                            "status": "ACTIVE",
+                            "startAt": past,
+                            "endAt": future,
+                            "accountLinkURL": "https://user:pass@twitch.facepunch.com/account/link",
+                            "game": { "id": "1", "displayName": "Rust" }
+                        },
+                        {
+                            "id": "port",
+                            "name": "Port",
+                            "status": "ACTIVE",
+                            "startAt": past,
+                            "endAt": future,
+                            "accountLinkURL": "https://twitch.facepunch.com:8443/account/link",
+                            "game": { "id": "1", "displayName": "Rust" }
+                        }
+                    ]
+                }
+            }
+        });
+
+        let campaigns = parse_campaigns_dashboard(&payload).expect("campaigns");
+        let results = campaigns
+            .iter()
+            .map(|campaign| {
+                let url = Url::parse(campaign.link_url.as_deref().expect("accountLinkURL"))
+                    .expect("valid URL");
+                validate_campaign_link(&url).is_ok()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(results, vec![true, false, false, false]);
+    }
+
+    #[test]
     fn handles_null_drop_campaigns_in_progress() {
         let payload = json!({
             "data": {

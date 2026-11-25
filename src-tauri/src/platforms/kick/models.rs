@@ -1384,6 +1384,71 @@ mod tests {
     use serde_json::json;
 
     #[test]
+    fn campaign_links_reject_unsafe_urls_without_blocking_third_party_hosts() {
+        use crate::net::allowlist::validate_campaign_link;
+        use url::Url;
+
+        let now = Utc::now();
+        let future = (now + Duration::hours(24)).to_rfc3339();
+        let past = (now - Duration::hours(2)).to_rfc3339();
+        let payload = json!({
+            "data": [
+                {
+                    "id": "safe",
+                    "name": "Safe",
+                    "status": "active",
+                    "starts_at": past,
+                    "ends_at": future,
+                    "connect_url": "https://rotk.app/connections/kick",
+                    "category": { "id": 1, "name": "Game", "slug": "game" },
+                    "rewards": []
+                },
+                {
+                    "id": "ip",
+                    "name": "IP",
+                    "status": "active",
+                    "starts_at": past,
+                    "ends_at": future,
+                    "connect_url": "https://127.0.0.1/account/link",
+                    "category": { "id": 1, "name": "Game", "slug": "game" },
+                    "rewards": []
+                },
+                {
+                    "id": "userinfo",
+                    "name": "Userinfo",
+                    "status": "active",
+                    "starts_at": past,
+                    "ends_at": future,
+                    "connect_url": "https://user:pass@rotk.app/connections/kick",
+                    "category": { "id": 1, "name": "Game", "slug": "game" },
+                    "rewards": []
+                },
+                {
+                    "id": "port",
+                    "name": "Port",
+                    "status": "active",
+                    "starts_at": past,
+                    "ends_at": future,
+                    "connect_url": "https://rotk.app:8443/connections/kick",
+                    "category": { "id": 1, "name": "Game", "slug": "game" },
+                    "rewards": []
+                }
+            ]
+        });
+
+        let campaigns = parse_campaigns(&payload).expect("campaigns");
+        let results = campaigns
+            .iter()
+            .map(|campaign| {
+                let url = Url::parse(campaign.link_url.as_deref().expect("connect_url"))
+                    .expect("valid URL");
+                validate_campaign_link(&url).is_ok()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(results, vec![true, false, false, false]);
+    }
+
+    #[test]
     fn handles_empty_connect_url_and_normalizes_kick_reward_images() {
         let now = Utc::now();
         let future = (now + Duration::hours(24)).to_rfc3339();

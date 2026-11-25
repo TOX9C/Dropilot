@@ -200,6 +200,16 @@ fn is_valid_epic_launcher_url(url: &Url) -> bool {
     }
 }
 
+pub fn validate_campaign_link(url: &Url) -> Result<(), AppError> {
+    if url.scheme() != "https" {
+        return Err(AppError::HostNotAllowed(format!(
+            "Disallowed URL scheme: {}",
+            url.scheme()
+        )));
+    }
+    is_valid_host_syntax(url).map(|_| ())
+}
+
 pub fn validate_url(url: &Url, kind: AllowlistKind) -> Result<(), AppError> {
     let scheme = url.scheme();
     if kind == AllowlistKind::ExternalOpen && scheme == "com.epicgames.launcher" {
