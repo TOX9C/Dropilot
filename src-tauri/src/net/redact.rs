@@ -28,19 +28,48 @@ pub fn redact(input: &str) -> String {
         out = scrub_after_key(&out, key);
     }
 
-    out = scrub_url_segment(&out, "/api/webhooks/");
+    out = scrub_discord_webhooks(&out);
 
     out
 }
 
-fn scrub_url_segment(input: &str, marker_lower: &str) -> String {
+fn scrub_discord_webhooks(input: &str) -> String {
+    const API: &str = "/api/";
+    const WEBHOOKS: &str = "webhooks/";
+
     let lower = input.to_ascii_lowercase();
     let mut result = String::with_capacity(input.len());
     let mut cursor = 0;
 
-    while let Some(rel_idx) = lower[cursor..].find(marker_lower) {
-        let match_start = cursor + rel_idx;
-        let val_start = match_start + marker_lower.len();
+    while let Some(rel_idx) = lower[cursor..].find(API) {
+        let api_start = cursor + rel_idx;
+        let after_api = api_start + API.len();
+        let webhook_start = if lower[after_api..].starts_with(WEBHOOKS) {
+            after_api
+        } else {
+            let bytes = lower.as_bytes();
+            let mut idx = after_api;
+            if bytes.get(idx) != Some(&b'v') {
+                cursor = after_api;
+                continue;
+            }
+            idx += 1;
+            let digits_start = idx;
+            while bytes.get(idx).is_some_and(|b| b.is_ascii_digit()) {
+                idx += 1;
+            }
+            if idx == digits_start || bytes.get(idx) != Some(&b'/') {
+                cursor = after_api;
+                continue;
+            }
+            idx + 1
+        };
+
+        let val_start = webhook_start + WEBHOOKS.len();
+        if !lower[webhook_start..].starts_with(WEBHOOKS) {
+            cursor = after_api;
+            continue;
+        }
         result.push_str(&input[cursor..val_start]);
         result.push_str("[REDACTED]");
 
@@ -156,9 +185,14 @@ mod tests {
 
     #[test]
     fn redacts_discord_webhooks() {
-        let discord = "POST https://discord.com/api/webhooks/123456/super_secret_hook failed";
-        let scrubbed_d = redact(discord);
-        assert!(!scrubbed_d.contains("super_secret_hook"));
-        assert!(scrubbed_d.contains("/api/webhooks/[REDACTED]"));
+        for path in [
+            "/api/webhooks/123456/super_secret_hook",
+            "/api/v8/webhooks/123456/super_secret_hook",
+            "/api/v10/webhooks/123456/super_secret_hook",
+        ] {
+            let scrubbed = redact(&format!("POST https://discord.com{path} failed"));
+            assert!(!scrubbed.contains("super_secret_hook"), "{scrubbed}");
+            assert!(scrubbed.contains("/webhooks/[REDACTED]"), "{scrubbed}");
+        }
     }
 }

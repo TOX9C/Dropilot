@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::fs;
+use std::io::{self, Write};
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -187,6 +188,25 @@ fn enforce_log_size_cap(dir: &Path) {
     }
 }
 
+struct RedactingWriter<W>(W);
+
+impl<W: Write> Write for RedactingWriter<W> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        self.write_all(buf)?;
+        Ok(buf.len())
+    }
+
+    fn write_all(&mut self, buf: &[u8]) -> io::Result<()> {
+        // The fmt layer emits one complete UTF-8 event per write_all.
+        let clean = redact(&String::from_utf8_lossy(buf));
+        self.0.write_all(clean.as_bytes())
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.0.flush()
+    }
+}
+
 struct MemoryLayer {
     buffer: LogBuffer,
 }
@@ -271,18 +291,25 @@ impl<S: Subscriber> Layer<S> for MemoryLayer {
 }
 
 pub fn init_logging(initial_level: LogLevelSetting, buffer: LogBuffer) -> Result<LogHandle, String> {
-    let dir = log_dir();
-    fs::create_dir_all(&dir).map_err(|e| format!("Failed creating log directory: {e}"))?;
-    enforce_log_size_cap(&dir);
+    init_logging_at(&log_dir(), initial_level, buffer)
+}
+
+fn init_logging_at(
+    dir: &Path,
+    initial_level: LogLevelSetting,
+    buffer: LogBuffer,
+) -> Result<LogHandle, String> {
+    fs::create_dir_all(dir).map_err(|e| format!("Failed creating log directory: {e}"))?;
+    enforce_log_size_cap(dir);
 
     let file_appender = RollingFileAppender::builder()
         .rotation(Rotation::DAILY)
         .filename_prefix("dropilot.log")
         .max_log_files(MAX_LOG_FILES)
-        .build(&dir)
+        .build(dir)
         .map_err(|e| format!("Failed initializing rolling log appender: {e}"))?;
 
-    let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
+    let (non_blocking, guard) = tracing_appender::non_blocking(RedactingWriter(file_appender));
 
     let directive = env_filter_directive(initial_level);
     let filter = EnvFilter::try_new(directive).unwrap_or_else(|_| EnvFilter::new("info"));
@@ -310,7 +337,10 @@ pub fn init_logging(initial_level: LogLevelSetting, buffer: LogBuffer) -> Result
 
 #[cfg(test)]
 mod tests {
+    use std::time::{SystemTime, UNIX_EPOCH};
+
     use super::*;
+    use crate::webhooks::WebhookDispatcher;
 
     #[test]
     fn skips_tracing_log_metadata_fields_and_silences_updater_noise() {
@@ -323,5 +353,65 @@ mod tests {
 
         assert!(env_filter_directive(LogLevelSetting::Info).contains("tauri_plugin_updater=off"));
         assert!(env_filter_directive(LogLevelSetting::Debug).contains("tauri_plugin_updater=off"));
+    }
+
+    #[test]
+    fn webhook_tokens_and_auth_headers_stay_out_of_all_log_sinks() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .expect("clock after epoch")
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "dropilot-log-redaction-{}-{unique}",
+            std::process::id()
+        ));
+        let buffer = LogBuffer::new();
+        let handle = init_logging_at(&dir, LogLevelSetting::Info, buffer.clone())
+            .expect("initialize logging");
+
+        assert!(WebhookDispatcher::save_discord_url(
+            "https://discord.com/api/v8/webhooks/123456789012345678/SECRETv8tok"
+        )
+        .is_err());
+        assert!(WebhookDispatcher::save_discord_url(
+            "https://discord.com/api/webhooks/notdigits/SECRETndtok"
+        )
+        .is_err());
+        tracing::warn!(
+            authorization = "Bearer SECRETheader",
+            "header redaction check"
+        );
+
+        drop(handle);
+
+        let mut file_logs = String::new();
+        for entry in fs::read_dir(&dir).expect("read temporary log directory") {
+            let path = entry.expect("log directory entry").path();
+            if path
+                .file_name()
+                .is_some_and(|name| name.to_string_lossy().starts_with("dropilot.log"))
+            {
+                file_logs.push_str(&fs::read_to_string(path).expect("read log file"));
+            }
+        }
+        let memory_logs = buffer
+            .list(None, None)
+            .into_iter()
+            .map(|entry| entry.message)
+            .collect::<Vec<_>>()
+            .join("\n");
+
+        fs::remove_dir_all(&dir).expect("remove temporary log directory");
+
+        for secret in ["SECRETv8tok", "SECRETndtok", "SECRETheader"] {
+            assert!(
+                !file_logs.contains(secret),
+                "file log leaked {secret}:\n{file_logs}"
+            );
+            assert!(
+                !memory_logs.contains(secret),
+                "memory log leaked {secret}:\n{memory_logs}"
+            );
+        }
     }
 }

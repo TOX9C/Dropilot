@@ -268,7 +268,11 @@ pub fn validate_url(url: &Url, kind: AllowlistKind) -> Result<(), AppError> {
     };
 
     if !allowed {
-        warn!(host = %host, path = %url.path(), kind = ?kind, "Blocked non-allowlisted outbound host");
+        if kind == AllowlistKind::Webhook {
+            warn!(host = %host, kind = ?kind, "Blocked non-allowlisted outbound host");
+        } else {
+            warn!(host = %host, path = %url.path(), kind = ?kind, "Blocked non-allowlisted outbound host");
+        }
         return Err(AppError::HostNotAllowed(host));
     }
 
