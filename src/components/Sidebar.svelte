@@ -166,7 +166,6 @@
       <span class="nav-ico" aria-hidden="true"><LayoutDashboard size={14} /></span>
       {#if !effectiveCollapsed}
         <span class="nav-label">Dashboard</span>
-        <span class="kbd-hint">^1</span>
       {/if}
     </button>
 
@@ -183,7 +182,6 @@
         {#if totalActiveCount > 0}
           <span class="nav-count tabular">{totalActiveCount}</span>
         {/if}
-        <span class="kbd-hint">^2</span>
       {/if}
     </button>
 
@@ -197,7 +195,6 @@
       <span class="nav-ico" aria-hidden="true"><BarChart3 size={14} /></span>
       {#if !effectiveCollapsed}
         <span class="nav-label">History</span>
-        <span class="kbd-hint">^3</span>
       {/if}
     </button>
 
@@ -220,7 +217,6 @@
         {#if twActiveCount > 0}
           <span class="nav-count tabular">{twActiveCount}</span>
         {/if}
-        <span class="kbd-hint">^4</span>
       {/if}
     </button>
 
@@ -237,7 +233,6 @@
         {#if kkActiveCount > 0}
           <span class="nav-count tabular">{kkActiveCount}</span>
         {/if}
-        <span class="kbd-hint">^5</span>
       {/if}
     </button>
 
@@ -260,7 +255,6 @@
         {#if epicUnclaimedCount > 0}
           <span class="nav-count count-warn tabular">{epicUnclaimedCount}</span>
         {/if}
-        <span class="kbd-hint">^6</span>
       {/if}
     </button>
 
@@ -283,7 +277,6 @@
         {#if $unreadAlertCount > 0}
           <span class="nav-count count-warn tabular">{$unreadAlertCount}</span>
         {/if}
-        <span class="kbd-hint">^7</span>
       {/if}
     </button>
 
@@ -297,7 +290,6 @@
       <span class="nav-ico" aria-hidden="true"><SettingsIcon size={14} /></span>
       {#if !effectiveCollapsed}
         <span class="nav-label">Settings</span>
-        <span class="kbd-hint">^8</span>
       {/if}
     </button>
   </nav>
@@ -525,16 +517,6 @@
   .count-warn {
     background: var(--warning-tint);
     color: var(--warning-text);
-  }
-
-  .kbd-hint {
-    min-width: 18px;
-    text-align: right;
-    flex-shrink: 0;
-    opacity: 0.65;
-    font-family: var(--font-mono);
-    font-size: 10px;
-    color: var(--text-faint);
   }
 
   .footer {

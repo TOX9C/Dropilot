@@ -298,8 +298,16 @@ impl Settings {
             self.mock_mode = false;
         }
         if let Some(ref mut bounds) = self.window_bounds {
-            bounds.width = bounds.width.clamp(600, 3840);
-            bounds.height = bounds.height.clamp(480, 2160);
+            if bounds.x <= -10000
+                || bounds.y <= -10000
+                || bounds.width < 400
+                || bounds.height < 300
+            {
+                self.window_bounds = None;
+            } else {
+                bounds.width = bounds.width.clamp(600, 3840);
+                bounds.height = bounds.height.clamp(480, 2160);
+            }
         }
 
         // Ensure at least one Twitch profile and one Kick profile always exist.
@@ -884,5 +892,36 @@ mod tests {
         settings.sanitize();
         assert_eq!(settings.profiles_for(PlatformId::Kick).len(), 1);
         assert_eq!(settings.active_profile_id(PlatformId::Kick), DEFAULT_KICK_PROFILE_ID);
+    }
+
+    #[test]
+    fn sanitize_rejects_minimized_and_invalid_window_bounds() {
+        let mut settings = Settings::default();
+        settings.window_bounds = Some(WindowBounds {
+            x: -32000,
+            y: -32000,
+            width: 1040,
+            height: 700,
+        });
+        settings.sanitize();
+        assert_eq!(settings.window_bounds, None);
+
+        settings.window_bounds = Some(WindowBounds {
+            x: 100,
+            y: 100,
+            width: 200,
+            height: 200,
+        });
+        settings.sanitize();
+        assert_eq!(settings.window_bounds, None);
+
+        settings.window_bounds = Some(WindowBounds {
+            x: 100,
+            y: 100,
+            width: 1040,
+            height: 700,
+        });
+        settings.sanitize();
+        assert!(settings.window_bounds.is_some());
     }
 }

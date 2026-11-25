@@ -37,6 +37,7 @@ pub const AUX_WEBVIEW_PREFIXES: &[&str] = &[
 static LAST_MAIN_BOUNDS: Mutex<Option<WindowBounds>> = Mutex::new(None);
 static MAIN_WEBVIEW_SUSPENDED: AtomicBool = AtomicBool::new(false);
 static MAIN_WEBVIEW_LOW_MEM: AtomicBool = AtomicBool::new(false);
+static ENSURE_MAIN_LOCK: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
 
 /// Ultra-light Chromium flags for Dropilot's local Svelte UI window (`main`).
 /// Disables the separate GPU & out-of-process audio processes, caps disk/media caches
@@ -418,15 +419,98 @@ pub fn resolve_tauri_theme(mode: ThemeMode) -> Option<Theme> {
     }
 }
 
+/// Returns `true` when `bounds` has valid non-minimized coordinates and dimensions.
+pub fn is_valid_window_bounds(bounds: &WindowBounds) -> bool {
+    bounds.x > -10000 && bounds.y > -10000 && bounds.width >= 400 && bounds.height >= 300
+}
+
+/// Checks whether `bounds` (logical pixels) overlaps any monitor rect `(x, y, width, height)`
+/// by at least `100 x 60` logical pixels so a restored window is never stranded off-screen.
+pub fn bounds_intersect_any_rect(bounds: &WindowBounds, monitor_rects: &[(i32, i32, u32, u32)]) -> bool {
+    if !is_valid_window_bounds(bounds) {
+        return false;
+    }
+    if monitor_rects.is_empty() {
+        return true;
+    }
+    let bx1 = bounds.x;
+    let by1 = bounds.y;
+    let bx2 = bounds.x.saturating_add(bounds.width as i32);
+    let by2 = bounds.y.saturating_add(bounds.height as i32);
+
+    monitor_rects.iter().any(|&(mx, my, mw, mh)| {
+        let mx2 = mx.saturating_add(mw as i32);
+        let my2 = my.saturating_add(mh as i32);
+        let overlap_w = (bx2.min(mx2) - bx1.max(mx)).max(0);
+        let overlap_h = (by2.min(my2) - by1.max(my)).max(0);
+        overlap_w >= 100 && overlap_h >= 60
+    })
+}
+
+fn validate_bounds_on_monitors(app: &AppHandle, bounds: Option<WindowBounds>) -> Option<WindowBounds> {
+    let b = bounds?;
+    if !is_valid_window_bounds(&b) {
+        return None;
+    }
+    let monitor_rects: Vec<(i32, i32, u32, u32)> = app
+        .available_monitors()
+        .unwrap_or_default()
+        .into_iter()
+        .map(|m| {
+            let scale = m.scale_factor().max(0.5);
+            let pos = m.position();
+            let size = m.size();
+            (
+                ((pos.x as f64) / scale).round() as i32,
+                ((pos.y as f64) / scale).round() as i32,
+                ((size.width as f64) / scale).round().max(1.0) as u32,
+                ((size.height as f64) / scale).round().max(1.0) as u32,
+            )
+        })
+        .collect();
+
+    if bounds_intersect_any_rect(&b, &monitor_rects) {
+        Some(b)
+    } else {
+        None
+    }
+}
+
+/// Unminimizes, shows, and brings the `"main"` window to the foreground on Windows.
+fn bring_window_to_foreground(win: &tauri::WebviewWindow) {
+    let _ = win.set_skip_taskbar(false);
+    if win.is_minimized().unwrap_or(false) {
+        let _ = win.unminimize();
+    }
+    let _ = win.show();
+
+    #[cfg(windows)]
+    if let Ok(hwnd) = win.hwnd() {
+        use windows_sys::Win32::UI::WindowsAndMessaging::{
+            BringWindowToTop, IsIconic, SetForegroundWindow, ShowWindow, SW_RESTORE, SW_SHOW,
+        };
+        let raw = hwnd.0 as windows_sys::Win32::Foundation::HWND;
+        unsafe {
+            if IsIconic(raw) != 0 {
+                ShowWindow(raw, SW_RESTORE);
+            } else {
+                ShowWindow(raw, SW_SHOW);
+            }
+            BringWindowToTop(raw);
+            SetForegroundWindow(raw);
+        }
+    }
+
+    let _ = win.set_always_on_top(true);
+    let _ = win.set_always_on_top(false);
+    let _ = win.set_focus();
+}
+
 pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Result<(), String> {
+    let _guard = ENSURE_MAIN_LOCK.lock().await;
+
     if let Some(existing) = app.get_webview_window("main") {
-        if existing.is_minimized().unwrap_or(false) {
-            let _ = existing.unminimize();
-        }
-        if !existing.is_visible().unwrap_or(true) {
-            let _ = existing.show();
-        }
-        let _ = existing.set_focus();
+        bring_window_to_foreground(&existing);
         resume_webview(&existing);
         set_main_webview_low_memory(&existing, false);
         return Ok(());
@@ -435,11 +519,12 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
     MAIN_WEBVIEW_SUSPENDED.store(false, Ordering::Relaxed);
     MAIN_WEBVIEW_LOW_MEM.store(false, Ordering::Relaxed);
 
-    let (bounds, theme) = {
+    let (raw_bounds, theme) = {
         let guard = state.settings.read().await;
         (guard.window_bounds.clone(), guard.theme)
     };
 
+    let bounds = validate_bounds_on_monitors(app, raw_bounds);
     store_cached_main_bounds(bounds.clone());
 
     let (width, height) = bounds
@@ -452,6 +537,7 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         .inner_size(width, height)
         .min_inner_size(600.0, 480.0)
         .resizable(true)
+        .disable_drag_drop_handler()
         .theme(resolve_tauri_theme(theme))
         .data_directory(ui_webview_data_dir())
         .additional_browser_args(UI_WEBVIEW_BROWSER_ARGS);
@@ -466,6 +552,7 @@ pub async fn ensure_main_window(app: &AppHandle, state: &Arc<AppState>) -> Resul
         .build()
         .map_err(|e| format!("Failed creating main window: {e}"))?;
 
+    bring_window_to_foreground(&win);
     update_cached_main_bounds(&win.as_ref().window());
     set_main_webview_low_memory(&win, false);
 
@@ -484,7 +571,10 @@ pub async fn destroy_main_to_tray(
     state: &Arc<AppState>,
     bounds_override: Option<WindowBounds>,
 ) -> bool {
-    if let Some(b) = bounds_override.or_else(cached_main_bounds) {
+    if let Some(b) = bounds_override
+        .filter(is_valid_window_bounds)
+        .or_else(cached_main_bounds)
+    {
         {
             let mut guard = state.settings.write().await;
             guard.window_bounds = Some(b);
@@ -516,6 +606,9 @@ pub async fn destroy_main_to_tray(
 }
 
 pub fn capture_bounds_sync(window: &tauri::Window) -> Option<WindowBounds> {
+    if window.is_minimized().unwrap_or(false) {
+        return None;
+    }
     let scale = window.scale_factor().unwrap_or(1.0).max(0.5);
     let pos: PhysicalPosition<i32> = window.outer_position().ok()?;
     let size: PhysicalSize<u32> = window.inner_size().ok()?;
@@ -524,7 +617,7 @@ pub fn capture_bounds_sync(window: &tauri::Window) -> Option<WindowBounds> {
     let logical_x = ((pos.x as f64) / scale).round() as i32;
     let logical_y = ((pos.y as f64) / scale).round() as i32;
 
-    if logical_w < 400 || logical_h < 300 || logical_x < -3000 || logical_y < -3000 {
+    if logical_w < 400 || logical_h < 300 || logical_x <= -10000 || logical_y <= -10000 {
         return None;
     }
 
@@ -644,5 +737,37 @@ mod tests {
         // Passing None (e.g. minimized (-32000, -32000) coordinates) must preserve prior valid bounds.
         store_cached_main_bounds(None);
         assert_eq!(cached_main_bounds(), Some(sample));
+    }
+
+    #[test]
+    fn bounds_validation_rejects_minimized_and_offscreen_coordinates() {
+        let minimized = WindowBounds {
+            x: -32000,
+            y: -32000,
+            width: 1040,
+            height: 700,
+        };
+        assert!(!is_valid_window_bounds(&minimized));
+        assert!(!bounds_intersect_any_rect(&minimized, &[(0, 0, 1920, 1080)]));
+
+        let disconnected_monitor = WindowBounds {
+            x: 2500,
+            y: 120,
+            width: 1040,
+            height: 700,
+        };
+        assert!(is_valid_window_bounds(&disconnected_monitor));
+        assert!(!bounds_intersect_any_rect(
+            &disconnected_monitor,
+            &[(0, 0, 1920, 1080)]
+        ));
+
+        let on_primary = WindowBounds {
+            x: 200,
+            y: 150,
+            width: 1040,
+            height: 700,
+        };
+        assert!(bounds_intersect_any_rect(&on_primary, &[(0, 0, 1920, 1080)]));
     }
 }

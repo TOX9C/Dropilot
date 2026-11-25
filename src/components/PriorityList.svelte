@@ -32,6 +32,17 @@
   let collapsed = $state(false);
   let dragIndex = $state<number | null>(null);
   let dropTargetIndex = $state<number | null>(null);
+  let listEl = $state<HTMLUListElement | null>(null);
+
+  const DRAG_THRESHOLD_PX = 4;
+  let pendingDrag: {
+    index: number;
+    pointerId: number;
+    startY: number;
+    rowEl: HTMLLIElement;
+  } | null = null;
+
+  const isDragging = $derived(dragIndex !== null);
 
   const ENDING_SOON_MS = 24 * 60 * 60 * 1000;
 
@@ -94,6 +105,80 @@
       moveItem(idx, idx + 1);
     }
   }
+
+  function resetPointerDrag() {
+    if (pendingDrag) {
+      try {
+        if (pendingDrag.rowEl.hasPointerCapture(pendingDrag.pointerId)) {
+          pendingDrag.rowEl.releasePointerCapture(pendingDrag.pointerId);
+        }
+      } catch {
+        // Ignore if pointer is already released
+      }
+    }
+    pendingDrag = null;
+    dragIndex = null;
+    dropTargetIndex = null;
+  }
+
+  function resolveDropTarget(clientY: number): number | null {
+    if (!listEl) return null;
+    const rows = Array.from(listEl.querySelectorAll<HTMLLIElement>(':scope > li.item'));
+    if (rows.length === 0) return null;
+    for (let i = 0; i < rows.length; i += 1) {
+      const rect = rows[i].getBoundingClientRect();
+      if (clientY <= rect.bottom) {
+        return i;
+      }
+    }
+    return rows.length - 1;
+  }
+
+  function handleRowPointerDown(ev: PointerEvent, idx: number) {
+    if (ev.button !== 0 || items.length < 2) return;
+    const target = ev.target as HTMLElement | null;
+    if (target?.closest('.item-actions, button:not(.grip)')) return;
+
+    const rowEl = ev.currentTarget as HTMLLIElement;
+    pendingDrag = {
+      index: idx,
+      pointerId: ev.pointerId,
+      startY: ev.clientY,
+      rowEl,
+    };
+    try {
+      rowEl.setPointerCapture(ev.pointerId);
+    } catch {
+      // Ignore if capture is unsupported
+    }
+  }
+
+  function handleRowPointerMove(ev: PointerEvent) {
+    if (!pendingDrag || ev.pointerId !== pendingDrag.pointerId) return;
+    if (dragIndex === null) {
+      if (Math.abs(ev.clientY - pendingDrag.startY) < DRAG_THRESHOLD_PX) return;
+      dragIndex = pendingDrag.index;
+      dropTargetIndex = pendingDrag.index;
+    }
+    ev.preventDefault();
+    const nextTarget = resolveDropTarget(ev.clientY);
+    if (nextTarget !== null) {
+      dropTargetIndex = nextTarget;
+    }
+  }
+
+  function handleRowPointerUp(ev: PointerEvent) {
+    if (!pendingDrag || ev.pointerId !== pendingDrag.pointerId) return;
+    if (dragIndex !== null && dropTargetIndex !== null && dragIndex !== dropTargetIndex) {
+      moveItem(dragIndex, dropTargetIndex);
+    }
+    resetPointerDrag();
+  }
+
+  function handleRowPointerCancel(ev: PointerEvent) {
+    if (!pendingDrag || ev.pointerId !== pendingDrag.pointerId) return;
+    resetPointerDrag();
+  }
 </script>
 
 <aside class="card priority-panel" aria-label="Priority queue">
@@ -153,33 +238,29 @@
         <p>Add any game above (even without drops yet) or click <strong>Farm</strong> on a campaign card.</p>
       </div>
     {:else}
-      <ul class="list" role="listbox" aria-label="Sortable priority items">
+      <ul
+        bind:this={listEl}
+        class="list"
+        class:is-dragging={isDragging}
+        role="listbox"
+        aria-label="Sortable priority items"
+      >
         {#each items as item, idx}
           {@const activeDrop = hasActiveDropFor(item)}
           {@const urgentEnd = urgentEndLabel(item, $slowNowMs)}
           <li
             class="item"
             class:dragging={dragIndex === idx}
-            class:drop-over={dropTargetIndex === idx && dragIndex !== idx}
+            class:drop-over={dropTargetIndex === idx && dragIndex !== null && dragIndex !== idx}
+            class:drop-before={dropTargetIndex === idx && dragIndex !== null && dropTargetIndex < dragIndex}
+            class:drop-after={dropTargetIndex === idx && dragIndex !== null && dropTargetIndex > dragIndex}
             class:item-urgent={prioritizeEndingSoon && Boolean(urgentEnd)}
             role="option"
             aria-selected="false"
-            draggable="true"
-            ondragstart={() => (dragIndex = idx)}
-            ondragover={(e) => {
-              e.preventDefault();
-              dropTargetIndex = idx;
-            }}
-            ondrop={(e) => {
-              e.preventDefault();
-              if (dragIndex !== null) moveItem(dragIndex, idx);
-              dragIndex = null;
-              dropTargetIndex = null;
-            }}
-            ondragend={() => {
-              dragIndex = null;
-              dropTargetIndex = null;
-            }}
+            onpointerdown={(e) => handleRowPointerDown(e, idx)}
+            onpointermove={handleRowPointerMove}
+            onpointerup={handleRowPointerUp}
+            onpointercancel={handleRowPointerCancel}
           >
             <button
               type="button"
@@ -297,6 +378,12 @@
     gap: var(--space-2);
   }
 
+  .list.is-dragging,
+  .list.is-dragging * {
+    user-select: none;
+    cursor: grabbing !important;
+  }
+
   .item {
     display: flex;
     align-items: center;
@@ -305,14 +392,27 @@
     border-radius: var(--radius-sm);
     background: var(--surface-2);
     border: 1px solid var(--border);
+    cursor: grab;
+    touch-action: none;
+    transition: opacity 120ms ease, border-color 120ms ease, background 120ms ease;
   }
 
   .item.dragging {
     opacity: 0.5;
+    cursor: grabbing;
   }
 
   .item.drop-over {
     border-color: var(--accent);
+    background: var(--accent-tint, var(--surface-hover));
+  }
+
+  .item.drop-before {
+    box-shadow: inset 0 2px 0 var(--accent);
+  }
+
+  .item.drop-after {
+    box-shadow: inset 0 -2px 0 var(--accent);
   }
 
   .grip {

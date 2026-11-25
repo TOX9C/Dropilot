@@ -33,7 +33,7 @@ use crate::state::{AppState, MinerControl};
 use crate::tray::setup_tray;
 use crate::windows::{
     cached_main_bounds, capture_bounds_sync, destroy_main_to_tray, ensure_main_window,
-    has_active_aux_webview, migrate_legacy_webview_dir, resume_webview,
+    has_active_aux_webview, is_valid_window_bounds, migrate_legacy_webview_dir, resume_webview,
     set_main_webview_low_memory, suspend_webview, update_cached_main_bounds,
 };
 
@@ -266,7 +266,9 @@ pub fn run() {
                     let close_to_tray = state_for_window.close_to_tray.load(Ordering::Relaxed);
                     let app_c = window.app_handle().clone();
                     let st = state_for_window.clone();
-                    let bounds = capture_bounds_sync(window).or_else(cached_main_bounds);
+                    let bounds = capture_bounds_sync(window)
+                        .or_else(cached_main_bounds)
+                        .filter(is_valid_window_bounds);
 
                     if close_to_tray && has_active_aux_webview(&app_c) {
                         api.prevent_close();
