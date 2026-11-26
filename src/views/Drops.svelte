@@ -31,6 +31,7 @@
   import {
     addWatchedGameAction,
     appSettings,
+    editionInfo,
     lastSnapshotAt,
     notifyUi,
     toggleCampaignFarmAction,
@@ -63,7 +64,11 @@
   let addingWatch = $state(false);
   let refreshing = $state(false);
 
-  const allCampaigns = $derived([...snapshot.twitch.campaigns, ...snapshot.kick.campaigns]);
+  const allCampaigns = $derived(
+    $editionInfo.kickEnabled
+      ? [...snapshot.twitch.campaigns, ...snapshot.kick.campaigns]
+      : [...snapshot.twitch.campaigns],
+  );
 
   interface WatchedGameChip {
     key: string;
@@ -75,7 +80,10 @@
 
   const watchedGames = $derived.by<WatchedGameChip[]>(() => {
     const map = new Map<string, WatchedGameChip>();
-    for (const plat of ['twitch', 'kick'] as const) {
+    const activePlats: readonly PlatformId[] = $editionInfo.kickEnabled
+      ? ['twitch', 'kick']
+      : ['twitch'];
+    for (const plat of activePlats) {
       for (const item of settings[plat].priority) {
         if (item.kind !== 'game') continue;
         const cleanName = item.gameName.trim();
@@ -142,11 +150,15 @@
     !snapshot.twitch.account && snapshot.twitch.campaigns.length === 0,
   );
   const needKickNotice = $derived(
-    !snapshot.kick.account && snapshot.kick.campaigns.length === 0,
+    $editionInfo.kickEnabled && !snapshot.kick.account && snapshot.kick.campaigns.length === 0,
   );
 
   const scopedPlatforms = $derived<PlatformId[]>(
-    platformFilter === 'all' ? ['twitch', 'kick'] : [platformFilter],
+    !$editionInfo.kickEnabled
+      ? ['twitch']
+      : platformFilter === 'all'
+        ? ['twitch', 'kick']
+        : [platformFilter],
   );
   const scopedErrors = $derived(
     scopedPlatforms
@@ -175,8 +187,13 @@
   async function refreshAll() {
     refreshing = true;
     try {
-      await Promise.all([api.retryPlatform('twitch'), api.retryPlatform('kick')]);
-      notifyUi('Refreshed Twitch and Kick drops');
+      if ($editionInfo.kickEnabled) {
+        await Promise.all([api.retryPlatform('twitch'), api.retryPlatform('kick')]);
+        notifyUi('Refreshed Twitch and Kick drops');
+      } else {
+        await api.retryPlatform('twitch');
+        notifyUi('Refreshed Twitch drops');
+      }
     } catch (err) {
       notifyUi(String(err), 'error');
     } finally {
@@ -335,11 +352,13 @@
           />
         </div>
 
-        <div class="wl-scope" role="group" aria-label="Watchlist platform">
-          <button type="button" class="scope-pill" class:active={watchScope === 'both'} onclick={() => (watchScope = 'both')}>Both</button>
-          <button type="button" class="scope-pill" class:active={watchScope === 'twitch'} onclick={() => (watchScope = 'twitch')}>Twitch</button>
-          <button type="button" class="scope-pill" class:active={watchScope === 'kick'} onclick={() => (watchScope = 'kick')}>Kick</button>
-        </div>
+        {#if $editionInfo.kickEnabled}
+          <div class="wl-scope" role="group" aria-label="Watchlist platform">
+            <button type="button" class="scope-pill" class:active={watchScope === 'both'} onclick={() => (watchScope = 'both')}>Both</button>
+            <button type="button" class="scope-pill" class:active={watchScope === 'twitch'} onclick={() => (watchScope = 'twitch')}>Twitch</button>
+            <button type="button" class="scope-pill" class:active={watchScope === 'kick'} onclick={() => (watchScope = 'kick')}>Kick</button>
+          </div>
+        {/if}
       </div>
     </div>
 
@@ -375,10 +394,10 @@
     {search}
     {counts}
     {platformFilter}
-    {platformCounts}
+    platformCounts={$editionInfo.kickEnabled ? platformCounts : undefined}
     {games}
     {selectedGame}
-    onplatform={(next) => (platformFilter = next)}
+    onplatform={$editionInfo.kickEnabled ? (next) => (platformFilter = next) : undefined}
     onfilter={(next) => (filter = next)}
     onsort={(next) => (sort = next)}
     onsearch={(next) => (search = next)}
@@ -412,7 +431,7 @@
           </span>
         </span>
       {/if}
-      {#if platformFilter !== 'twitch'}
+      {#if $editionInfo.kickEnabled && platformFilter !== 'twitch'}
         <span class="disc-plat">
           <span class="plat-dot dot-kick" aria-hidden="true"></span>
           <span>
@@ -435,7 +454,7 @@
       {#if scopedCampaigns.length === 0 && scopedSyncing}
         <span class="empty-ico spin-ico" aria-hidden="true"><LoaderCircle size={18} /></span>
         <strong>Syncing drop campaigns...</strong>
-        <p>Checking live and upcoming Twitch &amp; Kick drop campaigns right now.</p>
+        <p>Checking live and upcoming {$editionInfo.kickEnabled ? 'Twitch & Kick' : 'Twitch'} drop campaigns right now.</p>
       {:else if scopedCampaigns.length === 0 && scopedErrors.length > 0}
         <span class="empty-ico err-ico" aria-hidden="true"><AlertTriangle size={18} /></span>
         <strong>Could not load {platformFilter === 'all' ? 'platform' : platformFilter === 'twitch' ? 'Twitch' : 'Kick'} campaigns</strong>

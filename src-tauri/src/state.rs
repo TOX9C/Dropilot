@@ -74,8 +74,10 @@ impl AppState {
         let epic = Arc::new(EpicTracker::load_initial());
         let mut initial_profile_snapshots = HashMap::new();
         for prof in &initial_settings.profiles {
-            initial_profile_snapshots
-                .insert(prof.id.clone(), PlatformSnapshot::logged_out(prof.platform));
+            if crate::edition::is_profile_allowed(prof.platform, &prof.id) {
+                initial_profile_snapshots
+                    .insert(prof.id.clone(), PlatformSnapshot::logged_out(prof.platform));
+            }
         }
 
         Self {
@@ -155,6 +157,7 @@ impl AppState {
         let profile_map = self.profile_snapshots.read().await;
         let profiles: Vec<ProfileSnapshot> = profiles_cfg
             .iter()
+            .filter(|prof| crate::edition::is_profile_allowed(prof.platform, &prof.id))
             .map(|prof| {
                 let snap = profile_map
                     .get(&prof.id)

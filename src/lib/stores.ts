@@ -5,6 +5,7 @@ import type {
   AppSnapshot,
   Campaign,
   DropsViewMode,
+  EditionInfo,
   EpicFeedSnapshot,
   LogEntry,
   NavRoute,
@@ -68,6 +69,19 @@ export const checklistDismissed = writable<boolean>(
 export const dropsViewMode = writable<DropsViewMode>(readDropsViewMode());
 export const shortcutsOpen = writable<boolean>(false);
 
+const DEFAULT_EDITION_INFO: EditionInfo = {
+  edition: 'full',
+  isFree: false,
+  twitchEnabled: true,
+  kickEnabled: true,
+  epicEnabled: true,
+  multiAccountEnabled: true,
+  webhooksEnabled: true,
+  quietHoursEnabled: true,
+  maxProfilesPerPlatform: 10,
+};
+
+export const editionInfo = writable<EditionInfo>(DEFAULT_EDITION_INFO);
 export const appSnapshot = writable<AppSnapshot | null>(null);
 export const appSettings = writable<Settings | null>(null);
 export const appLogs = writable<LogEntry[]>([]);
@@ -301,7 +315,12 @@ export async function addWatchedGameAction(
 ): Promise<void> {
   const trimmed = gameName.trim();
   if (!trimmed) return;
-  const platforms: PlatformId[] = target === 'both' ? ['twitch', 'kick'] : [target];
+  const kickEnabled = get(editionInfo).kickEnabled;
+  const platforms: PlatformId[] = !kickEnabled
+    ? ['twitch']
+    : target === 'both'
+      ? ['twitch', 'kick']
+      : [target];
   const lower = trimmed.toLowerCase();
   let latest: Settings | null = null;
 
@@ -399,7 +418,8 @@ export async function initializeAppStores(): Promise<() => void> {
     void api.reportUserAgent(navigator.userAgent).catch(() => {});
   }
 
-  const [snap, settings, logs, hasMock, rcStatus] = await Promise.all([
+  const [edition, snap, settings, logs, hasMock, rcStatus] = await Promise.all([
+    api.getEditionInfo().catch(() => DEFAULT_EDITION_INFO),
     api.getSnapshot(),
     api.getSettings(),
     api.getLogs(),
@@ -407,6 +427,7 @@ export async function initializeAppStores(): Promise<() => void> {
     api.getRemoteConfigStatus().catch(() => null),
   ]);
 
+  editionInfo.set(edition);
   trackSessionProgress(snap, true);
   appSnapshot.set(snap);
   appSettings.set(settings);

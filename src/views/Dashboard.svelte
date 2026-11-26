@@ -37,7 +37,7 @@
     computeUpNextQueue,
     epicGameArtCandidates,
   } from '../lib/selectors';
-  import { activeRoute, appSettings, epicFeed, notifyUi, sessionHistory, sessionMinutes } from '../lib/stores';
+  import { activeRoute, appSettings, editionInfo, epicFeed, notifyUi, sessionHistory, sessionMinutes } from '../lib/stores';
   import type {
     AppSnapshot,
     Campaign,
@@ -63,7 +63,7 @@
   const endingSoon = $derived(computeEndingSoon(snapshot, $slowNowMs));
   const cards = $derived<ProfileSnapshot[]>(
     snapshot.profiles && snapshot.profiles.length > 0
-      ? snapshot.profiles
+      ? snapshot.profiles.filter((p) => $editionInfo.kickEnabled || p.platform !== 'kick')
       : [
           {
             profileId: settings.activeTwitchProfileId ?? 'default-twitch',
@@ -71,12 +71,16 @@
             platform: 'twitch',
             snapshot: snapshot.twitch,
           },
-          {
-            profileId: settings.activeKickProfileId ?? 'default-kick',
-            label: 'Main',
-            platform: 'kick',
-            snapshot: snapshot.kick,
-          },
+          ...($editionInfo.kickEnabled
+            ? [
+                {
+                  profileId: settings.activeKickProfileId ?? 'default-kick',
+                  label: 'Main',
+                  platform: 'kick' as const,
+                  snapshot: snapshot.kick,
+                },
+              ]
+            : []),
         ],
   );
   const multiTwitch = $derived(cards.filter((c) => c.platform === 'twitch').length > 1);

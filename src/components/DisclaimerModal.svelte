@@ -1,5 +1,6 @@
 <script lang="ts">
   import AlertTriangle from 'lucide-svelte/icons/alert-triangle';
+  import { editionInfo } from '../lib/stores';
   import Button from './Button.svelte';
   import Modal from './Modal.svelte';
 
@@ -17,13 +18,17 @@
     <span>Platform Terms &amp; Account Responsibility</span>
   </div>
   <p>
-    Dropilot automates drop progress tracking and reward claiming for your own logged-in Twitch
-    and Kick accounts using standard web sessions.
+    Dropilot automates drop progress tracking and reward claiming for your own logged-in
+    {$editionInfo.kickEnabled ? 'Twitch and Kick accounts' : 'Twitch account'} using standard web
+    sessions.
   </p>
   <p>
     Automated stream watching or claiming may conflict with each platform's Terms of Service. You
     are solely responsible for your accounts and how you choose to use Dropilot. Dropilot is not
-    affiliated with or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
+    affiliated with or endorsed by
+    {$editionInfo.kickEnabled
+      ? 'Twitch Interactive, Inc. or Kick Streaming Pty Ltd.'
+      : 'Twitch Interactive, Inc. or Epic Games, Inc.'}
   </p>
   <p class="note">
     Mining stays paused until you acknowledge this notice. Your tokens remain stored only in

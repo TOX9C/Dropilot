@@ -1,11 +1,13 @@
 pub mod auth;
 pub mod autostart;
 pub mod commands;
+pub mod edition;
 pub mod events;
 pub mod history;
 pub mod logging;
 pub mod miner;
 pub mod net;
+pub mod notifications;
 pub mod platforms;
 pub mod remote_config;
 pub mod rewards;
@@ -59,6 +61,7 @@ pub fn run() {
     let log_buffer = LogBuffer::new();
     let log_handle = init_logging(settings.log_level, log_buffer.clone()).ok();
     windows::configure_windows_process_group();
+    notifications::register_windows_toast_identity();
 
     let http = match AllowlistedClient::new() {
         Ok(client) => Arc::new(client),
@@ -106,6 +109,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .manage(app_state.clone())
         .invoke_handler(tauri::generate_handler![
+            commands::get_edition_info,
             commands::get_snapshot,
             commands::add_account_profile,
             commands::remove_account_profile,
@@ -184,8 +188,13 @@ pub fn run() {
                 state_for_setup.clone(),
             );
 
-            // Spawn platform miner tasks for every configured profile with staggered startup.
-            let initial_profiles = settings.profiles.clone();
+            // Spawn platform miner tasks for every edition-allowed profile with staggered startup.
+            let initial_profiles: Vec<_> = settings
+                .profiles
+                .iter()
+                .filter(|p| crate::edition::is_profile_allowed(p.platform, &p.id))
+                .cloned()
+                .collect();
             let mut spawned_miners = Vec::with_capacity(initial_profiles.len());
             for (idx, profile) in initial_profiles.iter().enumerate() {
                 let backend = build_platform_backend(

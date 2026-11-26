@@ -33,6 +33,7 @@
     appSettings,
     checkForAppUpdate,
     checkingForUpdate,
+    editionInfo,
     installAppUpdate,
     installingUpdate,
     notifyUi,
@@ -79,7 +80,7 @@
 
   const profileCards = $derived<ProfileSnapshot[]>(
     snapshot.profiles && snapshot.profiles.length > 0
-      ? snapshot.profiles
+      ? snapshot.profiles.filter((p) => $editionInfo.kickEnabled || p.platform !== 'kick')
       : [
           {
             profileId: settings.activeTwitchProfileId ?? 'default-twitch',
@@ -87,12 +88,16 @@
             platform: 'twitch',
             snapshot: snapshot.twitch,
           },
-          {
-            profileId: settings.activeKickProfileId ?? 'default-kick',
-            label: 'Main',
-            platform: 'kick',
-            snapshot: snapshot.kick,
-          },
+          ...($editionInfo.kickEnabled
+            ? [
+                {
+                  profileId: settings.activeKickProfileId ?? 'default-kick',
+                  label: 'Main',
+                  platform: 'kick' as const,
+                  snapshot: snapshot.kick,
+                },
+              ]
+            : []),
         ],
   );
   const twitchProfileCount = $derived(
@@ -365,6 +370,9 @@
       </div>
     </div>
     <div class="page-actions">
+      {#if $editionInfo.isFree}
+        <Badge tone="accent">Free Edition</Badge>
+      {/if}
       <Badge tone="neutral">v{__APP_VERSION__}</Badge>
     </div>
   </header>
@@ -552,32 +560,40 @@
           <div class="group-head group-head-actions">
             <div class="group-head-left">
               <span class="section-label">ISOLATED PROFILES</span>
-              <span class="group-count tabular">{twitchProfileCount} Twitch · {kickProfileCount} Kick</span>
+              <span class="group-count tabular">
+                {$editionInfo.kickEnabled
+                  ? `${twitchProfileCount} Twitch · ${kickProfileCount} Kick`
+                  : `${twitchProfileCount} Twitch`}
+              </span>
             </div>
-            <div class="inline-actions">
-              <Button
-                variant="secondary"
-                size="sm"
-                onclick={() => {
-                  addingPlatform = 'twitch';
-                  newProfileLabel = '';
-                }}
-              >
-                <Plus size={12} />
-                <span>Add Twitch</span>
-              </Button>
-              <Button
-                variant="secondary"
-                size="sm"
-                onclick={() => {
-                  addingPlatform = 'kick';
-                  newProfileLabel = '';
-                }}
-              >
-                <Plus size={12} />
-                <span>Add Kick</span>
-              </Button>
-            </div>
+            {#if $editionInfo.multiAccountEnabled}
+              <div class="inline-actions">
+                <Button
+                  variant="secondary"
+                  size="sm"
+                  onclick={() => {
+                    addingPlatform = 'twitch';
+                    newProfileLabel = '';
+                  }}
+                >
+                  <Plus size={12} />
+                  <span>Add Twitch</span>
+                </Button>
+                {#if $editionInfo.kickEnabled}
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    onclick={() => {
+                      addingPlatform = 'kick';
+                      newProfileLabel = '';
+                    }}
+                  >
+                    <Plus size={12} />
+                    <span>Add Kick</span>
+                  </Button>
+                {/if}
+              </div>
+            {/if}
           </div>
 
           {#if addingPlatform}
@@ -713,19 +729,21 @@
                       <span>Log in</span>
                     </Button>
                   {/if}
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    disabled={platCount <= 1}
-                    ariaLabel={`Remove ${label} account ${card.label}`}
-                    title={platCount <= 1
-                      ? `At least one ${label} account must remain configured`
-                      : `Remove ${label} account "${card.label}" and delete its isolated session`}
-                    onclick={() => handleRemoveProfile(card)}
-                  >
-                    <Trash2 size={13} />
-                    <span>Remove</span>
-                  </Button>
+                  {#if $editionInfo.multiAccountEnabled}
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      disabled={platCount <= 1}
+                      ariaLabel={`Remove ${label} account ${card.label}`}
+                      title={platCount <= 1
+                        ? `At least one ${label} account must remain configured`
+                        : `Remove ${label} account "${card.label}" and delete its isolated session`}
+                      onclick={() => handleRemoveProfile(card)}
+                    >
+                      <Trash2 size={13} />
+                      <span>Remove</span>
+                    </Button>
+                  {/if}
                 </div>
               </div>
             {/each}
@@ -1317,17 +1335,17 @@
             <div class="setting-row setting-row-col">
               <div class="setting-row-top">
                 <div class="setting-meta">
-                  <strong>Dropilot v{__APP_VERSION__}</strong>
-                  <p>MIT License · Standard user privileges (<code>asInvoker</code>)</p>
+                  <strong>Dropilot v{__APP_VERSION__}{$editionInfo.isFree ? ' · Free Edition' : ''}</strong>
+                  <p>Standard user privileges (<code>asInvoker</code>) · Isolated WebView2 sessions</p>
                 </div>
                 <div class="setting-ctrl inline-actions">
-                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot#readme')}>
+                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot-releases#readme')}>
                     README
                   </Button>
-                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot/blob/main/docs/PRIVACY.md')}>
+                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot-releases/blob/main/PRIVACY.md')}>
                     Privacy
                   </Button>
-                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot/blob/main/docs/ENDPOINTS.md')}>
+                  <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot-releases/blob/main/ENDPOINTS.md')}>
                     Endpoints
                   </Button>
                 </div>

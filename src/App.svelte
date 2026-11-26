@@ -21,6 +21,7 @@
     appSettings,
     appSnapshot,
     closeLightbox,
+    editionInfo,
     initializeAppStores,
     lightboxImage,
     mockFeatureAvailable,
@@ -34,6 +35,7 @@
   import Drops from './views/Drops.svelte';
   import EpicGames from './views/EpicGames.svelte';
   import History from './views/History.svelte';
+  import KickComingSoon from './views/KickComingSoon.svelte';
   import Logs from './views/Logs.svelte';
   import Platform from './views/Platform.svelte';
   import Settings from './views/Settings.svelte';
@@ -58,7 +60,9 @@
     if (snap.profiles && snap.profiles.length > 0) {
       return snap.profiles.every((p) => p.snapshot.state === 'Paused');
     }
-    return snap.twitch.state === 'Paused' && snap.kick.state === 'Paused';
+    return $editionInfo.kickEnabled
+      ? snap.twitch.state === 'Paused' && snap.kick.state === 'Paused'
+      : snap.twitch.state === 'Paused';
   });
   const nextCheckIso = $derived($appSnapshot ? earliestNextActionAt($appSnapshot) : null);
 
@@ -120,10 +124,14 @@
             allPaused ? api.resume(p.platform, p.profileId) : api.pause(p.platform, p.profileId),
           ),
         );
-      } else if (allPaused) {
-        await Promise.all([api.resume('twitch'), api.resume('kick')]);
+      } else if ($editionInfo.kickEnabled) {
+        await Promise.all(
+          allPaused
+            ? [api.resume('twitch'), api.resume('kick')]
+            : [api.pause('twitch'), api.pause('kick')],
+        );
       } else {
-        await Promise.all([api.pause('twitch'), api.pause('kick')]);
+        await (allPaused ? api.resume('twitch') : api.pause('twitch'));
       }
     } catch (err) {
       notifyUi(String(err), 'error');
@@ -135,10 +143,12 @@
       const profiles = $appSnapshot?.profiles;
       if (profiles && profiles.length > 0) {
         await Promise.all(profiles.map((p) => api.retryPlatform(p.platform, p.profileId)));
-      } else {
+      } else if ($editionInfo.kickEnabled) {
         await Promise.all([api.retryPlatform('twitch'), api.retryPlatform('kick')]);
+      } else {
+        await api.retryPlatform('twitch');
       }
-      notifyUi('Refreshed Twitch and Kick');
+      notifyUi($editionInfo.kickEnabled ? 'Refreshed Twitch and Kick' : 'Refreshed Twitch');
     } catch (err) {
       notifyUi(String(err), 'error');
     }
@@ -166,14 +176,16 @@
     const lower = ev.key.toLowerCase();
     if (lower === 'r') {
       ev.preventDefault();
-      if ($activeRoute === 'twitch' || $activeRoute === 'kick') {
+      if ($activeRoute === 'twitch' || ($activeRoute === 'kick' && $editionInfo.kickEnabled)) {
         void api.retryPlatform($activeRoute);
       } else {
         const profiles = $appSnapshot?.profiles;
         if (profiles && profiles.length > 0) {
           void Promise.all(profiles.map((p) => api.retryPlatform(p.platform, p.profileId)));
-        } else {
+        } else if ($editionInfo.kickEnabled) {
           void Promise.all([api.retryPlatform('twitch'), api.retryPlatform('kick')]);
+        } else {
+          void api.retryPlatform('twitch');
         }
       }
       notifyUi('Refreshed');
@@ -189,13 +201,16 @@
             paused ? api.resume(p.platform, p.profileId) : api.pause(p.platform, p.profileId),
           ),
         );
-      } else {
+      } else if ($editionInfo.kickEnabled) {
         const paused = snap.twitch.state === 'Paused' && snap.kick.state === 'Paused';
         void Promise.all(
           paused
             ? [api.resume('twitch'), api.resume('kick')]
             : [api.pause('twitch'), api.pause('kick')],
         );
+      } else {
+        const paused = snap.twitch.state === 'Paused';
+        void (paused ? api.resume('twitch') : api.pause('twitch'));
       }
     }
   }
@@ -222,15 +237,17 @@
               <span class="ticker-dim">· {$appSnapshot.twitch.watching.displayName}</span>
             {/if}
           </button>
-          <span class="ticker-sep" aria-hidden="true">|</span>
-          <button type="button" class="ticker-item" onclick={() => activeRoute.set('kick')}>
-            <span class="plat-dot dot-kick" aria-hidden="true"></span>
-            <span class="ticker-k">KICK</span>
-            <span class="ticker-v">{$appSnapshot.kick.state.toUpperCase()}</span>
-            {#if $appSnapshot.kick.watching}
-              <span class="ticker-dim">· {$appSnapshot.kick.watching.displayName}</span>
-            {/if}
-          </button>
+          {#if $editionInfo.kickEnabled}
+            <span class="ticker-sep" aria-hidden="true">|</span>
+            <button type="button" class="ticker-item" onclick={() => activeRoute.set('kick')}>
+              <span class="plat-dot dot-kick" aria-hidden="true"></span>
+              <span class="ticker-k">KICK</span>
+              <span class="ticker-v">{$appSnapshot.kick.state.toUpperCase()}</span>
+              {#if $appSnapshot.kick.watching}
+                <span class="ticker-dim">· {$appSnapshot.kick.watching.displayName}</span>
+              {/if}
+            </button>
+          {/if}
         </div>
 
         <div class="ticker-group ticker-right tabular">
@@ -284,11 +301,15 @@
                 settings={$appSettings}
               />
             {:else if $activeRoute === 'kick'}
-              <Platform
-                platform="kick"
-                snapshot={$appSnapshot.kick}
-                settings={$appSettings}
-              />
+              {#if $editionInfo.kickEnabled}
+                <Platform
+                  platform="kick"
+                  snapshot={$appSnapshot.kick}
+                  settings={$appSettings}
+                />
+              {:else}
+                <KickComingSoon />
+              {/if}
             {:else if $activeRoute === 'epic'}
               <EpicGames />
             {:else if $activeRoute === 'logs'}

@@ -7,9 +7,17 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Release tag (e.g. v0.2.3)'
+        description: 'Release tag (e.g. v0.4.0)'
         required: true
         type: string
+      edition:
+        description: 'Build edition to publish'
+        required: false
+        default: 'free'
+        type: choice
+        options:
+          - free
+          - full
 
 permissions:
   contents: write
@@ -38,10 +46,11 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
-      - name: Run frontend typecheck and Rust tests
+      - name: Run frontend typecheck and Rust tests (full + free-edition)
         run: |
           npm run check
           cargo test --manifest-path src-tauri/Cargo.toml
+          cargo test --manifest-path src-tauri/Cargo.toml --features free-edition
 
       - name: Prepare Windows Sparse MSIX Identity
         shell: pwsh
@@ -71,7 +80,7 @@ jobs:
             & powershell -ExecutionPolicy Bypass -File scripts/build-sparse-msix.ps1
           }
 
-      - name: Resolve release tag
+      - name: Resolve release tag & edition
         id: meta
         shell: pwsh
         run: |
@@ -80,24 +89,74 @@ jobs:
           } else {
             "${{ github.ref_name }}"
           }
+          $edition = if ("${{ github.event_name }}" -eq "workflow_dispatch" -and -not [string]::IsNullOrWhiteSpace("${{ inputs.edition }}")) {
+            "${{ inputs.edition }}"
+          } else {
+            "free"
+          }
+          $tauriArgs = if ($edition -eq "free") { "--features free-edition" } else { "" }
+          $editionLabel = if ($edition -eq "free") { "Free Edition (Twitch Drops + Epic Games Free Weekly)" } else { "Full Edition" }
           echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          echo "edition=$edition" >> $env:GITHUB_OUTPUT
+          echo "tauri_args=$tauriArgs" >> $env:GITHUB_OUTPUT
+          echo "edition_label=$editionLabel" >> $env:GITHUB_OUTPUT
 
-      - name: Build signed NSIS installer & updater artifacts
+      - name: Build signed NSIS installer & updater artifacts to public releases repo
         uses: tauri-apps/tauri-action@v0
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN || secrets.GITHUB_TOKEN }}
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
           owner: theflash1211
-          repo: dropilot
+          repo: dropilot-releases
           tagName: ${{ steps.meta.outputs.tag }}
           releaseName: 'Dropilot ${{ steps.meta.outputs.tag }}'
-          releaseBody: 'Signed Windows installer and automatic update manifest for Dropilot ${{ steps.meta.outputs.tag }}.'
+          releaseBody: |
+            ## Dropilot ${{ steps.meta.outputs.tag }} — ${{ steps.meta.outputs.edition_label }}
+
+            - **Windows Installer (Recommended):** Download `Dropilot_*_x64-setup.exe` for per-user installation and automatic signed in-app updates.
+            - **Portable ZIP:** Download `Dropilot-${{ steps.meta.outputs.tag }}-win64-portable.zip` to run directly with zero installation.
+            - **Checksums:** Verify downloads against `SHA256SUMS.txt`.
+
+            > **Note on Windows SmartScreen:** Unsigned indie builds may show an "Unknown publisher" SmartScreen prompt. Click **More info -> Run anyway** after verifying the SHA-256 checksum.
           releaseDraft: false
           prerelease: false
           includeUpdaterJson: true
           updaterJsonPreferNsis: true
+          args: ${{ steps.meta.outputs.tauri_args }}
+
+      - name: Package portable ZIP and SHA256SUMS & upload to public release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.RELEASES_REPO_TOKEN || secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ steps.meta.outputs.tag }}"
+          $portableDir = Join-Path $env:RUNNER_TEMP "Dropilot-$tag-win64"
+          $zipPath = Join-Path $env:RUNNER_TEMP "Dropilot-$tag-win64-portable.zip"
+          $sumsPath = Join-Path $env:RUNNER_TEMP "SHA256SUMS.txt"
+
+          New-Item -ItemType Directory -Force -Path $portableDir | Out-Null
+          Copy-Item "src-tauri\target\release\dropilot.exe" "$portableDir\Dropilot.exe"
+          Copy-Item "public-release-docs\README.md" "$portableDir\README.md"
+          Copy-Item "public-release-docs\PRIVACY.md" "$portableDir\PRIVACY.md"
+          Compress-Archive -Path "$portableDir\*" -DestinationPath $zipPath -Force
+
+          $artifacts = @($zipPath)
+          $nsisFiles = Get-ChildItem -Path "src-tauri\target\release\bundle\nsis" -Filter "*-setup.exe" -ErrorAction SilentlyContinue
+          foreach ($f in $nsisFiles) {
+            $artifacts += $f.FullName
+          }
+
+          $lines = @()
+          foreach ($file in $artifacts) {
+            $hash = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToLowerInvariant()
+            $name = Split-Path $file -Leaf
+            $lines += "$hash  $name"
+          }
+          Set-Content -Path $sumsPath -Value ($lines -join "`n") -Encoding UTF8
+
+          gh release upload $tag $zipPath $sumsPath --repo theflash1211/dropilot-releases --clobber
 
       - name: Clean up temporary Windows signing certificate
         if: always()

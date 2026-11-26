@@ -1118,7 +1118,7 @@ pub fn ensure_compat_watch_window_for_profile(
         .data_directory(profile_webview_data_dir(profile_id))
         .additional_browser_args(PLATFORM_WEBVIEW_BROWSER_ARGS)
         .initialization_script(COMPAT_WATCH_SCRIPT)
-        .on_navigation(|url| handle_compat_watch_navigation(url))
+        .on_navigation(handle_compat_watch_navigation)
         .build()
         .map_err(|e| AppError::Internal(format!("Failed starting compatibility watch window: {e}")))?;
 

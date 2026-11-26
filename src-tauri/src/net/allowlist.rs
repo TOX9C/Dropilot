@@ -26,12 +26,12 @@ pub const KICK_EXACT_HOSTS: &[&str] = &["kick.com"];
 pub const KICK_SUFFIX_HOSTS: &[&str] = &[".kick.com", ".live-video.net"];
 
 pub const UPDATE_CHECK_HOST: &str = "api.github.com";
-pub const UPDATE_CHECK_PATH: &str = "/repos/theflash1211/dropilot/releases/latest";
+pub const UPDATE_CHECK_PATH: &str = "/repos/theflash1211/dropilot-releases/releases/latest";
 
 pub const REMOTE_CONFIG_HOST: &str = "raw.githubusercontent.com";
-pub const REMOTE_CONFIG_PATH: &str = "/theflash1211/dropilot/main/remote-config.json";
+pub const REMOTE_CONFIG_PATH: &str = "/theflash1211/dropilot-releases/main/remote-config.json";
 pub const REMOTE_CONFIG_URL: &str =
-    "https://raw.githubusercontent.com/theflash1211/dropilot/main/remote-config.json";
+    "https://raw.githubusercontent.com/theflash1211/dropilot-releases/main/remote-config.json";
 
 pub const EPIC_FREE_GAMES_HOST: &str = "store-site-backend-static-ipv4.ak.epicgames.com";
 pub const EPIC_FREE_GAMES_PATH: &str = "/freeGamesPromotions";
@@ -309,7 +309,7 @@ mod tests {
     #[test]
     fn update_check_requires_exact_repo_path() {
         assert!(validate_url(
-            &parse("https://api.github.com/repos/theflash1211/dropilot/releases/latest"),
+            &parse("https://api.github.com/repos/theflash1211/dropilot-releases/releases/latest"),
             AllowlistKind::UpdateCheck
         ).is_ok());
         assert!(validate_url(
@@ -317,7 +317,7 @@ mod tests {
             AllowlistKind::UpdateCheck
         ).is_err());
         assert!(validate_url(
-            &parse("https://api.github.com/repos/theflash1211/dropilot/releases/latest"),
+            &parse("https://api.github.com/repos/theflash1211/dropilot-releases/releases/latest"),
             AllowlistKind::Platform
         ).is_err());
     }
@@ -333,7 +333,7 @@ mod tests {
             AllowlistKind::RemoteConfig
         ).is_err());
         assert!(validate_url(
-            &parse("http://raw.githubusercontent.com/theflash1211/dropilot/main/remote-config.json"),
+            &parse("http://raw.githubusercontent.com/theflash1211/dropilot-releases/main/remote-config.json"),
             AllowlistKind::RemoteConfig
         ).is_err());
     }

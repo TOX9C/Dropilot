@@ -5,6 +5,7 @@
 !macroend
 
 !macro NSIS_HOOK_POSTUNINSTALL
+  DeleteRegKey HKCU "Software\Classes\AppUserModelId\io.dropilot.app"
   DetailPrint "Removing Dropilot Windows Package Identity..."
   nsExec::ExecToLog `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -WindowStyle Hidden -Command "try { Get-AppxPackage -Name 'io.dropilot.app' -ErrorAction SilentlyContinue | Remove-AppxPackage -ErrorAction SilentlyContinue } catch { }"`
   Pop $0

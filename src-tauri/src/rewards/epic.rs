@@ -8,7 +8,6 @@ use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tauri::AppHandle;
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::RwLock;
 use tracing::{info, warn};
 
@@ -320,12 +319,7 @@ pub async fn notify_newly_live_games(
                     game.title, game.original_price
                 )
             };
-            let _ = app
-                .notification()
-                .builder()
-                .title("Epic Free Game Live")
-                .body(&body)
-                .show();
+            crate::notifications::send_desktop_toast(app, "Epic Free Game Live", &body);
         }
         state
             .dispatch_webhook(WebhookEvent::EpicFreeGame {

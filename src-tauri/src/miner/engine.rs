@@ -5,7 +5,6 @@ use std::time::Duration;
 
 use chrono::{DateTime, Duration as ChronoDuration, Utc};
 use tauri::AppHandle;
-use tauri_plugin_notification::NotificationExt;
 use tokio::sync::mpsc;
 use tokio::time::{sleep, Instant};
 use tracing::{error, info, warn};
@@ -2019,12 +2018,7 @@ async fn sync_snapshot(
 }
 
 fn send_toast(app: &AppHandle, title: &str, body: &str) {
-    let _ = app
-        .notification()
-        .builder()
-        .title(title)
-        .body(body)
-        .show();
+    crate::notifications::send_desktop_toast(app, title, body);
 }
 
 #[cfg(test)]

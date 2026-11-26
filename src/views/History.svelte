@@ -16,7 +16,7 @@
   import StatTile from '../components/StatTile.svelte';
   import { api } from '../lib/api';
   import { formatExactDateTime, formatMinutes } from '../lib/format';
-  import { notifyUi } from '../lib/stores';
+  import { editionInfo, notifyUi } from '../lib/stores';
   import type { HistoryPlatformFilter, HistoryStats } from '../lib/types';
 
   let stats = $state<HistoryStats | null>(null);
@@ -138,9 +138,13 @@
       label="Drops Claimed"
       value={stats?.totalClaims ?? 0}
       hint={stats
-        ? stats.epicClaims > 0
-          ? `${stats.twitchClaims} Twitch · ${stats.kickClaims} Kick · ${stats.epicClaims} Epic`
-          : `${stats.twitchClaims} Twitch · ${stats.kickClaims} Kick`
+        ? $editionInfo.kickEnabled
+          ? stats.epicClaims > 0
+            ? `${stats.twitchClaims} Twitch · ${stats.kickClaims} Kick · ${stats.epicClaims} Epic`
+            : `${stats.twitchClaims} Twitch · ${stats.kickClaims} Kick`
+          : stats.epicClaims > 0
+            ? `${stats.twitchClaims} Twitch · ${stats.epicClaims} Epic`
+            : `${stats.twitchClaims} Twitch`
         : 'Loading...'}
     >
       {#snippet icon()}<Gift size={14} />{/snippet}
@@ -176,7 +180,9 @@
       <div class="card-head">
         <div>
           <h2>14-Day Farming Activity</h2>
-          <p class="card-sub">Daily watch minutes credited across Twitch &amp; Kick</p>
+          <p class="card-sub">
+            Daily watch minutes credited across {$editionInfo.kickEnabled ? 'Twitch & Kick' : 'Twitch'}
+          </p>
         </div>
         <Badge tone="accent">{formatMinutes(stats.dailyActivity.reduce((a, b) => a + b.minutes, 0))} last 14d</Badge>
       </div>
@@ -216,12 +222,18 @@
 
       <div class="filter-controls">
         <CustomSelect
-          options={[
-            { value: 'all', label: 'All platforms', dotTone: 'accent' },
-            { value: 'twitch', label: 'Twitch', dotTone: 'twitch' },
-            { value: 'kick', label: 'Kick', dotTone: 'kick' },
-            { value: 'epic', label: 'Epic Games', dotTone: 'accent' },
-          ] satisfies SelectOption[]}
+          options={($editionInfo.kickEnabled
+            ? [
+                { value: 'all', label: 'All platforms', dotTone: 'accent' },
+                { value: 'twitch', label: 'Twitch', dotTone: 'twitch' },
+                { value: 'kick', label: 'Kick', dotTone: 'kick' },
+                { value: 'epic', label: 'Epic Games', dotTone: 'accent' },
+              ]
+            : [
+                { value: 'all', label: 'All platforms', dotTone: 'accent' },
+                { value: 'twitch', label: 'Twitch', dotTone: 'twitch' },
+                { value: 'epic', label: 'Epic Games', dotTone: 'accent' },
+              ]) satisfies SelectOption[]}
           value={platformFilter}
           onchange={(v) => (platformFilter = v as HistoryPlatformFilter)}
           ariaLabel="Filter by platform"
@@ -251,7 +263,7 @@
         <p>
           {stats && stats.claims.length > 0
             ? 'Try clearing your search or switching platform filters.'
-            : 'Completed Twitch & Kick drops will be logged here automatically and saved across restarts.'}
+            : `Completed ${$editionInfo.kickEnabled ? 'Twitch & Kick' : 'Twitch'} drops will be logged here automatically and saved across restarts.`}
         </p>
       </div>
     {:else}

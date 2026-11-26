@@ -37,6 +37,7 @@
   import {
     appSettings,
     appSnapshot,
+    editionInfo,
     lastSnapshotAt,
     notifyUi,
     toggleCampaignFarmAction,
@@ -390,68 +391,70 @@
     </div>
   </header>
 
-  <div class="acct-switcher" role="region" aria-label="{platName} accounts">
-    <span class="acct-sw-kicker tabular">ACCOUNTS</span>
-    <div class="acct-sw-pills">
-      {#each profileCards as card (card.profileId)}
-        {@const isCurrent = card.profileId === activeProfileId}
-        {@const st = card.snapshot.state}
-        <button
-          type="button"
-          class="acct-pill"
-          class:active={isCurrent}
-          onclick={() => handleSwitchProfile(card.profileId)}
-          title={`${card.label} — ${card.snapshot.account ? '@' + card.snapshot.account.login : 'Not signed in'} (${st})`}
-        >
-          <span
-            class="sw-dot"
-            class:sw-live={st === 'Mining' || st === 'Claiming'}
-            class:sw-paused={st === 'Paused'}
-            class:sw-err={st === 'Error'}
-            class:sw-idle={st === 'Idle' || st === 'Selecting'}
-            aria-hidden="true"
-          ></span>
-          <span class="sw-label">{card.label}</span>
-          {#if card.snapshot.account}
-            <span class="sw-login tabular">@{card.snapshot.account.login}</span>
-          {:else}
-            <span class="sw-off tabular">Off</span>
-          {/if}
-        </button>
-      {/each}
-    </div>
+  {#if $editionInfo.multiAccountEnabled}
+    <div class="acct-switcher" role="region" aria-label="{platName} accounts">
+      <span class="acct-sw-kicker tabular">ACCOUNTS</span>
+      <div class="acct-sw-pills">
+        {#each profileCards as card (card.profileId)}
+          {@const isCurrent = card.profileId === activeProfileId}
+          {@const st = card.snapshot.state}
+          <button
+            type="button"
+            class="acct-pill"
+            class:active={isCurrent}
+            onclick={() => handleSwitchProfile(card.profileId)}
+            title={`${card.label} — ${card.snapshot.account ? '@' + card.snapshot.account.login : 'Not signed in'} (${st})`}
+          >
+            <span
+              class="sw-dot"
+              class:sw-live={st === 'Mining' || st === 'Claiming'}
+              class:sw-paused={st === 'Paused'}
+              class:sw-err={st === 'Error'}
+              class:sw-idle={st === 'Idle' || st === 'Selecting'}
+              aria-hidden="true"
+            ></span>
+            <span class="sw-label">{card.label}</span>
+            {#if card.snapshot.account}
+              <span class="sw-login tabular">@{card.snapshot.account.login}</span>
+            {:else}
+              <span class="sw-off tabular">Off</span>
+            {/if}
+          </button>
+        {/each}
+      </div>
 
-    {#if addingAccount}
-      <form class="acct-add-form" onsubmit={handleAddAccount}>
-        <input
-          type="text"
-          class="acct-add-input"
-          bind:value={newAccountLabel}
-          placeholder="Label (e.g. Alt)"
-          maxlength={24}
-          onkeydown={(e) => e.key === 'Escape' && (addingAccount = false)}
-        />
-        <Button type="submit" variant="primary" size="sm" disabled={savingAccount}>
-          {savingAccount ? 'Adding...' : 'Add'}
+      {#if addingAccount}
+        <form class="acct-add-form" onsubmit={handleAddAccount}>
+          <input
+            type="text"
+            class="acct-add-input"
+            bind:value={newAccountLabel}
+            placeholder="Label (e.g. Alt)"
+            maxlength={24}
+            onkeydown={(e) => e.key === 'Escape' && (addingAccount = false)}
+          />
+          <Button type="submit" variant="primary" size="sm" disabled={savingAccount}>
+            {savingAccount ? 'Adding...' : 'Add'}
+          </Button>
+          <Button type="button" variant="ghost" size="sm" onclick={() => (addingAccount = false)}>
+            Cancel
+          </Button>
+        </form>
+      {:else}
+        <Button
+          variant="ghost"
+          size="sm"
+          onclick={() => {
+            newAccountLabel = '';
+            addingAccount = true;
+          }}
+        >
+          <Plus size={12} />
+          <span>Add account</span>
         </Button>
-        <Button type="button" variant="ghost" size="sm" onclick={() => (addingAccount = false)}>
-          Cancel
-        </Button>
-      </form>
-    {:else}
-      <Button
-        variant="ghost"
-        size="sm"
-        onclick={() => {
-          newAccountLabel = '';
-          addingAccount = true;
-        }}
-      >
-        <Plus size={12} />
-        <span>Add account</span>
-      </Button>
-    {/if}
-  </div>
+      {/if}
+    </div>
+  {/if}
 
   {#if hasManualClaim}
     <div class="banner-warn" role="status">

@@ -2,6 +2,7 @@ import { invoke } from '@tauri-apps/api/core';
 import type {
   AppSnapshot,
   Campaign,
+  EditionInfo,
   EpicFeedSnapshot,
   HistoryExportResult,
   HistoryStats,
@@ -595,14 +596,26 @@ export const api = {
   checkUpdate: () =>
     call<UpdateStatus>('check_update', undefined, () => ({
       available: false,
-      currentVersion: '0.2.3',
-      latestVersion: '0.2.3',
-      releaseUrl: 'https://github.com/theflash1211/dropilot/releases',
+      currentVersion: '0.3.0',
+      latestVersion: '0.3.0',
+      releaseUrl: 'https://github.com/theflash1211/dropilot-releases/releases',
       publishedAt: null,
       notes: null,
       signedUpdateReady: true,
     })),
   installUpdate: () => call<void>('install_update'),
+  getEditionInfo: () =>
+    call<EditionInfo>('get_edition_info', undefined, () => ({
+      edition: 'full',
+      isFree: false,
+      twitchEnabled: true,
+      kickEnabled: true,
+      epicEnabled: true,
+      multiAccountEnabled: true,
+      webhooksEnabled: true,
+      quietHoursEnabled: true,
+      maxProfilesPerPlatform: 10,
+    })),
   isMockAvailable: () => call<boolean>('is_mock_available', undefined, () => true),
   reportUserAgent: (userAgent: string) => call<void>('report_user_agent', { userAgent }),
   hideToTray: () => call<void>('hide_to_tray'),

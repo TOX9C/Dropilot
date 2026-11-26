@@ -1,5 +1,17 @@
 export type PlatformId = 'twitch' | 'kick';
 
+export interface EditionInfo {
+  edition: 'free' | 'full' | string;
+  isFree: boolean;
+  twitchEnabled: boolean;
+  kickEnabled: boolean;
+  epicEnabled: boolean;
+  multiAccountEnabled: boolean;
+  webhooksEnabled: boolean;
+  quietHoursEnabled: boolean;
+  maxProfilesPerPlatform: number;
+}
+
 export type MinerState =
   | 'LoggedOut'
   | 'Idle'

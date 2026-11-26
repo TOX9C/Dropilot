@@ -11,7 +11,10 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:dev:mock": "tauri dev -- --features mock",
-    "tauri:build": "tauri build"
+    "tauri:dev:free": "tauri dev -- --features free-edition",
+    "tauri:dev:free:mock": "tauri dev -- --features \"mock free-edition\"",
+    "tauri:build": "tauri build",
+    "tauri:build:free": "tauri build -- --features free-edition"
   },
   "dependencies": {
     "@fontsource/ibm-plex-mono": "^5.3.0",

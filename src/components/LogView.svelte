@@ -2,6 +2,7 @@
   import X from 'lucide-svelte/icons/x';
   import { slowNowMs } from '../lib/clock';
   import { formatRelativeTime, formatTimestamp } from '../lib/format';
+  import { editionInfo } from '../lib/stores';
   import type { LogEntry, LogLevel, PlatformId } from '../lib/types';
   import Badge from './Badge.svelte';
   import Button from './Button.svelte';
@@ -106,14 +107,16 @@
         minMenuWidth={160}
       />
 
-      <CustomSelect
-        options={platformOptions}
-        value={platformFilter}
-        onchange={(v) => (platformFilter = v as typeof platformFilter)}
-        ariaLabel="Filter logs by platform"
-        size="sm"
-        minMenuWidth={170}
-      />
+      {#if $editionInfo.kickEnabled}
+        <CustomSelect
+          options={platformOptions}
+          value={platformFilter}
+          onchange={(v) => (platformFilter = v as typeof platformFilter)}
+          ariaLabel="Filter logs by platform"
+          size="sm"
+          minMenuWidth={170}
+        />
+      {/if}
 
       <label class="follow-toggle">
         <Toggle checked={followLogs} ariaLabel="Auto-follow newest logs" onchange={(v) => (followLogs = v)} />

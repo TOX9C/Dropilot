@@ -4,7 +4,7 @@
   import Info from 'lucide-svelte/icons/info';
   import X from 'lucide-svelte/icons/x';
   import { api } from '../lib/api';
-  import { activeRoute, appSettings, checklistDismissed, notifyUi } from '../lib/stores';
+  import { activeRoute, appSettings, checklistDismissed, editionInfo, notifyUi } from '../lib/stores';
   import type { AppSnapshot, Settings } from '../lib/types';
   import Badge from './Badge.svelte';
   import Button from './Button.svelte';
@@ -18,7 +18,8 @@
   let { snapshot, settings }: Props = $props();
 
   const hasPriority = $derived(
-    settings.twitch.priority.length > 0 || settings.kick.priority.length > 0,
+    settings.twitch.priority.length > 0 ||
+      ($editionInfo.kickEnabled && settings.kick.priority.length > 0),
   );
 
   const items = $derived([
@@ -29,20 +30,26 @@
       actionLabel: 'Log in',
       run: () => api.login('twitch'),
     },
-    {
-      id: 'kick',
-      label: 'Log in to Kick',
-      done: Boolean(snapshot.kick.account),
-      actionLabel: 'Log in',
-      run: () => api.login('kick'),
-    },
+    ...($editionInfo.kickEnabled
+      ? [
+          {
+            id: 'kick',
+            label: 'Log in to Kick',
+            done: Boolean(snapshot.kick.account),
+            actionLabel: 'Log in',
+            run: () => api.login('kick'),
+          },
+        ]
+      : []),
     {
       id: 'priority',
       label: 'Add a game or campaign to priority',
       done: hasPriority,
       actionLabel: 'Browse Twitch',
       run: () => {
-        activeRoute.set(snapshot.twitch.account ? 'twitch' : 'kick');
+        activeRoute.set(
+          snapshot.twitch.account || !$editionInfo.kickEnabled ? 'twitch' : 'kick',
+        );
       },
     },
     {
@@ -71,9 +78,13 @@
     },
   ]);
 
-  const completedRequired = $derived(items.slice(0, 4).every((i) => i.done));
+  const completedRequired = $derived(
+    items.filter((i) => i.id !== 'autostart').every((i) => i.done),
+  );
   const doneCount = $derived(items.filter((i) => i.done).length);
-  const anyLoggedOut = $derived(!snapshot.twitch.account || !snapshot.kick.account);
+  const anyLoggedOut = $derived(
+    !snapshot.twitch.account || ($editionInfo.kickEnabled && !snapshot.kick.account),
+  );
 
   async function trigger(run: () => Promise<void> | void) {
     try {

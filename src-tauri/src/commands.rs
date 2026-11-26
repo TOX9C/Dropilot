@@ -13,6 +13,10 @@ use crate::auth::login_window::{
     twitch_bridge_fetch_campaign_details_for_profile,
 };
 use crate::autostart::sync_autostart;
+use crate::edition::{
+    current_edition, ensure_platform_enabled, ensure_profile_allowed, is_multi_account_enabled,
+    EditionInfo,
+};
 use crate::history::{history_path, HistoryExportResult, HistoryStats, HistoryStore};
 use crate::logging::{log_dir, LogEntry, LogLevel};
 use crate::miner::engine::{build_platform_backend, spawn_miner_supervisor};
@@ -42,8 +46,9 @@ async fn resolve_profile_id(
     platform: PlatformId,
     profile_id: Option<String>,
 ) -> Result<String, String> {
+    ensure_platform_enabled(platform)?;
     let guard = state.settings.read().await;
-    match profile_id {
+    let resolved = match profile_id {
         Some(pid) if !pid.trim().is_empty() => {
             let prof = guard
                 .profile_by_id(&pid)
@@ -54,10 +59,17 @@ async fn resolve_profile_id(
                     prof.platform, platform
                 ));
             }
-            Ok(pid)
+            pid
         }
-        _ => Ok(guard.active_profile_id(platform).to_string()),
-    }
+        _ => guard.active_profile_id(platform).to_string(),
+    };
+    ensure_profile_allowed(platform, &resolved)?;
+    Ok(resolved)
+}
+
+#[tauri::command]
+pub fn get_edition_info() -> EditionInfo {
+    current_edition()
 }
 
 fn generate_profile_id(platform: PlatformId, existing: &[AccountProfile]) -> String {
@@ -86,6 +98,10 @@ pub async fn add_account_profile(
     platform: PlatformId,
     label: String,
 ) -> Result<Settings, String> {
+    ensure_platform_enabled(platform)?;
+    if !is_multi_account_enabled() {
+        return Err("Multiple accounts are not included in Dropilot Free Edition.".to_string());
+    }
     let (profile, updated) = {
         let mut guard = state.settings.write().await;
         let existing_count = guard.profiles_for(platform).len();
@@ -197,6 +213,7 @@ pub async fn set_active_profile(
     platform: PlatformId,
     profile_id: String,
 ) -> Result<Settings, String> {
+    ensure_profile_allowed(platform, &profile_id)?;
     let updated = {
         let mut guard = state.settings.write().await;
         let prof = guard

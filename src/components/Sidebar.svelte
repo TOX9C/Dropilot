@@ -10,7 +10,7 @@
   import { api } from '../lib/api';
   import { slowNowMs } from '../lib/clock';
   import { isCampaignActiveNow } from '../lib/selectors';
-  import { appSettings, epicFeed, notifyUi, sidebarCollapsed, unreadAlertCount } from '../lib/stores';
+  import { appSettings, editionInfo, epicFeed, notifyUi, sidebarCollapsed, unreadAlertCount } from '../lib/stores';
   import type { AppSnapshot, NavRoute, PlatformId, PlatformSnapshot, ProfileSnapshot } from '../lib/types';
   import BrandMark from './BrandMark.svelte';
 
@@ -40,7 +40,7 @@
 
   const dockProfiles = $derived<ProfileSnapshot[]>(
     snapshot?.profiles && snapshot.profiles.length > 0
-      ? snapshot.profiles
+      ? snapshot.profiles.filter((p) => $editionInfo.kickEnabled || p.platform !== 'kick')
       : [
           {
             profileId: $appSettings?.activeTwitchProfileId ?? 'default-twitch',
@@ -60,24 +60,28 @@
               candidateChannels: [],
             },
           },
-          {
-            profileId: $appSettings?.activeKickProfileId ?? 'default-kick',
-            label: 'Main',
-            platform: 'kick',
-            snapshot: kk ?? {
-              platform: 'kick',
-              state: 'LoggedOut',
-              stateReason: null,
-              account: null,
-              watching: null,
-              currentCampaignId: null,
-              currentDropId: null,
-              nextActionAt: null,
-              lastError: null,
-              campaigns: [],
-              candidateChannels: [],
-            },
-          },
+          ...($editionInfo.kickEnabled
+            ? [
+                {
+                  profileId: $appSettings?.activeKickProfileId ?? 'default-kick',
+                  label: 'Main',
+                  platform: 'kick' as const,
+                  snapshot: kk ?? {
+                    platform: 'kick' as const,
+                    state: 'LoggedOut' as const,
+                    stateReason: null,
+                    account: null,
+                    watching: null,
+                    currentCampaignId: null,
+                    currentDropId: null,
+                    nextActionAt: null,
+                    lastError: null,
+                    campaigns: [],
+                    candidateChannels: [],
+                  },
+                },
+              ]
+            : []),
         ],
   );
   const multiTwitch = $derived(dockProfiles.filter((p) => p.platform === 'twitch').length > 1);
@@ -113,7 +117,9 @@
   const kkActiveCount = $derived(
     kk ? kk.campaigns.filter((c) => isCampaignActiveNow(c, $slowNowMs)).length : 0,
   );
-  const totalActiveCount = $derived(twActiveCount + kkActiveCount);
+  const totalActiveCount = $derived(
+    twActiveCount + ($editionInfo.kickEnabled ? kkActiveCount : 0),
+  );
   const epicUnclaimedCount = $derived(
     ($epicFeed?.games ?? []).filter((g) => {
       if (g.status !== 'active' || g.claimed) return false;
@@ -225,12 +231,14 @@
       class="nav-item"
       class:active={active === 'kick'}
       onclick={() => onnavigate('kick')}
-      title="Kick (Ctrl+5)"
+      title={$editionInfo.kickEnabled ? 'Kick (Ctrl+5)' : 'Kick Drops — Coming soon (Ctrl+5)'}
     >
       <span class="nav-ico" aria-hidden="true"><span class="plat-dot dot-kick"></span></span>
       {#if !effectiveCollapsed}
         <span class="nav-label">Kick</span>
-        {#if kkActiveCount > 0}
+        {#if !$editionInfo.kickEnabled}
+          <span class="nav-soon">SOON</span>
+        {:else if kkActiveCount > 0}
           <span class="nav-count tabular">{kkActiveCount}</span>
         {/if}
       {/if}
@@ -611,5 +619,18 @@
 
   .mini-avatar-btn:hover {
     border-color: var(--border-hover);
+  }
+
+  .nav-soon {
+    margin-left: auto;
+    padding: 1px 5px;
+    border-radius: var(--radius-xs);
+    font-family: var(--font-mono);
+    font-size: 9px;
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: var(--kick, #53fc18);
+    background: var(--kick-soft, rgba(83, 252, 24, 0.12));
+    border: 1px solid rgba(83, 252, 24, 0.25);
   }
 </style>

@@ -14,12 +14,13 @@ pub struct TrayHandles {
     pub tray: TrayIcon<Wry>,
     pub toggle_pause: MenuItem<Wry>,
     pub status_twitch: MenuItem<Wry>,
-    pub status_kick: MenuItem<Wry>,
+    pub status_kick: Option<MenuItem<Wry>>,
 }
 
 pub struct TrayState(pub Mutex<TrayHandles>);
 
 pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
+    let kick_enabled = crate::edition::is_platform_enabled(PlatformId::Kick);
     let open_item = MenuItemBuilder::with_id("open", "Show Dropilot")
         .build(app)
         .map_err(|e| format!("Tray menu open item error: {e}"))?;
@@ -32,26 +33,33 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
         .enabled(false)
         .build(app)
         .map_err(|e| format!("Tray twitch status item error: {e}"))?;
-    let status_kick = MenuItemBuilder::with_id("status-kick", "Kick: Logged out")
-        .enabled(false)
-        .build(app)
-        .map_err(|e| format!("Tray kick status item error: {e}"))?;
+    let status_kick = if kick_enabled {
+        Some(
+            MenuItemBuilder::with_id("status-kick", "Kick: Logged out")
+                .enabled(false)
+                .build(app)
+                .map_err(|e| format!("Tray kick status item error: {e}"))?,
+        )
+    } else {
+        None
+    };
     let sep2 = PredefinedMenuItem::separator(app)
         .map_err(|e| format!("Tray separator error: {e}"))?;
     let quit_item = MenuItemBuilder::with_id("quit", "Quit Dropilot")
         .build(app)
         .map_err(|e| format!("Tray quit item error: {e}"))?;
 
-    let menu = MenuBuilder::new(app)
-        .items(&[
-            &open_item,
-            &toggle_pause,
-            &sep1,
-            &status_twitch,
-            &status_kick,
-            &sep2,
-            &quit_item,
-        ])
+    let mut menu_builder = MenuBuilder::new(app)
+        .item(&open_item)
+        .item(&toggle_pause)
+        .item(&sep1)
+        .item(&status_twitch);
+    if let Some(ref kick_item) = status_kick {
+        menu_builder = menu_builder.item(kick_item);
+    }
+    let menu = menu_builder
+        .item(&sep2)
+        .item(&quit_item)
         .build()
         .map_err(|e| format!("Failed building tray menu: {e}"))?;
 
@@ -144,16 +152,25 @@ pub fn setup_tray(app: &AppHandle, state: Arc<AppState>) -> Result<(), String> {
 }
 
 pub async fn update_tray_from_state(app: &AppHandle, state: &AppState) {
+    let kick_enabled = crate::edition::is_platform_enabled(PlatformId::Kick);
     let tw = state.twitch_snapshot.read().await.clone();
     let kk = state.kick_snapshot.read().await.clone();
 
     let tw_line = format_platform_status(&tw);
     let kk_line = format_platform_status(&kk);
-    let tooltip = format!("{tw_line} · {kk_line}");
+    let tooltip = if kick_enabled {
+        format!("{tw_line} · {kk_line}")
+    } else {
+        tw_line.clone()
+    };
     let all_paused = {
         let map = state.profile_snapshots.read().await;
         if map.is_empty() {
-            tw.state == MinerState::Paused && kk.state == MinerState::Paused
+            if kick_enabled {
+                tw.state == MinerState::Paused && kk.state == MinerState::Paused
+            } else {
+                tw.state == MinerState::Paused
+            }
         } else {
             map.values().all(|s| s.state == MinerState::Paused)
         }
@@ -162,7 +179,9 @@ pub async fn update_tray_from_state(app: &AppHandle, state: &AppState) {
     if let Some(tray_state) = app.try_state::<TrayState>() {
         if let Ok(handles) = tray_state.0.lock() {
             let _ = handles.status_twitch.set_text(&tw_line);
-            let _ = handles.status_kick.set_text(&kk_line);
+            if let Some(ref kick_item) = handles.status_kick {
+                let _ = kick_item.set_text(&kk_line);
+            }
             let _ = handles.toggle_pause.set_text(if all_paused {
                 "Resume all"
             } else {
