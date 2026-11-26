@@ -143,12 +143,16 @@ pub struct LogHandle {
     _guard: WorkerGuard,
 }
 
+fn env_filter_directive(level: LogLevelSetting) -> &'static str {
+    match level {
+        LogLevelSetting::Info => "dropilot_lib=info,dropilot=info,tauri_plugin_updater=off,warn",
+        LogLevelSetting::Debug => "dropilot_lib=debug,dropilot=debug,tauri_plugin_updater=off,info",
+    }
+}
+
 impl LogHandle {
     pub fn set_level(&self, level: LogLevelSetting) {
-        let directive = match level {
-            LogLevelSetting::Info => "dropilot_lib=info,dropilot=info,warn",
-            LogLevelSetting::Debug => "dropilot_lib=debug,dropilot=debug,info",
-        };
+        let directive = env_filter_directive(level);
         if let Ok(filter) = EnvFilter::try_new(directive) {
             let _ = self.filter_reload.reload(filter);
         }
@@ -194,9 +198,18 @@ struct EventVisitor {
     fields: Vec<String>,
 }
 
+fn should_skip_field(name: &str) -> bool {
+    // Strip tracing-log bridge metadata (log.file, log.line, log.target, log.module_path)
+    // so local build paths like C:\Users\...\.cargo\registry never leak into in-app logs.
+    name.starts_with("log.")
+}
+
 impl Visit for EventVisitor {
     fn record_debug(&mut self, field: &Field, value: &dyn std::fmt::Debug) {
         let name = field.name();
+        if should_skip_field(name) {
+            return;
+        }
         let formatted = format!("{value:?}");
         let trimmed = formatted.trim_matches('"').to_string();
         if name == "message" {
@@ -214,6 +227,9 @@ impl Visit for EventVisitor {
 
     fn record_str(&mut self, field: &Field, value: &str) {
         let name = field.name();
+        if should_skip_field(name) {
+            return;
+        }
         if name == "message" {
             self.message = value.to_string();
         } else if name == "platform" {
@@ -268,10 +284,7 @@ pub fn init_logging(initial_level: LogLevelSetting, buffer: LogBuffer) -> Result
 
     let (non_blocking, guard) = tracing_appender::non_blocking(file_appender);
 
-    let directive = match initial_level {
-        LogLevelSetting::Info => "dropilot_lib=info,dropilot=info,warn",
-        LogLevelSetting::Debug => "dropilot_lib=debug,dropilot=debug,info",
-    };
+    let directive = env_filter_directive(initial_level);
     let filter = EnvFilter::try_new(directive).unwrap_or_else(|_| EnvFilter::new("info"));
     let (filter_layer, filter_reload) = reload::Layer::new(filter);
 
@@ -293,4 +306,22 @@ pub fn init_logging(initial_level: LogLevelSetting, buffer: LogBuffer) -> Result
         filter_reload,
         _guard: guard,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn skips_tracing_log_metadata_fields_and_silences_updater_noise() {
+        assert!(should_skip_field("log.file"));
+        assert!(should_skip_field("log.line"));
+        assert!(should_skip_field("log.target"));
+        assert!(should_skip_field("log.module_path"));
+        assert!(!should_skip_field("error"));
+        assert!(!should_skip_field("channel"));
+
+        assert!(env_filter_directive(LogLevelSetting::Info).contains("tauri_plugin_updater=off"));
+        assert!(env_filter_directive(LogLevelSetting::Debug).contains("tauri_plugin_updater=off"));
+    }
 }

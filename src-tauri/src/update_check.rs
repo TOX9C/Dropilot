@@ -5,7 +5,7 @@ use semver::Version;
 use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Emitter, Manager};
 use tauri_plugin_updater::UpdaterExt;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::auth::login_window::{
     close_epic_claim_window, close_kick_bridge_window, close_twitch_bridge_window,
@@ -55,6 +55,7 @@ pub async fn check_signed_update(
 ) -> Result<UpdateStatus, AppError> {
     let current_str = env!("CARGO_PKG_VERSION").to_string();
 
+    let mut signed_err: Option<String> = None;
     if let Ok(updater) = app.updater() {
         match updater.check().await {
             Ok(Some(update)) => {
@@ -86,7 +87,8 @@ pub async fn check_signed_update(
                 });
             }
             Err(err) => {
-                warn!(error = %err, "Signed updater manifest unavailable; checking GitHub Releases API");
+                signed_err = Some(err.to_string());
+                debug!(error = %err, "Signed updater manifest unavailable; checking GitHub Releases API");
             }
         }
     }
@@ -102,7 +104,12 @@ pub async fn check_signed_update(
             notes: None,
             signed_update_ready: false,
         }),
-        Err(err) => Err(err),
+        Err(err) => {
+            if let Some(ref signed) = signed_err {
+                warn!(signed_error = %signed, fallback_error = %err, "Update check failed");
+            }
+            Err(err)
+        }
     }
 }
 
