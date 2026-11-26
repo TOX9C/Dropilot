@@ -95,7 +95,7 @@ jobs:
             "free"
           }
           $tauriArgs = if ($edition -eq "free") { "--features free-edition" } else { "" }
-          $editionLabel = if ($edition -eq "free") { "Free Edition (Twitch Drops + Epic Games Free Weekly)" } else { "Full Edition" }
+          $editionLabel = if ($edition -eq "free") { "Twitch Drops + Epic Games Free Weekly" } else { "Full Edition" }
           echo "tag=$tag" >> $env:GITHUB_OUTPUT
           echo "edition=$edition" >> $env:GITHUB_OUTPUT
           echo "tauri_args=$tauriArgs" >> $env:GITHUB_OUTPUT

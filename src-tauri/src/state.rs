@@ -264,6 +264,9 @@ impl AppState {
     }
 
     pub async fn dispatch_webhook(&self, event: WebhookEvent) {
+        if !crate::edition::current_edition().webhooks_enabled {
+            return;
+        }
         let webhook_settings = self.settings.read().await.webhooks.clone();
         self.webhooks
             .dispatch_async(self.http.clone(), webhook_settings, event);

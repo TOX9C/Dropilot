@@ -191,14 +191,30 @@
       .catch(() => {});
   });
 
-  const tabs: { id: SettingsTab; label: string; hint: string }[] = [
+  const tabs = $derived<{ id: SettingsTab; label: string; hint: string }[]>([
     { id: 'general', label: 'General & Startup', hint: 'Tray, boot & logs' },
-    { id: 'accounts', label: 'Accounts', hint: 'Isolated profiles' },
-    { id: 'farming', label: 'Mining & Schedule', hint: 'Rules & quiet hours' },
-    { id: 'alerts', label: 'Discord Webhooks', hint: 'Alerts & triggers' },
+    {
+      id: 'accounts',
+      label: $editionInfo.multiAccountEnabled ? 'Accounts' : 'Account',
+      hint: $editionInfo.multiAccountEnabled ? 'Isolated profiles' : 'Connected session',
+    },
+    {
+      id: 'farming',
+      label: $editionInfo.quietHoursEnabled ? 'Mining & Schedule' : 'Drop Farming',
+      hint: $editionInfo.quietHoursEnabled ? 'Rules & quiet hours' : 'Rules & cadence',
+    },
+    ...($editionInfo.webhooksEnabled
+      ? [{ id: 'alerts' as const, label: 'Discord Webhooks', hint: 'Alerts & triggers' }]
+      : []),
     { id: 'appearance', label: 'Appearance', hint: 'Theme & typography' },
     { id: 'data', label: 'Data & Updates', hint: 'Storage, OTA & reset' },
-  ];
+  ]);
+
+  $effect(() => {
+    if (activeTab === 'alerts' && !$editionInfo.webhooksEnabled) {
+      activeTab = 'general';
+    }
+  });
 
   const themeOptions: {
     id: ThemeMode;
@@ -366,13 +382,14 @@
     <div class="page-title-wrap">
       <div>
         <h1>Settings</h1>
-        <p class="page-subtitle">Configure startup, tray behavior, isolated accounts, farming rules, and appearance</p>
+        <p class="page-subtitle">
+          {$editionInfo.multiAccountEnabled
+            ? 'Configure startup, tray behavior, isolated accounts, farming rules, and appearance'
+            : 'Configure startup, tray behavior, account session, farming rules, and appearance'}
+        </p>
       </div>
     </div>
     <div class="page-actions">
-      {#if $editionInfo.isFree}
-        <Badge tone="accent">Free Edition</Badge>
-      {/if}
       <Badge tone="neutral">v{__APP_VERSION__}</Badge>
     </div>
   </header>
@@ -559,12 +576,16 @@
         <section class="settings-group">
           <div class="group-head group-head-actions">
             <div class="group-head-left">
-              <span class="section-label">ISOLATED PROFILES</span>
-              <span class="group-count tabular">
-                {$editionInfo.kickEnabled
-                  ? `${twitchProfileCount} Twitch · ${kickProfileCount} Kick`
-                  : `${twitchProfileCount} Twitch`}
+              <span class="section-label">
+                {$editionInfo.multiAccountEnabled ? 'ISOLATED PROFILES' : 'CONNECTED ACCOUNT'}
               </span>
+              {#if $editionInfo.multiAccountEnabled}
+                <span class="group-count tabular">
+                  {$editionInfo.kickEnabled
+                    ? `${twitchProfileCount} Twitch · ${kickProfileCount} Kick`
+                    : `${twitchProfileCount} Twitch`}
+                </span>
+              {/if}
             </div>
             {#if $editionInfo.multiAccountEnabled}
               <div class="inline-actions">
@@ -642,32 +663,34 @@
                     <div class="acct-top">
                       <span class="plat-dot dot-{card.platform}" aria-hidden="true"></span>
                       <strong>{label}</strong>
-                      {#if renamingProfileId === card.profileId}
-                        <form class="rename-inline" onsubmit={handleRenameProfile}>
-                          <input
-                            type="text"
-                            class="rename-input"
-                            bind:value={renameValue}
-                            maxlength={24}
-                            aria-label="Account label"
-                            onkeydown={(e) => e.key === 'Escape' && (renamingProfileId = null)}
-                          />
-                          <Button type="submit" variant="primary" size="sm">Save</Button>
-                        </form>
-                      {:else}
-                        <Badge tone="neutral">{card.label}</Badge>
-                        <button
-                          type="button"
-                          class="rename-btn"
-                          title="Rename profile"
-                          aria-label={`Rename ${card.label}`}
-                          onclick={() => {
-                            renamingProfileId = card.profileId;
-                            renameValue = card.label;
-                          }}
-                        >
-                          <Pencil size={11} />
-                        </button>
+                      {#if $editionInfo.multiAccountEnabled}
+                        {#if renamingProfileId === card.profileId}
+                          <form class="rename-inline" onsubmit={handleRenameProfile}>
+                            <input
+                              type="text"
+                              class="rename-input"
+                              bind:value={renameValue}
+                              maxlength={24}
+                              aria-label="Account label"
+                              onkeydown={(e) => e.key === 'Escape' && (renamingProfileId = null)}
+                            />
+                            <Button type="submit" variant="primary" size="sm">Save</Button>
+                          </form>
+                        {:else}
+                          <Badge tone="neutral">{card.label}</Badge>
+                          <button
+                            type="button"
+                            class="rename-btn"
+                            title="Rename profile"
+                            aria-label={`Rename ${card.label}`}
+                            onclick={() => {
+                              renamingProfileId = card.profileId;
+                              renameValue = card.label;
+                            }}
+                          >
+                            <Pencil size={11} />
+                          </button>
+                        {/if}
                       {/if}
                       {#if platCount > 1 && isActive}
                         <Badge tone="accent">Active</Badge>
@@ -678,14 +701,16 @@
                       {#if platSnap.account}
                         Signed in as <strong>@{platSnap.account.displayName}</strong>
                       {:else}
-                        Not connected — sign in via Dropilot's isolated window
+                        Not connected — sign in with your {label} account
                       {/if}
                     </span>
-                    <span class="acct-iso tabular">
-                      {isDefault
-                        ? 'Isolated WebView2 · Default session'
-                        : `Isolated WebView2 · WebView2-Profiles/${card.profileId}`}
-                    </span>
+                    {#if $editionInfo.multiAccountEnabled}
+                      <span class="acct-iso tabular">
+                        {isDefault
+                          ? 'Isolated WebView2 · Default session'
+                          : `Isolated WebView2 · WebView2-Profiles/${card.profileId}`}
+                      </span>
+                    {/if}
                   </div>
                 </div>
 
@@ -749,12 +774,14 @@
             {/each}
           </div>
 
-          <div class="session-info-bar">
-            <Info size={13} />
-            <span>
-              <strong>Isolated session sign-in:</strong> Dropilot uses dedicated WebView2 folders under <code>WebView2-Profiles</code> and separate Windows Credential Manager entries instead of reading Chrome, Edge, or Firefox profiles, so multiple Twitch &amp; Kick accounts can farm simultaneously.
-            </span>
-          </div>
+          {#if $editionInfo.multiAccountEnabled}
+            <div class="session-info-bar">
+              <Info size={13} />
+              <span>
+                <strong>Isolated session sign-in:</strong> Dropilot uses dedicated WebView2 folders under <code>WebView2-Profiles</code> and separate Windows Credential Manager entries instead of reading Chrome, Edge, or Firefox profiles, so multiple Twitch &amp; Kick accounts can farm simultaneously.
+              </span>
+            </div>
+          {/if}
         </section>
       {:else if activeTab === 'farming'}
         <section class="settings-group">
@@ -765,7 +792,9 @@
             <div class="setting-row">
               <div class="setting-meta">
                 <strong>Auto-claim completed drops</strong>
-                <p>Automatically claims finished Twitch &amp; Kick rewards as soon as watch time reaches 100%.</p>
+                <p>
+                  Automatically claims finished {$editionInfo.kickEnabled ? 'Twitch & Kick' : 'Twitch'} rewards as soon as watch time reaches 100%.
+                </p>
               </div>
               <div class="setting-ctrl">
                 <Toggle
@@ -852,74 +881,76 @@
           </div>
         </section>
 
-        <section class="settings-group">
-          <div class="group-head">
-            <span class="section-label">SCHEDULE &amp; TIMING</span>
-          </div>
-          <div class="card group-card">
-            <div class="setting-row setting-row-col">
-              <div class="setting-row-top">
+        {#if $editionInfo.quietHoursEnabled}
+          <section class="settings-group">
+            <div class="group-head">
+              <span class="section-label">SCHEDULE &amp; TIMING</span>
+            </div>
+            <div class="card group-card">
+              <div class="setting-row setting-row-col">
+                <div class="setting-row-top">
+                  <div class="setting-meta">
+                    <strong>Quiet hours schedule</strong>
+                    <p>Automatically pause drop farming during local hours and resume when the window ends.</p>
+                  </div>
+                  <div class="setting-ctrl">
+                    <Toggle
+                      checked={settings.schedule.quietHoursEnabled}
+                      ariaLabel="Enable quiet hours schedule"
+                      onchange={(v) => savePatch((d) => (d.schedule.quietHoursEnabled = v))}
+                    />
+                  </div>
+                </div>
+
+                {#if settings.schedule.quietHoursEnabled}
+                  <div class="schedule-row">
+                    <div class="sched-field">
+                      <span class="sched-label">Pause at</span>
+                      <CustomSelect
+                        options={timeOptions}
+                        value={snapToHalfHour(settings.schedule.quietStartMinutes)}
+                        onchange={(val) =>
+                          savePatch((d) => (d.schedule.quietStartMinutes = Number(val)))}
+                        ariaLabel="Quiet hours start time"
+                        size="sm"
+                      />
+                    </div>
+                    <div class="sched-field">
+                      <span class="sched-label">Resume at</span>
+                      <CustomSelect
+                        options={timeOptions}
+                        value={snapToHalfHour(settings.schedule.quietEndMinutes)}
+                        onchange={(val) =>
+                          savePatch((d) => (d.schedule.quietEndMinutes = Number(val)))}
+                        ariaLabel="Quiet hours end time"
+                        size="sm"
+                      />
+                    </div>
+                    {#if settings.schedule.quietStartMinutes > settings.schedule.quietEndMinutes}
+                      <Badge tone="accent">Overnight window</Badge>
+                    {:else if settings.schedule.quietStartMinutes === settings.schedule.quietEndMinutes}
+                      <Badge tone="warning">Start &amp; end match (inactive)</Badge>
+                    {/if}
+                  </div>
+                {/if}
+              </div>
+
+              <div class="setting-row">
                 <div class="setting-meta">
-                  <strong>Quiet hours schedule</strong>
-                  <p>Automatically pause drop farming during local hours and resume when the window ends.</p>
+                  <strong>Humanized polling jitter (±25%)</strong>
+                  <p>Randomizes watch ticks and background sync intervals instead of rigid 60-second pulses.</p>
                 </div>
                 <div class="setting-ctrl">
                   <Toggle
-                    checked={settings.schedule.quietHoursEnabled}
-                    ariaLabel="Enable quiet hours schedule"
-                    onchange={(v) => savePatch((d) => (d.schedule.quietHoursEnabled = v))}
+                    checked={settings.schedule.humanizedJitter}
+                    ariaLabel="Humanized polling jitter"
+                    onchange={(v) => savePatch((d) => (d.schedule.humanizedJitter = v))}
                   />
                 </div>
               </div>
-
-              {#if settings.schedule.quietHoursEnabled}
-                <div class="schedule-row">
-                  <div class="sched-field">
-                    <span class="sched-label">Pause at</span>
-                    <CustomSelect
-                      options={timeOptions}
-                      value={snapToHalfHour(settings.schedule.quietStartMinutes)}
-                      onchange={(val) =>
-                        savePatch((d) => (d.schedule.quietStartMinutes = Number(val)))}
-                      ariaLabel="Quiet hours start time"
-                      size="sm"
-                    />
-                  </div>
-                  <div class="sched-field">
-                    <span class="sched-label">Resume at</span>
-                    <CustomSelect
-                      options={timeOptions}
-                      value={snapToHalfHour(settings.schedule.quietEndMinutes)}
-                      onchange={(val) =>
-                        savePatch((d) => (d.schedule.quietEndMinutes = Number(val)))}
-                      ariaLabel="Quiet hours end time"
-                      size="sm"
-                    />
-                  </div>
-                  {#if settings.schedule.quietStartMinutes > settings.schedule.quietEndMinutes}
-                    <Badge tone="accent">Overnight window</Badge>
-                  {:else if settings.schedule.quietStartMinutes === settings.schedule.quietEndMinutes}
-                    <Badge tone="warning">Start &amp; end match (inactive)</Badge>
-                  {/if}
-                </div>
-              {/if}
             </div>
-
-            <div class="setting-row">
-              <div class="setting-meta">
-                <strong>Humanized polling jitter (±25%)</strong>
-                <p>Randomizes watch ticks and background sync intervals instead of rigid 60-second pulses.</p>
-              </div>
-              <div class="setting-ctrl">
-                <Toggle
-                  checked={settings.schedule.humanizedJitter}
-                  ariaLabel="Humanized polling jitter"
-                  onchange={(v) => savePatch((d) => (d.schedule.humanizedJitter = v))}
-                />
-              </div>
-            </div>
-          </div>
-        </section>
+          </section>
+        {/if}
       {:else if activeTab === 'alerts'}
         <section class="settings-group">
           <div class="group-head group-head-actions">
@@ -1335,8 +1366,8 @@
             <div class="setting-row setting-row-col">
               <div class="setting-row-top">
                 <div class="setting-meta">
-                  <strong>Dropilot v{__APP_VERSION__}{$editionInfo.isFree ? ' · Free Edition' : ''}</strong>
-                  <p>Standard user privileges (<code>asInvoker</code>) · Isolated WebView2 sessions</p>
+                  <strong>Dropilot v{__APP_VERSION__}</strong>
+                  <p>Standard user privileges (<code>asInvoker</code>)</p>
                 </div>
                 <div class="setting-ctrl inline-actions">
                   <Button variant="secondary" size="sm" onclick={() => api.openUrl('https://github.com/theflash1211/dropilot-releases#readme')}>
@@ -1351,7 +1382,7 @@
                 </div>
               </div>
               <p class="about-note">
-                <strong>Disclaimer:</strong> Using automation tools may violate Twitch or Kick Terms of Service. You are solely responsible for your accounts. Dropilot is not affiliated with, sponsored by, or endorsed by Twitch Interactive, Inc. or Kick Streaming Pty Ltd.
+                <strong>Disclaimer:</strong> Using automation tools may violate {$editionInfo.kickEnabled ? 'Twitch or Kick' : 'Twitch'} Terms of Service. You are solely responsible for your accounts. Dropilot is not affiliated with, sponsored by, or endorsed by {$editionInfo.kickEnabled ? 'Twitch Interactive, Inc. or Kick Streaming Pty Ltd.' : 'Twitch Interactive, Inc. or Epic Games, Inc.'}
               </p>
             </div>
           </div>

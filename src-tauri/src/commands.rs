@@ -1052,6 +1052,9 @@ pub async fn get_webhook_secrets_status() -> Result<WebhookSecretsStatus, String
 pub async fn save_webhook_secrets(
     discord_url: Option<String>,
 ) -> Result<WebhookSecretsStatus, String> {
+    if !current_edition().webhooks_enabled {
+        return Err("Discord webhooks are not available in this build.".to_string());
+    }
     if let Some(url) = discord_url {
         WebhookDispatcher::save_discord_url(&url)?;
     }
@@ -1063,6 +1066,9 @@ pub async fn test_webhook(
     state: State<'_, Arc<AppState>>,
     channel: WebhookChannel,
 ) -> Result<String, String> {
+    if !current_edition().webhooks_enabled {
+        return Err("Discord webhooks are not available in this build.".to_string());
+    }
     WebhookDispatcher::send_test(&state.http, channel).await
 }
 

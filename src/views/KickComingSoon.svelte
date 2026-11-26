@@ -36,12 +36,12 @@
         <Zap size={20} />
       </div>
       <div class="hero-copy">
-        <div class="hero-kicker mono">UPCOMING DROPILOT RELEASE</div>
+        <div class="hero-kicker mono">UPCOMING DROPILOT UPDATE</div>
         <h2>Kick Drops &amp; Multi-Account Farming</h2>
         <p>
-          You're running <strong>Dropilot Free Edition</strong> (Twitch Drops + Epic Games Free Weekly).
-          Kick Drops automation and multi-account profiles are arriving in an upcoming release — Dropilot
-          will deliver it automatically through the built-in signed updater with zero reinstall required.
+          Kick Drops automation, watch-time reward cases, and multi-account profiles are arriving in an
+          upcoming Dropilot update — Dropilot will deliver it automatically through the built-in signed
+          updater with zero reinstall required.
         </p>
       </div>
     </div>

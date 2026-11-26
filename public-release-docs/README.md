@@ -20,16 +20,15 @@ Go to **[Releases](https://github.com/theflash1211/dropilot-releases/releases/la
 
 ---
 
-## Features (Free Edition)
+## Features
 
 - **Zero-Video Twitch Drops Mining:** Automatically discovers active drop campaigns, selects live drops-enabled streams, sends stream-less watch heartbeats (0 Mbps video), and auto-claims earned rewards.
-- **Epic Games Weekly Free Tracker:** Tracks live and upcoming Epic Games Store weekly free titles with countdown timers, desktop/Discord alerts, and 1-click assisted checkout inside Dropilot's isolated window.
+- **Epic Games Weekly Free Tracker:** Tracks live and upcoming Epic Games Store weekly free titles with countdown timers, desktop alerts, and 1-click assisted checkout.
 - **Tray-First Tiny Footprint:** Minimizing or closing to the system tray destroys the UI WebView2 window while keeping the lightweight Rust core running quietly in the background.
 - **Priority Queue & Game Watchlist:** Order games and campaigns by priority, boost ending-soon drops, and auto-mine watched games the moment a campaign goes live.
-- **Discord Webhooks & Quiet Hours:** Optional Discord embed alerts when drops are claimed or Epic free games unlock, plus configurable sleep/quiet hours with humanized jitter.
 - **Lifetime History & Analytics:** 14-day watch activity chart, streaks, top games, and CSV/JSON export.
 - **Signed Auto-Updates & Remote Config:** Cryptographically verified in-app updates (`Minisign`) and live remote GQL hash updates so Twitch API changes are fixed quickly.
-- **Coming Soon:** Kick Drops automation, Kick watch-time reward cases, and Multi-Account farming profiles — delivered seamlessly through the built-in updater.
+- **Coming Soon:** Kick Drops automation, Kick watch-time reward cases, multi-account profiles, Discord webhooks, and Quiet Hours scheduling — delivered seamlessly through the built-in updater.
 
 ---
 

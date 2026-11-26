@@ -335,7 +335,8 @@ async fn run_miner_loop(
         }
 
         // Wait either for a MinerControl command or the next step tick.
-        let humanized_jitter = state.settings.read().await.schedule.humanized_jitter;
+        let humanized_jitter = crate::edition::current_edition().quiet_hours_enabled
+            && state.settings.read().await.schedule.humanized_jitter;
         let wait_dur = compute_next_wake_delay(&state, &ctx, humanized_jitter);
         tokio::select! {
             maybe_cmd = rx.recv() => {
@@ -677,7 +678,9 @@ async fn step_miner(
         return;
     }
 
-    if is_in_quiet_hours_now(&settings.schedule) {
+    if crate::edition::current_edition().quiet_hours_enabled
+        && is_in_quiet_hours_now(&settings.schedule)
+    {
         if ctx.watching.is_some() {
             backend.active(state).stop_watching().await;
             close_compat_watch_window_for_profile(app, platform_id, profile_id);

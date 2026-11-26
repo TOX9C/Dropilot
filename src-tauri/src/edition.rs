@@ -27,8 +27,8 @@ pub const fn current_edition() -> EditionInfo {
             kick_enabled: false,
             epic_enabled: true,
             multi_account_enabled: false,
-            webhooks_enabled: true,
-            quiet_hours_enabled: true,
+            webhooks_enabled: false,
+            quiet_hours_enabled: false,
             max_profiles_per_platform: 1,
         }
     }
@@ -107,6 +107,8 @@ mod tests {
             assert!(info.is_free);
             assert!(!info.kick_enabled);
             assert!(!info.multi_account_enabled);
+            assert!(!info.webhooks_enabled);
+            assert!(!info.quiet_hours_enabled);
             assert_eq!(info.max_profiles_per_platform, 1);
             assert!(is_profile_allowed(PlatformId::Twitch, DEFAULT_TWITCH_PROFILE_ID));
             assert!(!is_profile_allowed(PlatformId::Twitch, "twitch-alt-1"));
@@ -116,6 +118,8 @@ mod tests {
             assert!(!info.is_free);
             assert!(info.kick_enabled);
             assert!(info.multi_account_enabled);
+            assert!(info.webhooks_enabled);
+            assert!(info.quiet_hours_enabled);
             assert!(is_profile_allowed(PlatformId::Twitch, "twitch-alt-1"));
             assert!(is_profile_allowed(PlatformId::Kick, DEFAULT_KICK_PROFILE_ID));
         }
