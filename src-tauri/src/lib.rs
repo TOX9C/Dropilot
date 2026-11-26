@@ -195,7 +195,6 @@ pub fn run() {
                 .filter(|p| crate::edition::is_profile_allowed(p.platform, &p.id))
                 .cloned()
                 .collect();
-            let mut spawned_miners = Vec::with_capacity(initial_profiles.len());
             for (idx, profile) in initial_profiles.iter().enumerate() {
                 let backend = build_platform_backend(
                     &profile.id,
