@@ -528,6 +528,9 @@ export async function initializeAppStores(): Promise<() => void> {
         installingUpdate.set(false);
       }
     },
+    (nextSettings) => {
+      appSettings.set(nextSettings);
+    },
   );
 
   if (settings.updateCheck) {

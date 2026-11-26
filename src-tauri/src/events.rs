@@ -6,9 +6,11 @@ use tokio::sync::Mutex;
 
 use crate::logging::LogEntry;
 use crate::platforms::AppSnapshot;
+use crate::settings::Settings;
 
 pub const EVENT_SNAPSHOT: &str = "dropilot://snapshot";
 pub const EVENT_LOG: &str = "dropilot://log";
+pub const EVENT_SETTINGS: &str = "dropilot://settings";
 
 #[derive(Debug)]
 struct ThrottleState {
@@ -76,6 +78,12 @@ impl EventHub {
     pub fn emit_log_if_open(app: &AppHandle, entry: &LogEntry) {
         if app.get_webview_window("main").is_some() {
             let _ = app.emit_to("main", EVENT_LOG, entry);
+        }
+    }
+
+    pub fn emit_settings_if_open(app: &AppHandle, settings: &Settings) {
+        if app.get_webview_window("main").is_some() {
+            let _ = app.emit_to("main", EVENT_SETTINGS, settings);
         }
     }
 

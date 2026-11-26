@@ -13,6 +13,7 @@ use crate::auth::login_window::{
     close_compat_watch_window_for_profile, close_kick_bridge_window_for_profile,
     close_twitch_bridge_window_for_profile,
 };
+use crate::events::EventHub;
 use crate::history::{ClaimHistoryEntry, ClaimRecordStatus};
 use crate::miner::scheduler::{
     duration_until_quiet_end, format_minutes_hhmm, is_in_quiet_hours_now, jittered_duration,
@@ -37,7 +38,7 @@ use crate::platforms::{
     MinerState, Platform, PlatformId, PlatformSnapshot, RecentClaim, Reward, WatchTickResult,
 };
 use crate::secrets::SecretStore;
-use crate::settings::is_default_profile;
+use crate::settings::{is_default_profile, PlatformSettings, PriorityItem};
 use crate::state::{AppState, MinerControl};
 use crate::tray::update_tray_from_state;
 use crate::webhooks::WebhookEvent;
@@ -310,6 +311,98 @@ async fn clear_pinned_channel(state: &AppState, profile_id: &str, platform: Plat
     if changed {
         let _ = state.persist_settings().await;
     }
+}
+
+/// Removes fully-claimed campaigns from a profile's `priority` list (`PriorityItem::Campaign`)
+/// and `farm_campaigns` list while strictly preserving all `PriorityItem::Game` entries.
+fn prune_completed_campaign_priorities_from_settings(
+    plat: &mut PlatformSettings,
+    completed_campaign_ids: &HashSet<String>,
+) -> Vec<String> {
+    if completed_campaign_ids.is_empty() {
+        return Vec::new();
+    }
+    let mut removed = Vec::new();
+    plat.priority.retain(|item| match item {
+        PriorityItem::Campaign {
+            campaign_id,
+            campaign_name,
+        } if completed_campaign_ids.contains(campaign_id) => {
+            removed.push(if campaign_name.trim().is_empty() {
+                campaign_id.clone()
+            } else {
+                campaign_name.clone()
+            });
+            false
+        }
+        PriorityItem::Game { .. } | PriorityItem::Campaign { .. } => true,
+    });
+    let before_farm = plat.farm_campaigns.len();
+    plat.farm_campaigns
+        .retain(|id| !completed_campaign_ids.contains(id));
+    if removed.is_empty() && plat.farm_campaigns.len() < before_farm {
+        removed.push("farm_campaigns".to_string());
+    }
+    removed
+}
+
+async fn prune_completed_campaign_priorities(
+    app: &AppHandle,
+    state: &AppState,
+    profile_id: &str,
+    platform: PlatformId,
+    campaigns: &[Campaign],
+) -> Option<PlatformSettings> {
+    let completed_ids: HashSet<String> = campaigns
+        .iter()
+        .filter(|c| !c.drops.is_empty() && c.drops.iter().all(|d| d.claimed))
+        .map(|c| c.id.clone())
+        .collect();
+    if completed_ids.is_empty() {
+        return None;
+    }
+
+    let (updated_settings, updated_plat, removed) = {
+        let mut guard = state.settings.write().await;
+        let removed = if let Some(plat) = guard.profile_settings_mut(profile_id) {
+            prune_completed_campaign_priorities_from_settings(plat, &completed_ids)
+        } else {
+            let plat = match platform {
+                PlatformId::Twitch => &mut guard.twitch,
+                PlatformId::Kick => &mut guard.kick,
+            };
+            prune_completed_campaign_priorities_from_settings(plat, &completed_ids)
+        };
+        if removed.is_empty() {
+            return None;
+        }
+        guard.sync_legacy_mirrors();
+        let next_plat = guard
+            .profile_settings(profile_id)
+            .cloned()
+            .unwrap_or_else(|| match platform {
+                PlatformId::Twitch => guard.twitch.clone(),
+                PlatformId::Kick => guard.kick.clone(),
+            });
+        (guard.clone(), next_plat, removed)
+    };
+
+    if let Err(err) = state.persist_settings().await {
+        warn!(
+            platform = platform.as_str(),
+            profile_id,
+            error = %err,
+            "Failed persisting settings after pruning completed campaigns from priority"
+        );
+    }
+    EventHub::emit_settings_if_open(app, &updated_settings);
+    info!(
+        platform = platform.as_str(),
+        profile_id,
+        removed = ?removed,
+        "Cleared fully claimed campaign(s) from priority list (kept game priorities)"
+    );
+    Some(updated_plat)
 }
 
 async fn run_miner_loop(
@@ -623,7 +716,7 @@ async fn step_miner(
     ctx: &mut RuntimeContext,
 ) {
     let settings = state.settings.read().await.clone();
-    let plat_settings = settings
+    let mut plat_settings = settings
         .profile_settings(profile_id)
         .cloned()
         .unwrap_or_else(|| match platform_id {
@@ -885,6 +978,14 @@ async fn step_miner(
         .await;
     }
 
+    // Remove fully-claimed specific campaigns from priority/farm lists (never game priorities).
+    if let Some(updated_plat) =
+        prune_completed_campaign_priorities(app, state, profile_id, platform_id, &ctx.campaigns)
+            .await
+    {
+        plat_settings = updated_plat;
+    }
+
     // 5. Build ordered priority queue of eligible campaigns.
     let now = Utc::now();
     ctx.prune_cooldowns();
@@ -1026,11 +1127,33 @@ async fn step_miner(
                 if let Some(hi_camp) = higher_priority {
                     if hi_camp.id != current_camp.id {
                         // Probe the higher-priority campaign BEFORE dropping the active stream
-                        // so we never interrupt farming if the higher-priority drop has no live channels.
+                        // so we never interrupt farming if the higher-priority drop has no live channels
+                        // or turns out to be already claimed once drops hydrate from AvailableDrops.
                         match plat.find_candidate_channels(&token, hi_camp).await {
                             Ok(candidates) => {
-                                // Switching to a different campaign always resets channel selection to Auto.
-                                if let Some(best) = select_best_channel(hi_camp, &candidates, None).cloned() {
+                                if hydrate_and_reconcile_cached_drops(
+                                    &mut ctx.campaigns,
+                                    plat.as_ref(),
+                                    &hi_camp.id,
+                                    &ctx.claimed_benefits,
+                                ) {
+                                    let _ = prune_completed_campaign_priorities(
+                                        app,
+                                        state,
+                                        profile_id,
+                                        platform_id,
+                                        &ctx.campaigns,
+                                    )
+                                    .await;
+                                    info!(
+                                        platform = platform_id.as_str(),
+                                        campaign = %hi_camp.name,
+                                        game = %hi_camp.game.name,
+                                        "Skipping higher-priority campaign: all drops already claimed after hydrating drop details"
+                                    );
+                                } else if let Some(best) =
+                                    select_best_channel(hi_camp, &candidates, None).cloned()
+                                {
                                     clear_pinned_channel(state, profile_id, platform_id).await;
                                     info!(
                                         platform = platform_id.as_str(),
@@ -1039,12 +1162,17 @@ async fn step_miner(
                                         game = %hi_camp.game.name,
                                         "Switching to higher-priority participating stream"
                                     );
+                                    let hydrated_camp_ref = ctx
+                                        .campaigns
+                                        .iter()
+                                        .find(|c| c.id == hi_camp.id)
+                                        .unwrap_or(hi_camp);
                                     ctx.candidates = candidates;
                                     ctx.watching = Some(best);
                                     ctx.watching_since = Some(now);
                                     ctx.current_campaign_id = Some(hi_camp.id.clone());
                                     ctx.current_drop_id =
-                                        active_drop_for(hi_camp).map(|d| d.id.clone());
+                                        active_drop_for(hydrated_camp_ref).map(|d| d.id.clone());
                                     ctx.last_live_check = Some(Instant::now());
                                     ctx.last_watch_tick = None;
                                     ctx.last_progress_advance = now;
@@ -1107,6 +1235,9 @@ async fn step_miner(
         let mut last_empty_name: Option<String> = None;
 
         for cand_camp in &try_order {
+            if is_campaign_completed_in(&ctx.campaigns, &cand_camp.id) {
+                continue;
+            }
             ctx.state = MinerState::Selecting;
             ctx.state_reason = Some(format!(
                 "Finding participating stream for {} ({})",
@@ -1116,6 +1247,32 @@ async fn step_miner(
 
             match plat.find_candidate_channels(&token, cand_camp).await {
                 Ok(candidates) => {
+                    // Hydrate drop rewards & timers discovered during channel verification
+                    // and reconcile against Inventory claimed_benefits BEFORE selecting a stream,
+                    // so already-claimed campaigns are skipped immediately without watching them.
+                    if hydrate_and_reconcile_cached_drops(
+                        &mut ctx.campaigns,
+                        plat.as_ref(),
+                        &cand_camp.id,
+                        &ctx.claimed_benefits,
+                    ) {
+                        let _ = prune_completed_campaign_priorities(
+                            app,
+                            state,
+                            profile_id,
+                            platform_id,
+                            &ctx.campaigns,
+                        )
+                        .await;
+                        info!(
+                            platform = platform_id.as_str(),
+                            campaign = %cand_camp.name,
+                            game = %cand_camp.game.name,
+                            "Skipping campaign: all drops already claimed after hydrating drop details"
+                        );
+                        continue;
+                    }
+
                     let non_avoided: Vec<Channel> = candidates
                         .iter()
                         .filter(|c| {
@@ -1157,17 +1314,6 @@ async fn step_miner(
                         ctx.watching = Some(best);
                         ctx.watching_since = Some(Utc::now());
                         ctx.current_campaign_id = Some(cand_camp.id.clone());
-                        // Hydrate drop rewards & timers discovered during channel verification
-                        // so Dashboard & NowWatching immediately show every reward & total ETA.
-                        if let Some(cached_drops) = plat.cached_campaign_drops(&cand_camp.id) {
-                            if let Some(target_c) =
-                                ctx.campaigns.iter_mut().find(|c| c.id == cand_camp.id)
-                            {
-                                if target_c.drops.is_empty() {
-                                    target_c.drops = cached_drops;
-                                }
-                            }
-                        }
                         let active_camp_ref = ctx
                             .campaigns
                             .iter()
@@ -1987,6 +2133,66 @@ fn total_watched_minutes(campaigns: &[Campaign]) -> u32 {
         .sum()
 }
 
+fn is_campaign_completed(campaign: &Campaign) -> bool {
+    !campaign.drops.is_empty()
+        && campaign
+            .drops
+            .iter()
+            .all(|d| d.claimed || d.needs_manual_claim)
+}
+
+fn is_campaign_completed_in(campaigns: &[Campaign], campaign_id: &str) -> bool {
+    campaigns
+        .iter()
+        .find(|c| c.id == campaign_id)
+        .map(is_campaign_completed)
+        .unwrap_or(false)
+}
+
+/// Hydrates any empty-drops campaigns from `plat.cached_campaign_drops`, reconciles
+/// newly discovered drops against Inventory `claimed_benefits` immediately, and returns
+/// `true` if `campaign_id` is now fully claimed/completed and must not be watched.
+fn hydrate_and_reconcile_cached_drops(
+    campaigns: &mut [Campaign],
+    plat: &dyn Platform,
+    campaign_id: &str,
+    claimed_benefits: &[ClaimedBenefit],
+) -> bool {
+    hydrate_and_reconcile_drops_with(
+        campaigns,
+        campaign_id,
+        claimed_benefits,
+        |id| plat.cached_campaign_drops(id),
+    )
+}
+
+fn hydrate_and_reconcile_drops_with<F>(
+    campaigns: &mut [Campaign],
+    campaign_id: &str,
+    claimed_benefits: &[ClaimedBenefit],
+    mut lookup_cached_drops: F,
+) -> bool
+where
+    F: FnMut(&str) -> Option<Vec<Drop>>,
+{
+    let mut hydrated_any = false;
+    for camp in campaigns.iter_mut() {
+        if camp.drops.is_empty() {
+            if let Some(cached_drops) = lookup_cached_drops(&camp.id) {
+                if !cached_drops.is_empty() {
+                    camp.drops = cached_drops;
+                    hydrated_any = true;
+                }
+            }
+        }
+    }
+    if hydrated_any {
+        reconcile_claimed_benefits(campaigns, claimed_benefits);
+        propagate_linked_games(campaigns);
+    }
+    is_campaign_completed_in(campaigns, campaign_id)
+}
+
 fn active_drop_for(campaign: &Campaign) -> Option<&Drop> {
     campaign
         .drops
@@ -2556,5 +2762,199 @@ mod tests {
         assert!(ctx.campaigns[0].drops[0].claimed);
         assert_eq!(ctx.campaigns[0].drops[0].current_minutes, 60);
         assert!(ctx.campaigns[0].linked);
+    }
+
+    #[test]
+    fn hydrates_and_reconciles_empty_drops_campaign_before_selecting_stream() {
+        let now = Utc::now();
+        let starts_at = now - ChronoDuration::days(10);
+        let ends_at = now + ChronoDuration::days(5);
+        let awarded_at = now - ChronoDuration::days(3);
+
+        let ow_rewards = [
+            ("b-river", "River Spray", 60),
+            ("b-fika", "Lounging Fika Spray", 120),
+            ("b-sakura", "Sakura Love Spray", 180),
+            ("b-loot", "RoT Lootbox", 240),
+            ("b-starry", "Starry Peace Spray", 300),
+            ("b-epic", "RoT Epic Lootbox", 360),
+        ];
+
+        // On startup, ViewerDropsDashboard returns the Overwatch campaign with empty `drops`.
+        let mut ctx = RuntimeContext::new();
+        ctx.campaigns = vec![
+            Campaign {
+                id: "ow-talon-s5".to_string(),
+                platform: PlatformId::Twitch,
+                game: crate::platforms::Game {
+                    id: "515025".to_string(),
+                    name: "Overwatch".to_string(),
+                    slug: None,
+                    box_art_url: None,
+                },
+                name: "Reign of Talon S5 Mid".to_string(),
+                starts_at,
+                ends_at,
+                status: CampaignStatus::Active,
+                requires_link: true,
+                linked: true,
+                link_verified: true,
+                link_url: None,
+                allowed_channels: None,
+                drops: Vec::new(),
+            },
+            Campaign {
+                id: "albion-next".to_string(),
+                platform: PlatformId::Twitch,
+                game: crate::platforms::Game {
+                    id: "417528".to_string(),
+                    name: "Albion Online".to_string(),
+                    slug: None,
+                    box_art_url: None,
+                },
+                name: "AOCP Flamescale 8".to_string(),
+                starts_at: now - ChronoDuration::hours(2),
+                ends_at: now + ChronoDuration::days(6),
+                status: CampaignStatus::Active,
+                requires_link: false,
+                linked: true,
+                link_verified: true,
+                link_url: None,
+                allowed_channels: None,
+                drops: vec![make_twitch_drop("alb-d-1", Some("b-alb"), "Chest", 120)],
+            },
+        ];
+
+        // Inventory GQL runs first and populates ctx.claimed_benefits, while ow-talon-s5 drops are still empty.
+        let progress: Vec<DropProgress> = ow_rewards
+            .iter()
+            .map(|(bid, rname, _)| {
+                make_claimed_progress(Some(bid), rname, Some("515025"), Some("Overwatch"), awarded_at)
+            })
+            .collect();
+        merge_claimed_benefits(&mut ctx.claimed_benefits, &progress);
+        apply_progress(&mut ctx.campaigns, &progress);
+        reconcile_claimed_benefits(&mut ctx.campaigns, &ctx.claimed_benefits);
+        assert!(ctx.campaigns[0].drops.is_empty());
+
+        // Channel verification (DropsHighlightService_AvailableDrops) discovers all 6 drops.
+        let discovered_drops: Vec<Drop> = ow_rewards
+            .iter()
+            .enumerate()
+            .map(|(i, (bid, rname, mins))| {
+                make_twitch_drop(&format!("ow-d-{i}"), Some(bid), rname, *mins)
+            })
+            .collect();
+
+        let completed = hydrate_and_reconcile_drops_with(
+            &mut ctx.campaigns,
+            "ow-talon-s5",
+            &ctx.claimed_benefits,
+            |id| (id == "ow-talon-s5").then(|| discovered_drops.clone()),
+        );
+        assert!(
+            completed,
+            "already-claimed campaign must be detected as completed BEFORE starting watch session"
+        );
+        assert!(ctx.campaigns[0].drops.iter().all(|d| d.claimed));
+
+        // Subsequent selection immediately picks Albion Online instead of Overwatch.
+        let mut settings = Settings::default();
+        settings.disclaimer_accepted_version = 1;
+        settings.idle_behavior = IdleBehavior::FarmAny;
+        let next = select_target_campaign(&ctx.campaigns, &settings, &settings.twitch, now)
+            .expect("should pick Albion Online");
+        assert_eq!(next.id, "albion-next");
+
+        // Partial claim case: if only 3 of 6 drops were claimed, campaign stays incomplete and eligible.
+        let mut partial_campaigns = vec![Campaign {
+            id: "ow-partial".to_string(),
+            platform: PlatformId::Twitch,
+            game: crate::platforms::Game {
+                id: "515025".to_string(),
+                name: "Overwatch".to_string(),
+                slug: None,
+                box_art_url: None,
+            },
+            name: "Partial OW".to_string(),
+            starts_at,
+            ends_at,
+            status: CampaignStatus::Active,
+            requires_link: false,
+            linked: true,
+            link_verified: true,
+            link_url: None,
+            allowed_channels: None,
+            drops: Vec::new(),
+        }];
+        let partial_benefits = ctx.claimed_benefits[..3].to_vec();
+        let partial_completed = hydrate_and_reconcile_drops_with(
+            &mut partial_campaigns,
+            "ow-partial",
+            &partial_benefits,
+            |id| (id == "ow-partial").then(|| discovered_drops.clone()),
+        );
+        assert!(
+            !partial_completed,
+            "partially claimed campaign must remain eligible for watching"
+        );
+        assert_eq!(
+            partial_campaigns[0].drops.iter().filter(|d| d.claimed).count(),
+            3
+        );
+    }
+
+    #[test]
+    fn prunes_completed_campaign_from_priority_but_keeps_game_and_incomplete_campaigns() {
+        let mut plat = PlatformSettings {
+            priority: vec![
+                PriorityItem::Campaign {
+                    campaign_id: "ow-talon-s5".to_string(),
+                    campaign_name: "Reign of Talon S5 Mid".to_string(),
+                },
+                PriorityItem::Game {
+                    game_id: "515025".to_string(),
+                    game_name: "Overwatch".to_string(),
+                },
+                PriorityItem::Campaign {
+                    campaign_id: "albion-4".to_string(),
+                    campaign_name: "AOCP Flamescale 8".to_string(),
+                },
+                PriorityItem::Campaign {
+                    campaign_id: "manual-claim-camp".to_string(),
+                    campaign_name: "Needs Manual Claim".to_string(),
+                },
+            ],
+            farm_campaigns: vec!["ow-talon-s5".to_string(), "albion-4".to_string()],
+            ..PlatformSettings::default()
+        };
+
+        // Only campaigns where ALL drops are claimed (not needs_manual_claim) are in completed_ids.
+        let mut completed_ids = HashSet::new();
+        completed_ids.insert("ow-talon-s5".to_string());
+
+        let removed = prune_completed_campaign_priorities_from_settings(&mut plat, &completed_ids);
+        assert_eq!(removed, vec!["Reign of Talon S5 Mid".to_string()]);
+
+        // Completed campaign removed, Game priority and incomplete/manual-claim campaigns kept!
+        assert_eq!(plat.priority.len(), 3);
+        assert!(matches!(
+            &plat.priority[0],
+            PriorityItem::Game { game_id, game_name } if game_id == "515025" && game_name == "Overwatch"
+        ));
+        assert!(matches!(
+            &plat.priority[1],
+            PriorityItem::Campaign { campaign_id, .. } if campaign_id == "albion-4"
+        ));
+        assert!(matches!(
+            &plat.priority[2],
+            PriorityItem::Campaign { campaign_id, .. } if campaign_id == "manual-claim-camp"
+        ));
+        assert_eq!(plat.farm_campaigns, vec!["albion-4".to_string()]);
+
+        // Calling again is a no-op.
+        let removed_again =
+            prune_completed_campaign_priorities_from_settings(&mut plat, &completed_ids);
+        assert!(removed_again.is_empty());
     }
 }
