@@ -1,6 +1,6 @@
 # Privacy Policy & Local Storage Map
 
-Dropilot collects **zero telemetry**, **zero analytics**, and **zero crash reports**. Nothing leaves your PC except direct requests to official platform endpoints, optional Discord webhooks you configure, and GitHub release/config checks from `theflash1211/dropilot-releases`.
+Dropilot collects **zero telemetry**, **zero analytics**, and **zero crash reports**. Nothing leaves your PC except direct requests to official platform endpoints and GitHub release/config checks from `theflash1211/dropilot-releases`.
 
 ## Exact Storage Locations on Windows
 
@@ -8,7 +8,7 @@ Dropilot writes strictly inside per-user AppData folders and Windows Credential 
 
 | Data | Location | Notes |
 | --- | --- | --- |
-| **Session Tokens & Webhook URLs** | Windows Credential Manager (`Dropilot/*`) | Protected by Windows DPAPI; never written to `settings.json`, logs, or frontend state |
+| **Session Tokens** | Windows Credential Manager (`Dropilot/*`) | Protected by Windows DPAPI; never written to `settings.json`, logs, or frontend state |
 | **App Settings** | `%APPDATA%\Dropilot\settings.json` | Written atomically; stores theme, intervals, campaign toggles, priority queue, and window bounds |
 | **Claim History & Cache** | `%APPDATA%\Dropilot\history.json`, `epic-cache.json`, `remote-config-cache.json` | Local-only lifetime claim log and offline caches |
 | **Rolling Logs** | `%LOCALAPPDATA%\Dropilot\logs\dropilot.log*` | Daily rolling, capped size; all tokens, cookies, and auth headers are scrubbed |
