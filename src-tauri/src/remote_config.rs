@@ -210,6 +210,7 @@ pub fn cache_path() -> PathBuf {
 pub struct RemoteConfigManager {
     config: RwLock<RemoteConfig>,
     status: RwLock<RemoteConfigStatus>,
+    cache_path: PathBuf,
 }
 
 impl RemoteConfigManager {
@@ -226,6 +227,7 @@ impl RemoteConfigManager {
             return Self {
                 config: RwLock::new(cached.config),
                 status: RwLock::new(status),
+                cache_path: path,
             };
         }
 
@@ -234,6 +236,7 @@ impl RemoteConfigManager {
         Self {
             config: RwLock::new(bundled),
             status: RwLock::new(RemoteConfigStatus::default()),
+            cache_path: path,
         }
     }
 
@@ -250,7 +253,7 @@ impl RemoteConfigManager {
         publish_active_config(&bundled);
         *self.config.write().await = bundled;
         *self.status.write().await = RemoteConfigStatus::default();
-        let _ = fs::remove_file(cache_path());
+        let _ = fs::remove_file(&self.cache_path);
     }
 
     pub async fn refresh_if_stale(
@@ -337,6 +340,25 @@ fn status_from_config(
     }
 }
 
+#[cfg(test)]
+pub(crate) fn cached_manager_for_test(cache_path: PathBuf) -> RemoteConfigManager {
+    let fetched_at = DateTime::parse_from_rfc3339("2026-01-02T03:04:05Z")
+        .expect("valid test timestamp")
+        .with_timezone(&Utc);
+    let config = RemoteConfig {
+        updated_at: Some("cached-update".to_string()),
+        maintenance_banner: Some("cached banner".to_string()),
+        twitch_enabled: false,
+        ..Default::default()
+    };
+    let status = status_from_config(RemoteConfigSource::Cache, Some(fetched_at), &config, None);
+    RemoteConfigManager {
+        config: RwLock::new(config),
+        status: RwLock::new(status),
+        cache_path,
+    }
+}
+
 fn load_cache_from_path(path: &Path) -> Option<CachedRemoteConfig> {
     let raw = fs::read_to_string(path).ok()?;
     let parsed: CachedRemoteConfig = serde_json::from_str(&raw).ok()?;
@@ -409,6 +431,7 @@ mod tests {
         let manager = RemoteConfigManager {
             config: RwLock::new(RemoteConfig::default()),
             status: RwLock::new(RemoteConfigStatus::default()),
+            cache_path: PathBuf::new(),
         };
         let http = AllowlistedClient::new().expect("HTTP client");
         let checked = std::cell::Cell::new(false);

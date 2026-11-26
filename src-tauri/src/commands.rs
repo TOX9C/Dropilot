@@ -1053,12 +1053,12 @@ pub async fn refresh_remote_config(
     state: State<'_, Arc<AppState>>,
 ) -> Result<RemoteConfigStatus, String> {
     let enabled = state.settings.read().await.remote_config_enabled;
+    if state.mock_active.load(Ordering::Relaxed) {
+        return Ok(offline_refresh_status(state.remote_config.status().await));
+    }
     if !enabled {
         state.remote_config.reset_to_bundled().await;
         return Ok(state.remote_config.status().await);
-    }
-    if state.mock_active.load(Ordering::Relaxed) {
-        return Ok(offline_refresh_status(state.remote_config.status().await));
     }
     Ok(state.remote_config.refresh_now(&state.http).await)
 }
@@ -1184,4 +1184,60 @@ pub async fn mark_epic_game_claimed(
         state.remove_epic_claim(&game_id).await;
     }
     Ok(state.epic.snapshot().await)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::logging::LogBuffer;
+    use crate::net::client::AllowlistedClient;
+    use crate::remote_config::{cached_manager_for_test, RemoteConfigSource};
+
+    #[tokio::test]
+    async fn mock_manual_remote_refresh_preserves_disabled_cached_config() {
+        let cache_path = std::env::temp_dir().join(format!(
+            "dropilot_mock_remote_config_{}_{}.json",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos()
+        ));
+        fs::write(&cache_path, "cached config").expect("seed remote config cache");
+
+        let settings = Settings {
+            remote_config_enabled: false,
+            ..Default::default()
+        };
+        let http = Arc::new(AllowlistedClient::new().expect("HTTP client"));
+        let mut app_state = AppState::new(settings, http, LogBuffer::new());
+        app_state.remote_config = Arc::new(cached_manager_for_test(cache_path.clone()));
+        app_state.mock_active.store(true, Ordering::Relaxed);
+
+        let app = tauri::test::mock_app();
+        app.manage(Arc::new(app_state));
+        let status = refresh_remote_config(app.state::<Arc<AppState>>())
+            .await
+            .expect("manual remote config refresh");
+
+        assert_eq!(status.source, RemoteConfigSource::Cache);
+        assert_eq!(status.updated_at.as_deref(), Some("cached-update"));
+        assert_eq!(status.maintenance_banner.as_deref(), Some("cached banner"));
+        assert!(!status.twitch_enabled);
+        assert_eq!(
+            status.last_error.as_deref(),
+            Some("Remote config sync is disabled in offline mock mode.")
+        );
+        let state = app.state::<Arc<AppState>>();
+        assert_eq!(
+            state.remote_config.current().await.updated_at.as_deref(),
+            Some("cached-update")
+        );
+        assert_eq!(
+            fs::read_to_string(&cache_path).expect("cached file remains"),
+            "cached config"
+        );
+
+        let _ = fs::remove_file(cache_path);
+    }
 }
